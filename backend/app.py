@@ -8,6 +8,7 @@ import base64
 import io
 from PIL import Image
 
+
 app = Flask(__name__)
 CORS(app)
 
@@ -84,5 +85,8 @@ def analyze_squat():
     feedback = analyze_frame(frame)
     return jsonify(feedback)
 
+import os
+
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
