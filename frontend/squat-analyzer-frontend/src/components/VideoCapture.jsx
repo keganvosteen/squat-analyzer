@@ -41,7 +41,7 @@ const VideoCapture = ({ onFrameCapture }) => {
       const imageData = canvas.toDataURL('image/jpeg');
 
       // Send the frame to the backend
-      fetch('http://127.0.0.1:5000/analyze-squat', {
+      fetch('https://squat-analyzer-backend.onrender.com/analyze-squat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: imageData })
@@ -69,3 +69,4 @@ const VideoCapture = ({ onFrameCapture }) => {
 };
 
 export default VideoCapture;
+https://squat-analyzer-backend.onrender.com
