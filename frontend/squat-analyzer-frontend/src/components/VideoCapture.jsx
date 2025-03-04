@@ -69,4 +69,3 @@ const VideoCapture = ({ onFrameCapture }) => {
 };
 
 export default VideoCapture;
-https://squat-analyzer-backend.onrender.com
