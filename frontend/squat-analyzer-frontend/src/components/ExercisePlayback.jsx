@@ -1,10 +1,30 @@
 // src/components/ExercisePlayback.jsx
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 
 const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
   const videoRef = useRef(null);
+  const [isMobile, setIsMobile] = useState(false);
 
-  // This function can be enhanced to show detailed feedback when a marker is clicked.
+  // Check if the device is mobile by looking at the window width
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768); // adjust the breakpoint as needed
+    };
+
+    // Check on mount
+    checkMobile();
+
+    // Update when window resizes
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
+  // Conditionally apply rotation if mobile
+  const videoStyle = isMobile
+    ? { width: '100%', transform: 'rotate(90deg)' }
+    : { width: '100%' };
+
+  // Function to jump to a specific time in the video when a timeline marker is clicked
   const jumpToTime = (time) => {
     if (videoRef.current) {
       videoRef.current.currentTime = time;
@@ -14,7 +34,12 @@ const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
 
   return (
     <div>
-      <video ref={videoRef} src={videoUrl} style={{ width: '100%' }} controls />
+      <video
+        ref={videoRef}
+        src={videoUrl}
+        controls
+        style={videoStyle}
+      />
       <div>
         <h3>Timeline Markers:</h3>
         <ul>
