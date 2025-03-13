@@ -10,7 +10,7 @@ const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
   // Apply a 90-degree rotation only on iOS
   const videoStyle = {
     width: '100%',
-    ...(isIOS ? { transform: 'rotate(90deg)' } : {})
+    ...(isIOS ? { transform: 'rotate(-90deg)' } : {})
   };
 
   // Jump to a specific timestamp when a timeline marker is clicked
