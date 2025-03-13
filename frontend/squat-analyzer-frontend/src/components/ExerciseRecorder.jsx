@@ -12,7 +12,7 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
   const [blinking, setBlinking] = useState(false);
   const [feedbackLog, setFeedbackLog] = useState([]);
 
-  // Function to set up the video stream based on the selected facing mode
+  // Set up video stream based on the selected facing mode
   const setupVideoStream = async () => {
     if (currentStream) {
       currentStream.getTracks().forEach(track => track.stop());
@@ -36,7 +36,7 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     };
   }, [facingMode]);
 
-  // Blinking red indicator for recording
+  // Blinking red indicator effect while recording
   useEffect(() => {
     let intervalId;
     if (recording) {
@@ -49,7 +49,7 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     return () => clearInterval(intervalId);
   }, [recording]);
 
-  // While recording, capture a frame every 500ms for feedback analysis
+  // While recording, capture a frame every 500ms and send it to the backend for analysis
   useEffect(() => {
     let feedbackInterval;
     if (recording) {
@@ -57,14 +57,13 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
         if (!videoRef.current || !canvasRef.current) return;
         const video = videoRef.current;
         const canvas = canvasRef.current;
-        // Set canvas size to video frame size
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const imageData = canvas.toDataURL('image/jpeg');
 
-        // Send captured frame to backend for analysis
+        // Send the frame to the backend for analysis
         fetch('https://squat-analyzer-backend.onrender.com/analyze-squat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -84,35 +83,35 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     };
   }, [recording]);
 
-  // Start recording: reset chunks and feedback, then start MediaRecorder
+  // Start recording: reset chunks and feedback log, then start MediaRecorder
   const startRecording = () => {
     if (!currentStream) return;
     setRecordedChunks([]);
     setFeedbackLog([]);
-    // Use default MIME type; you can adjust if needed
+    // Create MediaRecorder with the default MIME type for now
     mediaRecorderRef.current = new MediaRecorder(currentStream, { mimeType: 'video/webm' });
     mediaRecorderRef.current.ondataavailable = event => {
       if (event.data.size > 0) {
         setRecordedChunks(prev => [...prev, event.data]);
       }
     };
-    // Finalize recording in onstop event
+    // When recording stops, wait 500ms and then finalize the Blob
     mediaRecorderRef.current.onstop = () => {
       console.log("Final recordedChunks:", recordedChunks);
-      // Delay slightly to ensure all chunks have been processed
       setTimeout(() => {
         const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        console.log("Blob size after delay:", blob.size);
         const videoUrl = URL.createObjectURL(blob);
         if (onRecordingComplete) {
           onRecordingComplete({ videoUrl, feedbackLog });
         }
-      }, 300); // 300ms delay
+      }, 500); // Increase delay to 500ms to ensure all chunks are processed
     };
-    mediaRecorderRef.current.start(500);
+    mediaRecorderRef.current.start(500); // collect data in 500ms chunks
     setRecording(true);
   };
 
-  // Stop recording: call the stop method
+  // Stop recording: simply stop MediaRecorder
   const stopRecording = () => {
     if (mediaRecorderRef.current && recording) {
       mediaRecorderRef.current.stop();
@@ -141,7 +140,7 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
           }} />
         )}
       </div>
-      {/* Hidden canvas for feedback capture */}
+      {/* Hidden canvas for capturing frames for feedback */}
       <canvas ref={canvasRef} style={{ display: 'none' }} />
       <div style={{ marginTop: '10px' }}>
         {!recording ? (
