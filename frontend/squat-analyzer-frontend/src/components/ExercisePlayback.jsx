@@ -1,27 +1,10 @@
 // src/components/ExercisePlayback.jsx
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef } from 'react';
 
 const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
   const videoRef = useRef(null);
-  const [isMobile, setIsMobile] = useState(false);
 
-  // Check if the device is mobile by looking at the window width
-  useEffect(() => {
-    const checkMobile = () => {
-      setIsMobile(window.innerWidth < 768); // adjust the breakpoint as needed
-    };
-
-    checkMobile(); // initial check
-    window.addEventListener('resize', checkMobile);
-    return () => window.removeEventListener('resize', checkMobile);
-  }, []);
-
-  // Apply rotation if mobile
-  const videoStyle = isMobile
-    ? { width: '100%', transform: 'rotate(90deg)' }
-    : { width: '100%' };
-
-  // Function to jump to a specific time in the video when a timeline marker is clicked
+  // Jump to a specific time in the video
   const jumpToTime = (time) => {
     if (videoRef.current) {
       videoRef.current.currentTime = time;
@@ -35,7 +18,7 @@ const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
         ref={videoRef}
         src={videoUrl}
         controls
-        style={videoStyle}
+        style={{ width: '100%' }}
       />
       <div>
         <h3>Timeline Markers:</h3>
@@ -43,7 +26,11 @@ const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
           {feedbackLog.map((entry, index) => (
             <li key={index}>
               <button onClick={() => jumpToTime(entry.timestamp)}>
-                {`At ${entry.timestamp.toFixed(2)}s: ${typeof entry.feedback === 'object' ? JSON.stringify(entry.feedback) : entry.feedback}`}
+                {`At ${entry.timestamp.toFixed(2)}s: ${
+                  typeof entry.feedback === 'object'
+                    ? JSON.stringify(entry.feedback)
+                    : entry.feedback
+                }`}
               </button>
             </li>
           ))}
