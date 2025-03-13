@@ -11,15 +11,12 @@ const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
       setIsMobile(window.innerWidth < 768); // adjust the breakpoint as needed
     };
 
-    // Check on mount
-    checkMobile();
-
-    // Update when window resizes
+    checkMobile(); // initial check
     window.addEventListener('resize', checkMobile);
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
-  // Conditionally apply rotation if mobile
+  // Apply rotation if mobile
   const videoStyle = isMobile
     ? { width: '100%', transform: 'rotate(90deg)' }
     : { width: '100%' };
@@ -46,7 +43,7 @@ const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
           {feedbackLog.map((entry, index) => (
             <li key={index}>
               <button onClick={() => jumpToTime(entry.timestamp)}>
-                {`At ${entry.timestamp.toFixed(2)}s: ${entry.feedback}`}
+                {`At ${entry.timestamp.toFixed(2)}s: ${typeof entry.feedback === 'object' ? JSON.stringify(entry.feedback) : entry.feedback}`}
               </button>
             </li>
           ))}
