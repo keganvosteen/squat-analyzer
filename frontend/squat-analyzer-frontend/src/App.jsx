@@ -1,33 +1,37 @@
 // src/App.jsx
 import React, { useState } from 'react';
-import VideoCapture from './components/VideoCapture';
+import ExerciseRecorder from './components/ExerciseRecorder';
+import ExercisePlayback from './components/ExercisePlayback';
 import './App.css';
 
 function App() {
-  // State to store feedback from the backend
-  const [feedback, setFeedback] = useState(null);
+  // State to hold the recorded video URL and feedback log
+  const [recordingData, setRecordingData] = useState(null);
+  // State to determine whether to show the playback view or the recorder
+  const [showPlayback, setShowPlayback] = useState(false);
 
-  // Callback to receive feedback from VideoCapture
-  const handleFrameFeedback = (data) => {
-    console.log("Received backend feedback:", data);
-    setFeedback(data);
+  // Callback triggered when recording is complete
+  const handleRecordingComplete = (data) => {
+    setRecordingData(data);
+    setShowPlayback(true);
   };
 
   return (
     <div className="App">
       <h1>Squat Analyzer</h1>
-      {/* Pass the callback to VideoCapture */}
-      <VideoCapture onFrameCapture={handleFrameFeedback} />
-      
-      {/* Display the feedback if available */}
-      {feedback && (
-        <div className="feedback">
-          <h2>Analysis Feedback:</h2>
-          <pre>{JSON.stringify(feedback, null, 2)}</pre>
-        </div>
+      { !showPlayback ? (
+        // Show the recorder if playback isn't ready
+        <ExerciseRecorder onRecordingComplete={handleRecordingComplete} />
+      ) : (
+        // Once recording is complete, show the playback component
+        <ExercisePlayback 
+          videoUrl={recordingData.videoUrl} 
+          feedbackLog={recordingData.feedbackLog} 
+        />
       )}
     </div>
   );
 }
 
 export default App;
+
