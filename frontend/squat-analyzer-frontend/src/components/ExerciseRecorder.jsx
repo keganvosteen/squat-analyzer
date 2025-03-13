@@ -3,14 +3,16 @@ import React, { useState, useRef, useEffect } from 'react';
 
 const ExerciseRecorder = ({ onRecordingComplete }) => {
   const videoRef = useRef(null);
+  const canvasRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const [recording, setRecording] = useState(false);
   const [recordedChunks, setRecordedChunks] = useState([]);
   const [currentStream, setCurrentStream] = useState(null);
   const [facingMode, setFacingMode] = useState("user"); // "user" for front, "environment" for back
   const [blinking, setBlinking] = useState(false);
+  const [feedbackLog, setFeedbackLog] = useState([]);
 
-  // Setup video stream based on the facing mode
+  // Setup video stream based on the current facing mode
   const setupVideoStream = async () => {
     if (currentStream) {
       currentStream.getTracks().forEach(track => track.stop());
@@ -34,9 +36,9 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
         currentStream.getTracks().forEach(track => track.stop());
       }
     };
-  }, [facingMode]); // reinitialize stream when camera is toggled
+  }, [facingMode]);
 
-  // Blinking red indicator effect when recording
+  // Blinking red indicator effect while recording
   useEffect(() => {
     let intervalId;
     if (recording) {
@@ -49,9 +51,47 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     return () => clearInterval(intervalId);
   }, [recording]);
 
+  // Feedback capture effect: while recording, capture a frame every 500 ms and send for analysis
+  useEffect(() => {
+    let feedbackInterval;
+    if (recording) {
+      feedbackInterval = setInterval(() => {
+        if (!videoRef.current || !canvasRef.current) return;
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        // Set canvas dimensions to match the video frame
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imageData = canvas.toDataURL('image/jpeg');
+
+        // Send the captured frame to the backend for analysis
+        fetch('https://squat-analyzer-backend.onrender.com/analyze-squat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: imageData })
+        })
+        .then(response => response.json())
+        .then(data => {
+          const timestamp = video.currentTime; // capture the current video time
+          // Append the new feedback entry to the feedback log
+          setFeedbackLog(prev => [...prev, { timestamp, feedback: data }]);
+          console.log("Feedback logged at", timestamp, ":", data);
+        })
+        .catch(err => console.error("Error sending frame for feedback:", err));
+      }, 500);
+    }
+    return () => {
+      if (feedbackInterval) clearInterval(feedbackInterval);
+    };
+  }, [recording]);
+
   const startRecording = () => {
     if (!currentStream) return;
-    setRecordedChunks([]); // Reset any previous recording
+    // Reset previous recordings and feedback log
+    setRecordedChunks([]);
+    setFeedbackLog([]);
     mediaRecorderRef.current = new MediaRecorder(currentStream, { mimeType: 'video/webm' });
     mediaRecorderRef.current.ondataavailable = event => {
       if (event.data.size > 0) {
@@ -63,7 +103,9 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
   };
 
   const stopRecording = () => {
-    mediaRecorderRef.current.stop();
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
+    }
     setRecording(false);
   };
 
@@ -71,7 +113,7 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     const blob = new Blob(recordedChunks, { type: 'video/webm' });
     const videoUrl = URL.createObjectURL(blob);
     if (onRecordingComplete) {
-      onRecordingComplete(videoUrl);
+      onRecordingComplete({ videoUrl, feedbackLog });
     }
   };
 
@@ -95,6 +137,8 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
           }} />
         )}
       </div>
+      {/* Hidden canvas for feedback capture */}
+      <canvas ref={canvasRef} style={{ display: 'none' }} />
       <div style={{ marginTop: '10px' }}>
         {!recording ? (
           <button onClick={startRecording}>Start Recording</button>
