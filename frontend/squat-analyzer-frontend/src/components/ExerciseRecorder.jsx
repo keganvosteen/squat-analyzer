@@ -12,14 +12,12 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
   const [blinking, setBlinking] = useState(false);
   const [feedbackLog, setFeedbackLog] = useState([]);
 
-  // Setup video stream based on the current facing mode
+  // Function to initialize the video stream based on facing mode
   const setupVideoStream = async () => {
     if (currentStream) {
       currentStream.getTracks().forEach(track => track.stop());
     }
-    const constraints = {
-      video: { facingMode } // "user" for front, "environment" for back
-    };
+    const constraints = { video: { facingMode } };
     try {
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
       videoRef.current.srcObject = stream;
@@ -59,7 +57,6 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
         if (!videoRef.current || !canvasRef.current) return;
         const video = videoRef.current;
         const canvas = canvasRef.current;
-        // Set canvas dimensions to match the video frame
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         const ctx = canvas.getContext('2d');
@@ -74,7 +71,7 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
         })
         .then(response => response.json())
         .then(data => {
-          const timestamp = video.currentTime; // capture the current video time
+          const timestamp = video.currentTime;
           // Append the new feedback entry to the feedback log
           setFeedbackLog(prev => [...prev, { timestamp, feedback: data }]);
           console.log("Feedback logged at", timestamp, ":", data);
@@ -87,36 +84,39 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     };
   }, [recording]);
 
+  // Start recording: initialize MediaRecorder and reset state
   const startRecording = () => {
     if (!currentStream) return;
-    // Reset previous recordings and feedback log
     setRecordedChunks([]);
     setFeedbackLog([]);
-    mediaRecorderRef.current = new MediaRecorder(currentStream, { mimeType: 'video/webm' });
+    const options = { mimeType: 'video/webm' };
+    mediaRecorderRef.current = new MediaRecorder(currentStream, options);
     mediaRecorderRef.current.ondataavailable = event => {
       if (event.data.size > 0) {
         setRecordedChunks(prev => [...prev, event.data]);
       }
     };
-    mediaRecorderRef.current.start(500); // collect data in 500ms chunks
+    // When recording stops, create the video blob and notify parent component
+    mediaRecorderRef.current.onstop = () => {
+      const blob = new Blob(recordedChunks, { type: options.mimeType });
+      const videoUrl = URL.createObjectURL(blob);
+      if (onRecordingComplete) {
+        onRecordingComplete({ videoUrl, feedbackLog });
+      }
+    };
+    mediaRecorderRef.current.start(500); // Data available every 500ms
     setRecording(true);
   };
 
+  // Stop recording and let the onstop event handle saving
   const stopRecording = () => {
-    if (mediaRecorderRef.current) {
+    if (mediaRecorderRef.current && recording) {
       mediaRecorderRef.current.stop();
-    }
-    setRecording(false);
-  };
-
-  const saveRecording = () => {
-    const blob = new Blob(recordedChunks, { type: 'video/webm' });
-    const videoUrl = URL.createObjectURL(blob);
-    if (onRecordingComplete) {
-      onRecordingComplete({ videoUrl, feedbackLog });
+      setRecording(false);
     }
   };
 
+  // Toggle between front and back cameras
   const toggleCamera = () => {
     setFacingMode(prev => (prev === 'user' ? 'environment' : 'user'));
   };
@@ -137,7 +137,7 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
           }} />
         )}
       </div>
-      {/* Hidden canvas for feedback capture */}
+      {/* Hidden canvas used for feedback capture */}
       <canvas ref={canvasRef} style={{ display: 'none' }} />
       <div style={{ marginTop: '10px' }}>
         {!recording ? (
@@ -150,11 +150,6 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
         <button onClick={toggleCamera} style={{ marginLeft: '10px' }}>
           Toggle Camera (Current: {facingMode === 'user' ? 'Front' : 'Back'})
         </button>
-        {!recording && recordedChunks.length > 0 && (
-          <button onClick={saveRecording} style={{ marginLeft: '10px' }}>
-            Save Recording
-          </button>
-        )}
       </div>
     </div>
   );
