@@ -1,43 +1,69 @@
 // src/components/ExerciseRecorder.jsx
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 
-const ExerciseRecorder = ({ onRecordingComplete, onFeedbackLog }) => {
+const ExerciseRecorder = ({ onRecordingComplete }) => {
   const videoRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const [recording, setRecording] = useState(false);
   const [recordedChunks, setRecordedChunks] = useState([]);
-  const [feedbackLog, setFeedbackLog] = useState([]);
+  const [currentStream, setCurrentStream] = useState(null);
+  const [facingMode, setFacingMode] = useState("user"); // "user" for front, "environment" for back
+  const [blinking, setBlinking] = useState(false);
 
-  // This function will be called whenever you generate feedback during recording.
-  // In your real app, you’d call this from your frame analysis logic.
-  const logFeedback = (feedback) => {
-    const timestamp = videoRef.current.currentTime;
-    const entry = { timestamp, feedback };
-    setFeedbackLog(prev => [...prev, entry]);
-    if (onFeedbackLog) onFeedbackLog(entry);
+  // Setup video stream based on the facing mode
+  const setupVideoStream = async () => {
+    if (currentStream) {
+      currentStream.getTracks().forEach(track => track.stop());
+    }
+    const constraints = {
+      video: { facingMode } // "user" for front, "environment" for back
+    };
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      videoRef.current.srcObject = stream;
+      setCurrentStream(stream);
+    } catch (error) {
+      console.error("Error accessing camera:", error);
+    }
   };
 
-  const startRecording = async () => {
-    // Request webcam access
-    const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-    videoRef.current.srcObject = stream;
-    videoRef.current.play();
+  useEffect(() => {
+    setupVideoStream();
+    return () => {
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [facingMode]); // reinitialize stream when camera is toggled
 
-    // Create MediaRecorder instance
-    mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'video/webm' });
+  // Blinking red indicator effect when recording
+  useEffect(() => {
+    let intervalId;
+    if (recording) {
+      intervalId = setInterval(() => {
+        setBlinking(prev => !prev);
+      }, 500);
+    } else {
+      setBlinking(false);
+    }
+    return () => clearInterval(intervalId);
+  }, [recording]);
+
+  const startRecording = () => {
+    if (!currentStream) return;
+    setRecordedChunks([]); // Reset any previous recording
+    mediaRecorderRef.current = new MediaRecorder(currentStream, { mimeType: 'video/webm' });
     mediaRecorderRef.current.ondataavailable = event => {
       if (event.data.size > 0) {
         setRecordedChunks(prev => [...prev, event.data]);
       }
     };
-
     mediaRecorderRef.current.start(500); // collect data in 500ms chunks
     setRecording(true);
   };
 
   const stopRecording = () => {
     mediaRecorderRef.current.stop();
-    videoRef.current.srcObject.getTracks().forEach(track => track.stop());
     setRecording(false);
   };
 
@@ -45,26 +71,47 @@ const ExerciseRecorder = ({ onRecordingComplete, onFeedbackLog }) => {
     const blob = new Blob(recordedChunks, { type: 'video/webm' });
     const videoUrl = URL.createObjectURL(blob);
     if (onRecordingComplete) {
-      onRecordingComplete({ videoUrl, feedbackLog });
+      onRecordingComplete(videoUrl);
     }
+  };
+
+  const toggleCamera = () => {
+    setFacingMode(prev => (prev === 'user' ? 'environment' : 'user'));
   };
 
   return (
     <div>
-      <video ref={videoRef} style={{ width: '100%' }} controls />
-      <div>
-        {!recording && (
-          <button onClick={startRecording}>Start Recording</button>
-        )}
+      <div style={{ position: 'relative', width: '100%' }}>
+        <video ref={videoRef} autoPlay playsInline style={{ width: '100%' }} />
         {recording && (
-          <button onClick={stopRecording}>Stop Recording</button>
-        )}
-        {!recording && recordedChunks.length > 0 && (
-          <button onClick={saveRecording}>Save Recording</button>
+          <div style={{
+            position: 'absolute',
+            top: 10,
+            left: 10,
+            width: 20,
+            height: 20,
+            borderRadius: '50%',
+            backgroundColor: blinking ? 'red' : 'transparent'
+          }} />
         )}
       </div>
-      {/* Temporary button to simulate feedback logging (for testing) */}
-      <button onClick={() => logFeedback("Simulated feedback")}>Log Feedback</button>
+      <div style={{ marginTop: '10px' }}>
+        {!recording ? (
+          <button onClick={startRecording}>Start Recording</button>
+        ) : (
+          <button onClick={stopRecording} style={{ backgroundColor: 'grey', color: 'white' }}>
+            Stop Recording
+          </button>
+        )}
+        <button onClick={toggleCamera} style={{ marginLeft: '10px' }}>
+          Toggle Camera (Current: {facingMode === 'user' ? 'Front' : 'Back'})
+        </button>
+        {!recording && recordedChunks.length > 0 && (
+          <button onClick={saveRecording} style={{ marginLeft: '10px' }}>
+            Save Recording
+          </button>
+        )}
+      </div>
     </div>
   );
 };
