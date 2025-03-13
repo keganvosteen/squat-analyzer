@@ -12,7 +12,7 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
   const [blinking, setBlinking] = useState(false);
   const [feedbackLog, setFeedbackLog] = useState([]);
 
-  // Function to initialize the video stream based on facing mode
+  // Function to set up the video stream based on the selected facing mode
   const setupVideoStream = async () => {
     if (currentStream) {
       currentStream.getTracks().forEach(track => track.stop());
@@ -36,7 +36,7 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     };
   }, [facingMode]);
 
-  // Blinking red indicator effect while recording
+  // Blinking red indicator for recording
   useEffect(() => {
     let intervalId;
     if (recording) {
@@ -49,7 +49,7 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     return () => clearInterval(intervalId);
   }, [recording]);
 
-  // Feedback capture effect: while recording, capture a frame every 500 ms and send for analysis
+  // While recording, capture a frame every 500ms for feedback analysis
   useEffect(() => {
     let feedbackInterval;
     if (recording) {
@@ -57,26 +57,26 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
         if (!videoRef.current || !canvasRef.current) return;
         const video = videoRef.current;
         const canvas = canvasRef.current;
+        // Set canvas size to video frame size
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const imageData = canvas.toDataURL('image/jpeg');
 
-        // Send the captured frame to the backend for analysis
+        // Send captured frame to backend for analysis
         fetch('https://squat-analyzer-backend.onrender.com/analyze-squat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ image: imageData })
         })
-        .then(response => response.json())
-        .then(data => {
-          const timestamp = video.currentTime;
-          // Append the new feedback entry to the feedback log
-          setFeedbackLog(prev => [...prev, { timestamp, feedback: data }]);
-          console.log("Feedback logged at", timestamp, ":", data);
-        })
-        .catch(err => console.error("Error sending frame for feedback:", err));
+          .then(response => response.json())
+          .then(data => {
+            const timestamp = video.currentTime;
+            setFeedbackLog(prev => [...prev, { timestamp, feedback: data }]);
+            console.log("Feedback logged at", timestamp, ":", data);
+          })
+          .catch(err => console.error("Error sending frame for feedback:", err));
       }, 500);
     }
     return () => {
@@ -84,31 +84,35 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     };
   }, [recording]);
 
-  // Start recording: initialize MediaRecorder and reset state
+  // Start recording: reset chunks and feedback, then start MediaRecorder
   const startRecording = () => {
     if (!currentStream) return;
     setRecordedChunks([]);
     setFeedbackLog([]);
-    const options = { mimeType: 'video/webm' };
-    mediaRecorderRef.current = new MediaRecorder(currentStream, options);
+    // Use default MIME type; you can adjust if needed
+    mediaRecorderRef.current = new MediaRecorder(currentStream, { mimeType: 'video/webm' });
     mediaRecorderRef.current.ondataavailable = event => {
       if (event.data.size > 0) {
         setRecordedChunks(prev => [...prev, event.data]);
       }
     };
-    // When recording stops, create the video blob and notify parent component
+    // Finalize recording in onstop event
     mediaRecorderRef.current.onstop = () => {
-      const blob = new Blob(recordedChunks, { type: options.mimeType });
-      const videoUrl = URL.createObjectURL(blob);
-      if (onRecordingComplete) {
-        onRecordingComplete({ videoUrl, feedbackLog });
-      }
+      console.log("Final recordedChunks:", recordedChunks);
+      // Delay slightly to ensure all chunks have been processed
+      setTimeout(() => {
+        const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        const videoUrl = URL.createObjectURL(blob);
+        if (onRecordingComplete) {
+          onRecordingComplete({ videoUrl, feedbackLog });
+        }
+      }, 300); // 300ms delay
     };
-    mediaRecorderRef.current.start(500); // Data available every 500ms
+    mediaRecorderRef.current.start(500);
     setRecording(true);
   };
 
-  // Stop recording and let the onstop event handle saving
+  // Stop recording: call the stop method
   const stopRecording = () => {
     if (mediaRecorderRef.current && recording) {
       mediaRecorderRef.current.stop();
@@ -116,7 +120,7 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     }
   };
 
-  // Toggle between front and back cameras
+  // Toggle the camera between front and back
   const toggleCamera = () => {
     setFacingMode(prev => (prev === 'user' ? 'environment' : 'user'));
   };
@@ -137,7 +141,7 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
           }} />
         )}
       </div>
-      {/* Hidden canvas used for feedback capture */}
+      {/* Hidden canvas for feedback capture */}
       <canvas ref={canvasRef} style={{ display: 'none' }} />
       <div style={{ marginTop: '10px' }}>
         {!recording ? (
