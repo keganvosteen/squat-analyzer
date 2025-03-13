@@ -4,7 +4,16 @@ import React, { useRef } from 'react';
 const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
   const videoRef = useRef(null);
 
-  // Jump to a specific time in the video
+  // Detect iOS (iPhone, iPad, iPod)
+  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+  // Apply a 90-degree rotation only on iOS
+  const videoStyle = {
+    width: '100%',
+    ...(isIOS ? { transform: 'rotate(90deg)' } : {})
+  };
+
+  // Jump to a specific timestamp when a timeline marker is clicked
   const jumpToTime = (time) => {
     if (videoRef.current) {
       videoRef.current.currentTime = time;
@@ -18,7 +27,7 @@ const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
         ref={videoRef}
         src={videoUrl}
         controls
-        style={{ width: '100%' }}
+        style={videoStyle}
       />
       <div>
         <h3>Timeline Markers:</h3>
