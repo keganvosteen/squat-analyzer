@@ -5,14 +5,15 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]); // Use a ref to store recorded chunks
+
   const [recording, setRecording] = useState(false);
-  const [recordedChunks, setRecordedChunks] = useState([]);
   const [currentStream, setCurrentStream] = useState(null);
   const [facingMode, setFacingMode] = useState("user"); // "user" for front, "environment" for back
   const [blinking, setBlinking] = useState(false);
   const [feedbackLog, setFeedbackLog] = useState([]);
 
-  // Set up video stream based on the selected facing mode
+  // Set up the video stream based on the selected facing mode
   const setupVideoStream = async () => {
     if (currentStream) {
       currentStream.getTracks().forEach(track => track.stop());
@@ -49,7 +50,7 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     return () => clearInterval(intervalId);
   }, [recording]);
 
-  // While recording, capture a frame every 500ms and send it to the backend for analysis
+  // Feedback capture effect: while recording, capture a frame every 500ms and send for analysis
   useEffect(() => {
     let feedbackInterval;
     if (recording) {
@@ -57,13 +58,14 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
         if (!videoRef.current || !canvasRef.current) return;
         const video = videoRef.current;
         const canvas = canvasRef.current;
+        // Set canvas dimensions to match the video frame
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const imageData = canvas.toDataURL('image/jpeg');
 
-        // Send the frame to the backend for analysis
+        // Send the captured frame to the backend for analysis
         fetch('https://squat-analyzer-backend.onrender.com/analyze-squat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -83,35 +85,41 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     };
   }, [recording]);
 
-  // Start recording: reset chunks and feedback log, then start MediaRecorder
+  // Start recording: reset recorded chunks and feedback, then start MediaRecorder
   const startRecording = () => {
     if (!currentStream) return;
-    setRecordedChunks([]);
-    setFeedbackLog([]);
-    // Create MediaRecorder with the default MIME type for now
-    mediaRecorderRef.current = new MediaRecorder(currentStream, { mimeType: 'video/webm' });
+    recordedChunksRef.current = []; // Reset recorded chunks
+    setFeedbackLog([]); // Reset feedback log
+    let options = { mimeType: 'video/webm' };
+    try {
+      mediaRecorderRef.current = new MediaRecorder(currentStream, options);
+    } catch (e) {
+      console.error("Error creating MediaRecorder:", e);
+      return;
+    }
     mediaRecorderRef.current.ondataavailable = event => {
-      if (event.data.size > 0) {
-        setRecordedChunks(prev => [...prev, event.data]);
+      if (event.data && event.data.size > 0) {
+        recordedChunksRef.current.push(event.data);
       }
     };
-    // When recording stops, wait 500ms and then finalize the Blob
+    // Use onstop to finalize recording after a delay
     mediaRecorderRef.current.onstop = () => {
-      console.log("Final recordedChunks:", recordedChunks);
+      console.log("Final recordedChunks:", recordedChunksRef.current);
+      // Increase delay to 1000ms for mobile to ensure all chunks are received
       setTimeout(() => {
-        const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        const blob = new Blob(recordedChunksRef.current, { type: options.mimeType });
         console.log("Blob size after delay:", blob.size);
         const videoUrl = URL.createObjectURL(blob);
         if (onRecordingComplete) {
           onRecordingComplete({ videoUrl, feedbackLog });
         }
-      }, 500); // Increase delay to 500ms to ensure all chunks are processed
+      }, 1000);
     };
-    mediaRecorderRef.current.start(500); // collect data in 500ms chunks
+    mediaRecorderRef.current.start(500); // Collect data every 500ms
     setRecording(true);
   };
 
-  // Stop recording: simply stop MediaRecorder
+  // Stop recording: stop the MediaRecorder if active
   const stopRecording = () => {
     if (mediaRecorderRef.current && recording) {
       mediaRecorderRef.current.stop();
@@ -140,7 +148,7 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
           }} />
         )}
       </div>
-      {/* Hidden canvas for capturing frames for feedback */}
+      {/* Hidden canvas for feedback capture */}
       <canvas ref={canvasRef} style={{ display: 'none' }} />
       <div style={{ marginTop: '10px' }}>
         {!recording ? (
