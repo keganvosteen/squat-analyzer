@@ -1,19 +1,24 @@
 // src/components/ExercisePlayback.jsx
-import React, { useRef } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 
 const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
   const videoRef = useRef(null);
+  const [debugInfo, setDebugInfo] = useState('');
 
-  // Detect iOS (iPhone, iPad, iPod)
+  useEffect(() => {
+    // Get user agent and check for iOS
+    const ua = navigator.userAgent;
+    const isIOS = /iPhone|iPad|iPod/i.test(ua);
+    const info = `User agent: ${ua}\nDetected isIOS: ${isIOS}`;
+    console.log(info);
+    setDebugInfo(info);
+  }, []);
+
+  // Apply a rotation if necessary (you can tweak or remove based on debug results)
   const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+  const videoStyle = isIOS ? { width: '100%', transform: 'rotate(90deg)' } : { width: '100%' };
 
-  // Apply a 90-degree rotation only on iOS
-  const videoStyle = {
-    width: '100%',
-    ...(isIOS ? { transform: 'rotate(-90deg)' } : {})
-  };
-
-  // Jump to a specific timestamp when a timeline marker is clicked
+  // Function to jump to a specific timestamp when a timeline marker is clicked
   const jumpToTime = (time) => {
     if (videoRef.current) {
       videoRef.current.currentTime = time;
@@ -23,6 +28,16 @@ const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
 
   return (
     <div>
+      {/* Display debug information on-screen */}
+      <div style={{
+        whiteSpace: 'pre-wrap',
+        backgroundColor: '#f0f0f0',
+        padding: '10px',
+        marginBottom: '10px',
+        fontSize: '12px'
+      }}>
+        {debugInfo}
+      </div>
       <video
         ref={videoRef}
         src={videoUrl}
