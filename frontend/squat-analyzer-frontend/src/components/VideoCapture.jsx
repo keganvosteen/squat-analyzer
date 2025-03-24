@@ -1,6 +1,6 @@
 // VideoCapture.jsx
 import React, { useRef, useEffect, useState } from 'react';
-import { Camera, RefreshCw, Square } from 'lucide-react';
+import { Video, Square } from 'lucide-react';
 
 const VideoCapture = ({ onFrameCapture }) => {
   const videoRef = useRef(null);
@@ -8,7 +8,7 @@ const VideoCapture = ({ onFrameCapture }) => {
   const streamRef = useRef(null);
 
   const [isRecording, setIsRecording] = useState(false);
-  const [cameraFacing, setCameraFacing] = useState('user'); // 'user' is front camera, 'environment' is back camera
+  const [cameraFacing, setCameraFacing] = useState('user');
 
   useEffect(() => {
     async function setupVideo() {
@@ -92,25 +92,16 @@ const VideoCapture = ({ onFrameCapture }) => {
 
       {/* Controls */}
       <div className="absolute bottom-8 w-full flex justify-center gap-6 items-center">
-        {/* Toggle Camera Button */}
-        <button
-          onClick={toggleCamera}
-          className="bg-white bg-opacity-70 p-4 rounded-full shadow-lg transition-transform hover:scale-110"
-        >
-          <RefreshCw className="text-gray-800" size={24} />
-        </button>
-
-        {/* Record / Stop Button */}
         <button
           onClick={handleRecording}
-          className={`${
-            isRecording ? 'bg-white' : 'bg-red-500'
+          className={`flex justify-center items-center ${
+            isRecording ? 'bg-red-500' : 'bg-gray-200'
           } p-6 rounded-full shadow-xl border-4 border-white transition-transform hover:scale-110`}
         >
           {isRecording ? (
-            <Square className="text-red-500" size={24} />
+            <Square className="text-white" size={24} />
           ) : (
-            <Camera className="text-white" size={24} />
+            <Video className="text-gray-800" size={24} />
           )}
         </button>
       </div>
