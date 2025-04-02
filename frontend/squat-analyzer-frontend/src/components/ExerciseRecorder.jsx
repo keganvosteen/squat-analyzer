@@ -8,6 +8,8 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
   const [feedbackLog, setFeedbackLog] = useState([]);
   const [stream, setStream] = useState(null);
   const recordedChunks = useRef([]);
+  const feedbackIntervalRef = useRef(null);
+  const recordingStartRef = useRef(null);
 
   useEffect(() => {
     const setupStream = async () => {
@@ -31,69 +33,72 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     };
   }, []);
 
-  useEffect(() => {
-    let feedbackInterval;
-    const recordingStart = Date.now();
+  const startFeedbackLoop = () => {
+    recordingStartRef.current = Date.now();
+    feedbackIntervalRef.current = setInterval(() => {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      if (!video || !canvas) return;
 
-    if (recording) {
-      recordedChunks.current = [];
-      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          recordedChunks.current.push(event.data);
-        }
-      };
+      const imageData = canvas.toDataURL('image/jpeg');
 
-      recorder.onstop = () => {
-        const blob = new Blob(recordedChunks.current, { type: 'video/webm' });
-        const videoUrl = URL.createObjectURL(blob);
-
-        if (onRecordingComplete) {
-          onRecordingComplete({
-            videoUrl,
-            feedbackLog
-          });
-        }
-      };
-
-      mediaRecorderRef.current = recorder;
-      mediaRecorderRef.current.start(500);
-
-      feedbackInterval = setInterval(() => {
-        if (!videoRef.current || !canvasRef.current) return;
-        const video = videoRef.current;
-        const canvas = canvasRef.current;
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const imageData = canvas.toDataURL('image/jpeg');
-
-        fetch('https://squat-analyzer-backend.onrender.com/analyze-squat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: imageData })
-        })
+      fetch('https://squat-analyzer-backend.onrender.com/analyze-squat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: imageData }),
+      })
         .then(response => response.json())
         .then(data => {
-          const timestamp = (Date.now() - recordingStart) / 1000;
+          const timestamp = (Date.now() - recordingStartRef.current) / 1000;
           setFeedbackLog(prev => [...prev, { timestamp, feedback: data }]);
         })
-        .catch(err => console.error(err));
-      }, 500);
-    }
+        .catch(err => console.error('Feedback error:', err));
+    }, 500);
+  };
 
-    return () => {
-      clearInterval(feedbackInterval);
+  const startRecording = () => {
+    recordedChunks.current = [];
+    setFeedbackLog([]);
+
+    if (!stream) return;
+
+    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        recordedChunks.current.push(event.data);
+      }
     };
-  }, [recording, stream]);
 
-  const handleStopRecording = () => {
-    setRecording(false);
+    recorder.onstop = () => {
+      const blob = new Blob(recordedChunks.current, { type: 'video/webm' });
+      const videoUrl = URL.createObjectURL(blob);
+
+      if (onRecordingComplete) {
+        onRecordingComplete({
+          videoUrl,
+          feedbackLog,
+        });
+      }
+    };
+
+    mediaRecorderRef.current = recorder;
+    recorder.start(500);
+    startFeedbackLoop();
+    setRecording(true);
+  };
+
+  const stopRecording = () => {
     if (mediaRecorderRef.current) {
       mediaRecorderRef.current.stop();
     }
+    clearInterval(feedbackIntervalRef.current);
+    setRecording(false);
   };
 
   return (
@@ -105,11 +110,11 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
 
       <div className="mt-4 flex gap-4">
         {!recording ? (
-          <button onClick={() => setRecording(true)} className="bg-green-500 text-white px-4 py-2 rounded">
+          <button onClick={startRecording} className="bg-green-500 text-white px-4 py-2 rounded">
             Start Recording
           </button>
         ) : (
-          <button onClick={handleStopRecording} className="bg-red-500 text-white px-4 py-2 rounded">
+          <button onClick={stopRecording} className="bg-red-500 text-white px-4 py-2 rounded">
             Stop Recording
           </button>
         )}
