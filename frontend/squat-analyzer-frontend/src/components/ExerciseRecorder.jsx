@@ -3,9 +3,11 @@ import React, { useRef, useEffect, useState } from 'react';
 const ExerciseRecorder = ({ onRecordingComplete }) => {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  const mediaRecorderRef = useRef(null);
   const [recording, setRecording] = useState(false);
   const [feedbackLog, setFeedbackLog] = useState([]);
   const [stream, setStream] = useState(null);
+  const recordedChunks = useRef([]);
 
   useEffect(() => {
     const setupStream = async () => {
@@ -34,6 +36,30 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     const recordingStart = Date.now();
 
     if (recording) {
+      recordedChunks.current = [];
+      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordedChunks.current.push(event.data);
+        }
+      };
+
+      recorder.onstop = () => {
+        const blob = new Blob(recordedChunks.current, { type: 'video/webm' });
+        const videoUrl = URL.createObjectURL(blob);
+
+        if (onRecordingComplete) {
+          onRecordingComplete({
+            videoUrl,
+            feedbackLog
+          });
+        }
+      };
+
+      mediaRecorderRef.current = recorder;
+      mediaRecorderRef.current.start(500);
+
       feedbackInterval = setInterval(() => {
         if (!videoRef.current || !canvasRef.current) return;
         const video = videoRef.current;
@@ -58,16 +84,15 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
       }, 500);
     }
 
-    return () => clearInterval(feedbackInterval);
-  }, [recording]);
+    return () => {
+      clearInterval(feedbackInterval);
+    };
+  }, [recording, stream]);
 
   const handleStopRecording = () => {
     setRecording(false);
-    if (onRecordingComplete) {
-      onRecordingComplete({
-        videoUrl: videoRef.current?.srcObject,
-        feedbackLog
-      });
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop();
     }
   };
 
@@ -94,4 +119,3 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
 };
 
 export default ExerciseRecorder;
-
