@@ -1,24 +1,19 @@
 // src/components/ExercisePlayback.jsx
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef } from 'react';
 
 const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
   const videoRef = useRef(null);
-  const [debugInfo, setDebugInfo] = useState('');
 
-  useEffect(() => {
-    // Get user agent and check for iOS
-    const ua = navigator.userAgent;
-    const isIOS = /iPhone|iPad|iPod/i.test(ua);
-    const info = `User agent: ${ua}\nDetected isIOS: ${isIOS}`;
-    console.log(info);
-    setDebugInfo(info);
-  }, []);
-
-  // Apply a rotation if necessary (you can tweak or remove based on debug results)
+  // Detect iOS (iPhone, iPad, iPod)
   const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-  const videoStyle = isIOS ? { width: '100%', transform: 'rotate(90deg)' } : { width: '100%' };
 
-  // Function to jump to a specific timestamp when a timeline marker is clicked
+  // Apply a 90-degree rotation only on iOS
+  const videoStyle = {
+    width: '100%',
+    ...(isIOS ? { transform: 'rotate(-90deg)' } : {})
+  };
+
+  // Jump to a specific timestamp when a timeline marker is clicked
   const jumpToTime = (time) => {
     if (videoRef.current) {
       videoRef.current.currentTime = time;
@@ -26,18 +21,35 @@ const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
     }
   };
 
+  const createMarkers = () => {
+    const video = videoRef.current;
+    const timeline = timelineRef.current;
+
+    if (!video || !timeline) return;
+
+    // Clear existing markers
+    timeline.innerHTML = '';
+
+    feedbackLog.forEach(({ timestamp, feedback }) => {
+      const marker = document.createElement('div');
+      marker.className = 'absolute top-0 h-full w-1 bg-gray-400 hover:bg-blue-500 cursor-pointer';
+      marker.style.left = `${(timestamp / video.duration) * 100}%`;
+      marker.title = typeof feedback === 'object' ? JSON.stringify(feedback) : feedback;
+      marker.onclick = () => jumpToTime(timestamp);
+      timeline.appendChild(marker);
+    });
+  };
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video) {
+      video.addEventListener('loadedmetadata', createMarkers);
+    }
+    return () => video && video.removeEventListener('loadedmetadata', createMarkers);
+  }, [feedbackLog, videoUrl]);
+
   return (
     <div>
-      {/* Display debug information on-screen */}
-      <div style={{
-        whiteSpace: 'pre-wrap',
-        backgroundColor: '#f0f0f0',
-        padding: '10px',
-        marginBottom: '10px',
-        fontSize: '12px'
-      }}>
-        {debugInfo}
-      </div>
       <video
         ref={videoRef}
         src={videoUrl}
