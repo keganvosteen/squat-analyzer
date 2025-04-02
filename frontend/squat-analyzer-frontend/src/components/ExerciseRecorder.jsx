@@ -3,16 +3,10 @@ import React, { useRef, useEffect, useState } from 'react';
 const ExerciseRecorder = ({ onRecordingComplete }) => {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
-  const mediaRecorderRef = useRef(null);
-  const feedbackIntervalRef = useRef(null);
-  const recordingStartRef = useRef(null);
-  const recordedChunks = useRef([]);
-
   const [recording, setRecording] = useState(false);
   const [feedbackLog, setFeedbackLog] = useState([]);
   const [stream, setStream] = useState(null);
 
-  // Set up video stream
   useEffect(() => {
     const setupStream = async () => {
       try {
@@ -35,73 +29,46 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     };
   }, []);
 
-  // Live feedback loop (every 500ms)
-  const startFeedbackLoop = () => {
-    recordingStartRef.current = Date.now();
+  useEffect(() => {
+    let feedbackInterval;
+    const recordingStart = Date.now();
 
-    feedbackIntervalRef.current = setInterval(() => {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      if (!video || !canvas) return;
+    if (recording) {
+      feedbackInterval = setInterval(() => {
+        if (!videoRef.current || !canvasRef.current) return;
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const imageData = canvas.toDataURL('image/jpeg');
 
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      const imageData = canvas.toDataURL('image/jpeg');
-
-      fetch('https://squat-analyzer-backend.onrender.com/analyze-squat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: imageData }),
-      })
-        .then(res => res.json())
+        fetch('https://squat-analyzer-backend.onrender.com/analyze-squat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: imageData })
+        })
+        .then(response => response.json())
         .then(data => {
-          const timestamp = (Date.now() - recordingStartRef.current) / 1000;
+          const timestamp = (Date.now() - recordingStart) / 1000;
           setFeedbackLog(prev => [...prev, { timestamp, feedback: data }]);
         })
-        .catch(console.error);
-    }, 500);
-  };
+        .catch(err => console.error(err));
+      }, 500);
+    }
 
-  const startRecording = () => {
-    if (!stream) return;
+    return () => clearInterval(feedbackInterval);
+  }, [recording]);
 
-    recordedChunks.current = [];
-    setFeedbackLog([]);
-    startFeedbackLoop();
-
-    const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
-
-    recorder.ondataavailable = event => {
-      if (event.data.size > 0) {
-        recordedChunks.current.push(event.data);
-      }
-    };
-
-    recorder.onstop = () => {
-      clearInterval(feedbackIntervalRef.current);
-
-      const blob = new Blob(recordedChunks.current, { type: 'video/webm' });
-      const videoUrl = URL.createObjectURL(blob);
-
-      if (onRecordingComplete) {
-        onRecordingComplete({
-          videoUrl,
-          feedbackLog
-        });
-      }
-    };
-
-    mediaRecorderRef.current = recorder;
-    recorder.start(500);
-    setRecording(true);
-  };
-
-  const stopRecording = () => {
+  const handleStopRecording = () => {
     setRecording(false);
-    mediaRecorderRef.current?.stop();
+    if (onRecordingComplete) {
+      onRecordingComplete({
+        videoUrl: videoRef.current?.srcObject,
+        feedbackLog
+      });
+    }
   };
 
   return (
@@ -113,11 +80,11 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
 
       <div className="mt-4 flex gap-4">
         {!recording ? (
-          <button onClick={startRecording} className="bg-green-500 text-white px-4 py-2 rounded">
+          <button onClick={() => setRecording(true)} className="bg-green-500 text-white px-4 py-2 rounded">
             Start Recording
           </button>
         ) : (
-          <button onClick={stopRecording} className="bg-red-500 text-white px-4 py-2 rounded">
+          <button onClick={handleStopRecording} className="bg-red-500 text-white px-4 py-2 rounded">
             Stop Recording
           </button>
         )}
