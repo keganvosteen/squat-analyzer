@@ -1,5 +1,6 @@
+// src/components/VideoCapture.jsx
 import React, { useRef, useEffect, useState } from 'react';
-import { Video, Square } from 'lucide-react';
+import { Camera, RefreshCw, Square } from 'lucide-react';
 
 const VideoCapture = ({ onFrameCapture }) => {
   const videoRef = useRef(null);
@@ -7,7 +8,8 @@ const VideoCapture = ({ onFrameCapture }) => {
   const streamRef = useRef(null);
 
   const [isRecording, setIsRecording] = useState(false);
-  const [cameraFacing, setCameraFacing] = useState('user'); // 'user' is front camera, 'environment' is back camera
+  const [cameraFacing, setCameraFacing] = useState('user');
+  const [squatCount, setSquatCount] = useState(0);
 
   useEffect(() => {
     async function setupVideo() {
@@ -62,34 +64,9 @@ const VideoCapture = ({ onFrameCapture }) => {
   const handleRecording = () => setIsRecording(prev => !prev);
 
   return (
-    <div className={`relative ${isRecording ? 'fixed inset-0' : 'w-full h-[60vh]'} transition-all bg-black overflow-hidden`}>
+    <div className={`relative ${isRecording ? 'fixed inset-0 z-50' : 'w-full h-[60vh]'} transition-all duration-300 bg-black overflow-hidden`}>
       <video ref={videoRef} autoPlay playsInline className="absolute inset-0 object-cover w-full h-full" />
       <canvas ref={canvasRef} className="hidden" />
-
-      {/* Controls */}
-      <div className="absolute bottom-8 w-full flex justify-center gap-6 items-center">
-        {/* Toggle Camera Button */}
-        <button
-          onClick={toggleCamera}
-          className="bg-white bg-opacity-70 p-4 rounded-full shadow-lg transition-transform hover:scale-110"
-        >
-          <RefreshCw className="text-gray-800" size={24} />
-        </button>
-
-        {/* Record / Stop Button */}
-        <button
-          onClick={handleRecording}
-          className={`${
-            isRecording ? 'bg-white' : 'bg-red-500'
-          } p-6 rounded-full shadow-xl border-4 border-white transition-transform hover:scale-110`}
-        >
-          {isRecording ? (
-            <Square className="text-red-500" size={24} />
-          ) : (
-            <Camera className="text-white" size={24} />
-          )}
-        </button>
-      </div>
 
       {/* Recording Indicator */}
       {isRecording && (
@@ -99,18 +76,31 @@ const VideoCapture = ({ onFrameCapture }) => {
         </div>
       )}
 
-      {squatCount > 0 && (
+      {/* Squat Counter */}
+      {isRecording && (
         <div className="absolute top-4 right-4 bg-white px-3 py-1 rounded shadow font-semibold">
           🏋️ Squats: {squatCount}
         </div>
       )}
 
-      <button onClick={handleRecording} className={`absolute bottom-4 left-4 ${isRecording ? 'bg-gray-500' : 'bg-red-500'} text-white px-4 py-2 rounded-full`}>
+      {/* Record/Stop Button */}
+      <button
+        onClick={handleRecording}
+        className={`absolute bottom-8 left-4 ${
+          isRecording ? 'bg-gray-500' : 'bg-red-500'
+        } text-white px-4 py-2 rounded-full flex items-center gap-2 shadow-lg transition-transform hover:scale-105`}
+      >
+        {isRecording ? <Square size={20} /> : <Camera size={20} />}
         {isRecording ? 'Stop' : 'Record'}
       </button>
 
-      <button onClick={toggleCamera} className="absolute bottom-4 right-4 bg-white bg-opacity-80 px-4 py-2 rounded-full flex gap-2">
-        <RefreshCw size={20} /> Toggle Camera
+      {/* Camera Toggle Button */}
+      <button
+        onClick={toggleCamera}
+        className="absolute bottom-8 right-4 bg-white bg-opacity-80 px-4 py-2 rounded-full flex items-center gap-2 shadow-lg transition-transform hover:scale-105"
+      >
+        <RefreshCw size={20} />
+        Toggle Camera
       </button>
     </div>
   );

@@ -1,19 +1,17 @@
 // src/components/ExercisePlayback.jsx
-import React, { useRef } from 'react';
+import React, { useRef, useEffect } from 'react';
 
 const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
   const videoRef = useRef(null);
+  const timelineRef = useRef(null);
 
-  // Detect iOS (iPhone, iPad, iPod)
   const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
 
-  // Apply a 90-degree rotation only on iOS
   const videoStyle = {
     width: '100%',
     ...(isIOS ? { transform: 'rotate(-90deg)' } : {})
   };
 
-  // Jump to a specific timestamp when a timeline marker is clicked
   const jumpToTime = (time) => {
     if (videoRef.current) {
       videoRef.current.currentTime = time;
@@ -25,7 +23,7 @@ const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
     const video = videoRef.current;
     const timeline = timelineRef.current;
 
-    if (!video || !timeline) return;
+    if (!video || !timeline || !video.duration) return;
 
     // Clear existing markers
     timeline.innerHTML = '';
@@ -45,23 +43,26 @@ const ExercisePlayback = ({ videoUrl, feedbackLog }) => {
     if (video) {
       video.addEventListener('loadedmetadata', createMarkers);
     }
-    return () => video && video.removeEventListener('loadedmetadata', createMarkers);
+    return () => {
+      if (video) {
+        video.removeEventListener('loadedmetadata', createMarkers);
+      }
+    };
   }, [feedbackLog, videoUrl]);
 
   return (
     <div>
-      <video
-        ref={videoRef}
-        src={videoUrl}
-        controls
-        style={videoStyle}
-      />
-      <div>
-        <h3>Timeline Markers:</h3>
-        <ul>
+      <video ref={videoRef} src={videoUrl} controls style={videoStyle} />
+
+      {/* Timeline with markers */}
+      <div ref={timelineRef} className="relative w-full h-2 bg-gray-200 rounded overflow-hidden mt-2" />
+
+      <div className="mt-4">
+        <h3 className="font-semibold">Timeline Markers:</h3>
+        <ul className="list-disc ml-5">
           {feedbackLog.map((entry, index) => (
             <li key={index}>
-              <button onClick={() => jumpToTime(entry.timestamp)}>
+              <button onClick={() => jumpToTime(entry.timestamp)} className="text-blue-500 hover:underline">
                 {`At ${entry.timestamp.toFixed(2)}s: ${
                   typeof entry.feedback === 'object'
                     ? JSON.stringify(entry.feedback)
