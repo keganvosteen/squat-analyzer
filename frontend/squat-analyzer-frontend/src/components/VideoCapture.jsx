@@ -1,107 +1,297 @@
 // src/components/VideoCapture.jsx
 import React, { useRef, useEffect, useState } from 'react';
-import { Camera, RefreshCw, Square } from 'lucide-react';
+import { Camera, RefreshCw, Maximize2, Minimize2, Circle, Square } from 'lucide-react';
+import { v4 as uuidv4 } from 'uuid';
 
-const VideoCapture = ({ onFrameCapture }) => {
+const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
-
+  const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+  const sessionIdRef = useRef(uuidv4());
+  const [skeletonImage, setSkeletonImage] = useState(null);
+  
   const [isRecording, setIsRecording] = useState(false);
-  const [cameraFacing, setCameraFacing] = useState('user');
+  const [cameraFacing, setCameraFacing] = useState('environment');
   const [squatCount, setSquatCount] = useState(0);
-
+  const [fullscreen, setFullscreen] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const [recordingStartTime, setRecordingStartTime] = useState(null);
+  const [feedbackData, setFeedbackData] = useState([]);
+  
+  // Initialize video stream
   useEffect(() => {
     async function setupVideo() {
       try {
         if (streamRef.current) {
           streamRef.current.getTracks().forEach(track => track.stop());
         }
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: cameraFacing },
-        });
+        
+        const constraints = {
+          video: { 
+            facingMode: cameraFacing,
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          }
+        };
+        
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
         streamRef.current = stream;
+        
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
         }
+        
+        // Setup media recorder for video capture
+        if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
+          mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
+        } else if (MediaRecorder.isTypeSupported('video/webm')) {
+          mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'video/webm' });
+        } else {
+          mediaRecorderRef.current = new MediaRecorder(stream);
+        }
+        
+        mediaRecorderRef.current.ondataavailable = handleDataAvailable;
+        mediaRecorderRef.current.onstop = handleRecordingStop;
+        
       } catch (error) {
-        console.error('Error accessing webcam:', error);
+        console.error('Error accessing camera:', error);
       }
     }
+    
     setupVideo();
-    return () => streamRef.current?.getTracks().forEach(track => track.stop());
+    
+    // Reset session in backend
+    fetch('https://squat-analyzer-backend.onrender.com/reset-session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionId: sessionIdRef.current }),
+    }).catch(console.error);
+    
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+    };
   }, [cameraFacing]);
 
+  // Frame capture and analysis loop while recording
   useEffect(() => {
     let interval;
     if (isRecording) {
+      setRecordingStartTime(Date.now());
+      setFeedbackData([]);
+      
+      // Start video recording
+      recordedChunksRef.current = [];
+      mediaRecorderRef.current?.start(1000); // Collect data every second
+      
       interval = setInterval(() => {
+        // Update recording timer
+        setRecordingTime(Math.floor((Date.now() - recordingStartTime) / 1000));
+        
+        // Capture and analyze frame
         const video = videoRef.current;
         const canvas = canvasRef.current;
         if (!video || !canvas) return;
+        
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
         const ctx = canvas.getContext('2d');
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const imageData = canvas.toDataURL('image/jpeg');
+        
         fetch('https://squat-analyzer-backend.onrender.com/analyze-squat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ image: imageData }),
+          body: JSON.stringify({ 
+            image: imageData,
+            sessionId: sessionIdRef.current
+          }),
         })
         .then(response => response.json())
         .then(data => {
+          // Update skeleton image
+          setSkeletonImage(data.skeletonImage);
+          
+          // Update squat count
+          if (data.squatCount !== undefined) {
+            setSquatCount(data.squatCount);
+          }
+          
+          // Store feedback data with timestamp
+          const timestamp = Date.now() - recordingStartTime;
+          setFeedbackData(prev => [...prev, { ...data, timestamp }]);
+          
+          // Pass frame data to parent component if callback exists
           if (onFrameCapture) onFrameCapture(data);
-          if (data.squat_detected) setSquatCount(prev => prev + 1);
         })
         .catch(console.error);
-      }, 500);
+      }, 200); // Analyze frames at 5fps
+    } else {
+      if (mediaRecorderRef.current?.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      }
     }
-    return () => clearInterval(interval);
-  }, [isRecording, onFrameCapture]);
+    
+    return () => {
+      clearInterval(interval);
+      if (isRecording && mediaRecorderRef.current?.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      }
+    };
+  }, [isRecording, onFrameCapture, recordingStartTime]);
 
+  // Handler for media recorder data chunks
+  const handleDataAvailable = (event) => {
+    if (event.data.size > 0) {
+      recordedChunksRef.current.push(event.data);
+    }
+  };
+
+  // Handler for when recording stops
+  const handleRecordingStop = () => {
+    // Create video blob from recorded chunks
+    const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+    const videoUrl = URL.createObjectURL(blob);
+    
+    // Get final session data from backend
+    fetch(`https://squat-analyzer-backend.onrender.com/get-session-data?sessionId=${sessionIdRef.current}`)
+      .then(response => response.json())
+      .then(sessionData => {
+        // Combine all data and pass to parent component
+        if (onRecordingComplete) {
+          onRecordingComplete({
+            videoUrl,
+            feedbackData,
+            squatCount: sessionData.squatCount,
+            squatTimings: sessionData.squatTimings,
+            sessionId: sessionIdRef.current,
+            duration: recordingTime
+          });
+        }
+      })
+      .catch(console.error);
+      
+    // Reset recording timer
+    setRecordingTime(0);
+  };
+
+  // Toggle camera facing mode
   const toggleCamera = () => setCameraFacing(prev => prev === 'user' ? 'environment' : 'user');
-  const handleRecording = () => setIsRecording(prev => !prev);
+  
+  // Start/stop recording
+  const handleRecording = () => {
+    if (isRecording) {
+      // Stop recording
+      setIsRecording(false);
+    } else {
+      // Start new recording
+      setIsRecording(true);
+      setRecordingStartTime(Date.now());
+      // Generate new session ID for this recording
+      sessionIdRef.current = uuidv4();
+      // Reset backend session
+      fetch('https://squat-analyzer-backend.onrender.com/reset-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId: sessionIdRef.current }),
+      }).catch(console.error);
+    }
+  };
+  
+  // Toggle fullscreen mode
+  const toggleFullscreen = () => setFullscreen(prev => !prev);
+  
+  // Format recording time as mm:ss
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const secs = (seconds % 60).toString().padStart(2, '0');
+    return `${mins}:${secs}`;
+  };
 
   return (
-    <div className={`relative ${isRecording ? 'fixed inset-0 z-50' : 'w-full h-[60vh]'} transition-all duration-300 bg-black overflow-hidden`}>
-      <video ref={videoRef} autoPlay playsInline className="absolute inset-0 object-cover w-full h-full" />
+    <div className={`relative ${fullscreen || isRecording ? 'fixed inset-0 z-50' : 'w-full h-[60vh]'} bg-black overflow-hidden`}>
+      {/* Main video display */}
+      <video 
+        ref={videoRef} 
+        autoPlay 
+        playsInline 
+        muted
+        className="absolute inset-0 object-cover w-full h-full z-0" 
+      />
+      
+      {/* Canvas for frame capture (hidden) */}
       <canvas ref={canvasRef} className="hidden" />
+      
+      {/* Overlay skeleton image when available */}
+      {skeletonImage && (
+        <img 
+          src={skeletonImage} 
+          alt="Pose skeleton" 
+          className="absolute inset-0 object-cover w-full h-full z-10 pointer-events-none" 
+        />
+      )}
 
-      {/* Recording Indicator */}
+      {/* Recording duration */}
       {isRecording && (
-        <div className="absolute top-4 left-4 flex items-center gap-2 bg-black bg-opacity-50 px-3 py-1 rounded-full text-white">
+        <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-black bg-opacity-50 px-4 py-1 rounded-full text-white z-20 font-mono">
+          <span className="animate-pulse text-red-500 mr-2">●</span>
+          {formatTime(recordingTime)}
+        </div>
+      )}
+
+      {/* Recording indicator */}
+      {isRecording && (
+        <div className="absolute top-4 left-4 flex items-center gap-2 bg-black bg-opacity-50 px-3 py-1 rounded-full text-white z-20">
           <span className="animate-ping h-3 w-3 bg-red-500 rounded-full"></span>
-          Recording
+          REC
         </div>
       )}
 
-      {/* Squat Counter */}
-      {isRecording && (
-        <div className="absolute top-4 right-4 bg-white px-3 py-1 rounded shadow font-semibold">
-          🏋️ Squats: {squatCount}
+      {/* Squat counter */}
+      {(isRecording || skeletonImage) && (
+        <div className="absolute top-4 right-4 bg-black bg-opacity-50 px-3 py-1 rounded-full text-white z-20">
+          🏋️ {squatCount}
         </div>
       )}
 
-      {/* Record/Stop Button */}
-      <button
-        onClick={handleRecording}
-        className={`absolute bottom-8 left-4 ${
-          isRecording ? 'bg-gray-500' : 'bg-red-500'
-        } text-white px-4 py-2 rounded-full flex items-center gap-2 shadow-lg transition-transform hover:scale-105`}
-      >
-        {isRecording ? <Square size={20} /> : <Camera size={20} />}
-        {isRecording ? 'Stop' : 'Record'}
-      </button>
-
-      {/* Camera Toggle Button */}
-      <button
-        onClick={toggleCamera}
-        className="absolute bottom-8 right-4 bg-white bg-opacity-80 px-4 py-2 rounded-full flex items-center gap-2 shadow-lg transition-transform hover:scale-105"
-      >
-        <RefreshCw size={20} />
-        Toggle Camera
-      </button>
+      {/* Controls container */}
+      <div className="absolute bottom-6 left-0 w-full flex justify-center items-center gap-4 z-20">
+        {/* Camera toggle button */}
+        <button
+          onClick={toggleCamera}
+          className="bg-black bg-opacity-50 p-3 rounded-full text-white hover:bg-opacity-70 transition-all"
+          aria-label="Toggle camera"
+        >
+          <RefreshCw size={24} />
+        </button>
+        
+        {/* Record/stop button */}
+        <button
+          onClick={handleRecording}
+          className={`p-4 rounded-full flex items-center justify-center transition-all ${
+            isRecording ? 'bg-white' : 'bg-red-500'
+          }`}
+          aria-label={isRecording ? "Stop recording" : "Start recording"}
+        >
+          {isRecording ? (
+            <Square size={24} className="text-black" />
+          ) : (
+            <Circle size={24} className="text-white" />
+          )}
+        </button>
+        
+        {/* Fullscreen toggle button */}
+        <button
+          onClick={toggleFullscreen}
+          className="bg-black bg-opacity-50 p-3 rounded-full text-white hover:bg-opacity-70 transition-all"
+          aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+        >
+          {fullscreen ? <Minimize2 size={24} /> : <Maximize2 size={24} />}
+        </button>
+      </div>
     </div>
   );
 };

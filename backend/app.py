@@ -7,6 +7,7 @@ import mediapipe as mp
 import base64
 import io
 from PIL import Image
+import time
 
 
 app = Flask(__name__)
@@ -14,7 +15,14 @@ CORS(app)
 
 # Initialize MediaPipe Pose.
 mp_pose = mp.solutions.pose
+mp_drawing = mp.solutions.drawing_utils
+mp_drawing_styles = mp.solutions.drawing_styles
 pose = mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5)
+
+# Global variables for squat state tracking
+previous_states = {}
+squat_timings = {}
+squat_counts = {}
 
 def calculate_angle(a, b, c):
     a = np.array(a)
@@ -26,40 +34,247 @@ def calculate_angle(a, b, c):
         angle = 360 - angle
     return angle
 
-def analyze_frame(frame):
+def analyze_frame(frame, session_id=None):
+    if session_id is None:
+        session_id = "default"
+    
+    # Initialize state tracking for new sessions
+    if session_id not in previous_states:
+        previous_states[session_id] = "standing"
+        squat_counts[session_id] = 0
+        squat_timings[session_id] = []
+    
     # Convert BGR image (OpenCV) to RGB
     image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    image_height, image_width, _ = frame.shape
     results = pose.process(image_rgb)
-    feedback = {"squatCount": 0, "warnings": []}
-
+    
+    # Create a transparent overlay for drawing
+    overlay = frame.copy()
+    
+    # Prepare feedback data
+    feedback = {
+        "squatCount": squat_counts[session_id],
+        "warnings": [],
+        "keyPoints": [],
+        "angles": {},
+        "skeletonImage": None,
+        "squatState": previous_states[session_id],
+        "timestamp": time.time()
+    }
+    
     if results.pose_landmarks:
         landmarks = results.pose_landmarks.landmark
-
-        # Example: Analyze left leg (you can add similar logic for the right leg)
-        left_hip = [
-            landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].x,
-            landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].y
-        ]
-        left_knee = [
-            landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].x,
-            landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].y
-        ]
-        left_ankle = [
-            landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value].x,
-            landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value].y
-        ]
-
-        knee_angle = calculate_angle(left_hip, left_knee, left_ankle)
-        # Use thresholds from your guidelines (sample values):
-        if knee_angle > 160:
-            feedback["warnings"].append("Leg not bent enough; try squatting deeper.")
-        if knee_angle < 70:
-            feedback["warnings"].append("Squat too deep; maintain safe form.")
-
-        # Placeholder for squat count logic (update as needed)
-        if knee_angle < 70:
-            feedback["squatCount"] = 1
-
+        
+        # Extract key points
+        left_hip = [landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].x * image_width,
+                   landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].y * image_height]
+        left_knee = [landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].x * image_width,
+                    landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].y * image_height]
+        left_ankle = [landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value].x * image_width,
+                     landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value].y * image_height]
+        
+        right_hip = [landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].x * image_width,
+                    landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].y * image_height]
+        right_knee = [landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value].x * image_width,
+                     landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value].y * image_height]
+        right_ankle = [landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE.value].x * image_width,
+                      landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE.value].y * image_height]
+                      
+        # Calculate joint angles
+        left_knee_angle = calculate_angle(left_hip, left_knee, left_ankle)
+        right_knee_angle = calculate_angle(right_hip, right_knee, right_ankle)
+        
+        # Calculate hip angles (trunk orientation)
+        left_shoulder = [landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].x * image_width,
+                        landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value].y * image_height]
+        right_shoulder = [landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].x * image_width,
+                         landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value].y * image_height]
+        
+        # Back angle (approximation from shoulders to hips)
+        back_midpoint = [(left_shoulder[0] + right_shoulder[0])/2, (left_shoulder[1] + right_shoulder[1])/2]
+        hip_midpoint = [(left_hip[0] + right_hip[0])/2, (left_hip[1] + right_hip[1])/2]
+        ankle_midpoint = [(left_ankle[0] + right_ankle[0])/2, (left_ankle[1] + right_ankle[1])/2]
+        
+        back_angle = calculate_angle(back_midpoint, hip_midpoint, ankle_midpoint)
+        
+        # Store calculated angles in feedback
+        feedback["angles"] = {
+            "leftKnee": round(left_knee_angle, 1),
+            "rightKnee": round(right_knee_angle, 1),
+            "back": round(back_angle, 1)
+        }
+        
+        # Squat form analysis
+        knee_avg = (left_knee_angle + right_knee_angle) / 2
+        
+        # Detect squat state
+        current_state = previous_states[session_id]
+        
+        # State machine for squat detection
+        if knee_avg > 150 and current_state != "standing":
+            current_state = "standing"
+            if previous_states[session_id] == "bottom":
+                # Completed a squat
+                squat_counts[session_id] += 1
+                squat_timings[session_id].append({
+                    "completed": time.time(),
+                    "count": squat_counts[session_id]
+                })
+                feedback["squatCount"] = squat_counts[session_id]
+        elif knee_avg < 100 and knee_avg > 70 and current_state not in ["descending", "bottom"]:
+            current_state = "descending"
+        elif knee_avg <= 70 and current_state != "bottom":
+            current_state = "bottom"
+            squat_timings[session_id].append({
+                "bottom": time.time(),
+                "count": squat_counts[session_id] + 1
+            })
+        
+        previous_states[session_id] = current_state
+        feedback["squatState"] = current_state
+        
+        # Analyze form and provide feedback warnings
+        warnings = []
+        
+        # Check knee angles
+        if knee_avg > 160:
+            warnings.append({
+                "type": "depth",
+                "message": "Not squatting deep enough",
+                "severity": "warning",
+                "location": "knees"
+            })
+        elif knee_avg < 60:
+            warnings.append({
+                "type": "depth",
+                "message": "Squat too deep; maintain safe form",
+                "severity": "warning",
+                "location": "knees"
+            })
+            
+        # Check if knees are too far forward (beyond toes)
+        knee_forward_threshold = 0.05
+        left_knee_x_normalized = landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].x
+        left_ankle_x_normalized = landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value].x
+        right_knee_x_normalized = landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value].x
+        right_ankle_x_normalized = landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE.value].x
+        
+        if ((left_knee_x_normalized - left_ankle_x_normalized > knee_forward_threshold) or 
+            (right_knee_x_normalized - right_ankle_x_normalized > knee_forward_threshold)):
+            warnings.append({
+                "type": "knees-forward",
+                "message": "Knees going too far forward over toes",
+                "severity": "warning",
+                "location": "knees"
+            })
+            
+        # Check back angle
+        if back_angle < 45 and current_state in ["descending", "bottom"]:
+            warnings.append({
+                "type": "back-angle",
+                "message": "Leaning forward too much; keep chest up",
+                "severity": "error",
+                "location": "back"
+            })
+            
+        # Check knee alignment
+        left_hip_x = landmarks[mp_pose.PoseLandmark.LEFT_HIP.value].x
+        left_knee_x = landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value].x
+        left_ankle_x = landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value].x
+        right_hip_x = landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value].x
+        right_knee_x = landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value].x
+        right_ankle_x = landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE.value].x
+        
+        left_alignment = abs((left_knee_x - left_hip_x) - (left_ankle_x - left_knee_x))
+        right_alignment = abs((right_knee_x - right_hip_x) - (right_ankle_x - right_knee_x))
+        
+        if (left_alignment > 0.1 or right_alignment > 0.1) and current_state in ["descending", "bottom"]:
+            warnings.append({
+                "type": "knee-alignment",
+                "message": "Knees not aligned with feet; check stance",
+                "severity": "warning",
+                "location": "alignment"
+            })
+        
+        feedback["warnings"] = warnings
+        
+        # Draw skeleton (color-coded based on form assessment)
+        mp_drawing.draw_landmarks(
+            overlay,
+            results.pose_landmarks,
+            mp_pose.POSE_CONNECTIONS,
+            landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style()
+        )
+        
+        # Highlight specific joint angles with colored lines based on form quality
+        for warning in warnings:
+            if warning["location"] == "knees":
+                color = (0, 0, 255)  # Red for knee warnings
+                # Draw knee angles
+                cv2.line(overlay, (int(left_hip[0]), int(left_hip[1])), 
+                         (int(left_knee[0]), int(left_knee[1])), color, 3)
+                cv2.line(overlay, (int(left_knee[0]), int(left_knee[1])), 
+                         (int(left_ankle[0]), int(left_ankle[1])), color, 3)
+                cv2.line(overlay, (int(right_hip[0]), int(right_hip[1])), 
+                         (int(right_knee[0]), int(right_knee[1])), color, 3)
+                cv2.line(overlay, (int(right_knee[0]), int(right_knee[1])), 
+                         (int(right_ankle[0]), int(right_ankle[1])), color, 3)
+            
+            elif warning["location"] == "back":
+                color = (0, 0, 255)  # Red for back warnings
+                # Draw back line
+                cv2.line(overlay, (int(back_midpoint[0]), int(back_midpoint[1])), 
+                         (int(hip_midpoint[0]), int(hip_midpoint[1])), color, 3)
+        
+        # Add angle measurements as text overlays
+        cv2.putText(overlay, f"{round(left_knee_angle, 1)}°", 
+                   (int(left_knee[0])-15, int(left_knee[1])-15), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(overlay, f"{round(right_knee_angle, 1)}°", 
+                   (int(right_knee[0])-15, int(right_knee[1])-15), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(overlay, f"Back: {round(back_angle, 1)}°", 
+                   (int(hip_midpoint[0])-60, int(hip_midpoint[1])-20), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2, cv2.LINE_AA)
+        
+        # Add state label
+        state_color = (255, 255, 255)  # Default white
+        if current_state == "bottom":
+            state_color = (0, 255, 0)  # Green
+        elif current_state == "descending":
+            state_color = (0, 165, 255)  # Orange
+        cv2.putText(overlay, f"State: {current_state}", (10, 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, state_color, 2, cv2.LINE_AA)
+        
+        # Add squat counter
+        cv2.putText(overlay, f"Squat count: {squat_counts[session_id]}", (10, 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        
+        # Blend the overlay with the original image
+        alpha = 0.7
+        frame = cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0)
+        
+        # Convert processed image to base64 for return
+        _, buffer = cv2.imencode('.jpg', frame)
+        img_str = base64.b64encode(buffer).decode('utf-8')
+        feedback["skeletonImage"] = f"data:image/jpeg;base64,{img_str}"
+        
+        # Include key points for frontend visualization
+        feedback["keyPoints"] = {
+            "leftHip": left_hip,
+            "leftKnee": left_knee,
+            "leftAnkle": left_ankle,
+            "rightHip": right_hip,
+            "rightKnee": right_knee,
+            "rightAnkle": right_ankle,
+            "backMidpoint": back_midpoint,
+            "hipMidpoint": hip_midpoint
+        }
+        
+        # Include squat timings
+        feedback["squatTimings"] = squat_timings[session_id]
+    
     return feedback
 
 # Simple GET route to verify the server is running
@@ -73,6 +288,9 @@ def analyze_squat():
     if not data or 'image' not in data:
         return jsonify({"error": "No image data provided"}), 400
 
+    # Extract session ID if provided, otherwise use default
+    session_id = data.get('sessionId', 'default')
+
     try:
         # Remove header if present and decode base64 image data.
         image_data = data['image'].split(",")[-1]
@@ -82,8 +300,36 @@ def analyze_squat():
     except Exception as e:
         return jsonify({"error": f"Error processing image: {str(e)}"}), 500
 
-    feedback = analyze_frame(frame)
+    feedback = analyze_frame(frame, session_id)
     return jsonify(feedback)
+
+@app.route('/reset-session', methods=['POST'])
+def reset_session():
+    data = request.get_json()
+    session_id = data.get('sessionId', 'default')
+    
+    if session_id in previous_states:
+        # Reset session data
+        previous_states[session_id] = "standing"
+        squat_counts[session_id] = 0
+        squat_timings[session_id] = []
+    
+    return jsonify({"success": True, "message": f"Session {session_id} reset successfully"})
+
+@app.route('/get-session-data', methods=['GET'])
+def get_session_data():
+    session_id = request.args.get('sessionId', 'default')
+    
+    if session_id not in previous_states:
+        return jsonify({"error": "Session not found"}), 404
+    
+    session_data = {
+        "squatCount": squat_counts.get(session_id, 0),
+        "squatTimings": squat_timings.get(session_id, []),
+        "currentState": previous_states.get(session_id, "standing")
+    }
+    
+    return jsonify(session_data)
 
 import os
 
