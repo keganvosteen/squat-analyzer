@@ -4,13 +4,15 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const mediaRecorderRef = useRef(null);
+  const feedbackIntervalRef = useRef(null);
+  const recordingStartRef = useRef(null);
+  const recordedChunks = useRef([]);
+
   const [recording, setRecording] = useState(false);
   const [feedbackLog, setFeedbackLog] = useState([]);
   const [stream, setStream] = useState(null);
-  const recordedChunks = useRef([]);
-  const feedbackIntervalRef = useRef(null);
-  const recordingStartRef = useRef(null);
 
+  // Set up video stream
   useEffect(() => {
     const setupStream = async () => {
       try {
@@ -33,8 +35,10 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
     };
   }, []);
 
+  // Live feedback loop (every 500ms)
   const startFeedbackLoop = () => {
     recordingStartRef.current = Date.now();
+
     feedbackIntervalRef.current = setInterval(() => {
       const video = videoRef.current;
       const canvas = canvasRef.current;
@@ -52,53 +56,52 @@ const ExerciseRecorder = ({ onRecordingComplete }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: imageData }),
       })
-        .then(response => response.json())
+        .then(res => res.json())
         .then(data => {
           const timestamp = (Date.now() - recordingStartRef.current) / 1000;
           setFeedbackLog(prev => [...prev, { timestamp, feedback: data }]);
         })
-        .catch(err => console.error('Feedback error:', err));
+        .catch(console.error);
     }, 500);
   };
 
   const startRecording = () => {
+    if (!stream) return;
+
     recordedChunks.current = [];
     setFeedbackLog([]);
-
-    if (!stream) return;
+    startFeedbackLoop();
 
     const recorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
 
-    recorder.ondataavailable = (event) => {
+    recorder.ondataavailable = event => {
       if (event.data.size > 0) {
         recordedChunks.current.push(event.data);
       }
     };
 
     recorder.onstop = () => {
+      clearInterval(feedbackIntervalRef.current);
+
       const blob = new Blob(recordedChunks.current, { type: 'video/webm' });
       const videoUrl = URL.createObjectURL(blob);
 
       if (onRecordingComplete) {
         onRecordingComplete({
           videoUrl,
-          feedbackLog,
+          feedbackLog
         });
       }
     };
 
     mediaRecorderRef.current = recorder;
     recorder.start(500);
-    startFeedbackLoop();
     setRecording(true);
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current) {
-      mediaRecorderRef.current.stop();
-    }
-    clearInterval(feedbackIntervalRef.current);
     setRecording(false);
+    mediaRecorderRef.current?.stop();
   };
 
   return (
