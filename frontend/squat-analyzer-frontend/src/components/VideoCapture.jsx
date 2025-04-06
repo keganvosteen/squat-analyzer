@@ -88,9 +88,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       setRecordingStartTime(Date.now());
       setFeedbackData([]);
       
-      // Start video recording - use a larger timeslice to ensure one continuous recording
+      // Start video recording - one continuous recording until manually stopped
       recordedChunksRef.current = [];
-      // Start recording with no timeslice - this creates one continuous blob for the entire recording
       mediaRecorderRef.current?.start();
       
       interval = setInterval(() => {
@@ -144,9 +143,6 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     return () => {
       clearInterval(interval);
       if (isRecording && mediaRecorderRef.current?.state === 'recording') {
-        // Request a final data chunk before stopping
-        mediaRecorderRef.current.requestData();
-        // Stop the recording
         mediaRecorderRef.current.stop();
       }
     };
@@ -222,7 +218,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   };
 
   return (
-    <div className={`relative ${fullscreen || isRecording ? 'fixed inset-0 z-50' : 'w-full h-[60vh]'} bg-black overflow-hidden`}>
+    <div className={`relative ${fullscreen || isRecording ? 'fixed inset-0 z-50' : 'w-full h-full'} bg-black overflow-hidden`}>
       {/* Main video display */}
       <video 
         ref={videoRef} 

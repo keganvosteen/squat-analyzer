@@ -17,8 +17,9 @@ function App() {
 
   // Save recording when completed
   const handleRecordingComplete = (data) => {
-    setRecordings(prev => [...prev, data]);
-    setActiveRecordingIndex(recordings.length); // Set to newly added recording index
+    // Only store one recording at a time
+    setRecordings([data]);
+    setActiveRecordingIndex(0); // Always set to first (and only) recording
     setIsRecordingMode(false); // Switch to playback mode
   };
 
@@ -46,7 +47,7 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 text-gray-900 w-full">
+    <div className="min-h-screen bg-gray-100 text-gray-900 w-full flex flex-col">
       <header className="bg-blue-600 text-white p-4 shadow-md">
         <div className="container mx-auto">
           <h1 className="text-2xl font-bold">Squat Analyzer</h1>
@@ -54,7 +55,7 @@ function App() {
         </div>
       </header>
       
-      <main className="container mx-auto p-4">
+      <main className="container mx-auto p-4 flex-1 flex flex-col">
         {/* Mode Toggle */}
         <div className="flex justify-between mb-4">
           <h2 className="text-xl font-semibold">
@@ -74,10 +75,10 @@ function App() {
         </div>
         
         {/* Main Content Area */}
-        <div className="bg-white rounded-xl shadow-lg overflow-hidden">
+        <div className="bg-white rounded-xl shadow-lg overflow-hidden flex-1 flex flex-col">
           {isRecordingMode ? (
             /* Recording Mode */
-            <div>
+            <div className="flex flex-col flex-1">
               <VideoCapture 
                 onFrameCapture={handleFrameCapture} 
                 onRecordingComplete={handleRecordingComplete}
