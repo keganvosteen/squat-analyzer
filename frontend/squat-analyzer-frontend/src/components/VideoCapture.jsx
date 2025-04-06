@@ -43,14 +43,19 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           videoRef.current.srcObject = stream;
         }
         
-        // Setup media recorder for video capture
+        // Setup media recorder for video capture with high quality settings
+        const options = {
+          audioBitsPerSecond: 0, // No audio
+          videoBitsPerSecond: 2500000, // 2.5 Mbps
+        };
+        
         if (MediaRecorder.isTypeSupported('video/webm;codecs=vp9')) {
-          mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
+          options.mimeType = 'video/webm;codecs=vp9';
         } else if (MediaRecorder.isTypeSupported('video/webm')) {
-          mediaRecorderRef.current = new MediaRecorder(stream, { mimeType: 'video/webm' });
-        } else {
-          mediaRecorderRef.current = new MediaRecorder(stream);
+          options.mimeType = 'video/webm';
         }
+        
+        mediaRecorderRef.current = new MediaRecorder(stream, options);
         
         mediaRecorderRef.current.ondataavailable = handleDataAvailable;
         mediaRecorderRef.current.onstop = handleRecordingStop;
@@ -83,9 +88,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       setRecordingStartTime(Date.now());
       setFeedbackData([]);
       
-      // Start video recording
+      // Start video recording - use a larger timeslice to ensure one continuous recording
       recordedChunksRef.current = [];
-      mediaRecorderRef.current?.start(1000); // Collect data every second
+      // Start recording with no timeslice - this creates one continuous blob for the entire recording
+      mediaRecorderRef.current?.start();
       
       interval = setInterval(() => {
         // Update recording timer
@@ -138,6 +144,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     return () => {
       clearInterval(interval);
       if (isRecording && mediaRecorderRef.current?.state === 'recording') {
+        // Request a final data chunk before stopping
+        mediaRecorderRef.current.requestData();
+        // Stop the recording
         mediaRecorderRef.current.stop();
       }
     };
@@ -147,6 +156,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const handleDataAvailable = (event) => {
     if (event.data.size > 0) {
       recordedChunksRef.current.push(event.data);
+      console.log(`Received data chunk: ${event.data.size} bytes`);
     }
   };
 
@@ -258,38 +268,38 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       )}
 
       {/* Controls container */}
-      <div className="absolute bottom-6 left-0 w-full flex justify-center items-center gap-4 z-20">
+      <div className="absolute bottom-6 left-0 w-full flex justify-center items-center gap-6 z-20">
         {/* Camera toggle button */}
         <button
           onClick={toggleCamera}
-          className="bg-black bg-opacity-50 p-3 rounded-full text-white hover:bg-opacity-70 transition-all"
+          className="bg-black bg-opacity-50 p-4 rounded-full text-white hover:bg-opacity-70 transition-all"
           aria-label="Toggle camera"
         >
-          <RefreshCw size={24} />
+          <RefreshCw size={28} />
         </button>
         
         {/* Record/stop button */}
         <button
           onClick={handleRecording}
-          className={`p-4 rounded-full flex items-center justify-center transition-all ${
+          className={`p-5 rounded-full flex items-center justify-center transition-all ${
             isRecording ? 'bg-white' : 'bg-red-500'
           }`}
           aria-label={isRecording ? "Stop recording" : "Start recording"}
         >
           {isRecording ? (
-            <Square size={24} className="text-black" />
+            <Square size={28} className="text-black" />
           ) : (
-            <Circle size={24} className="text-white" />
+            <Circle size={28} className="text-white" />
           )}
         </button>
         
         {/* Fullscreen toggle button */}
         <button
           onClick={toggleFullscreen}
-          className="bg-black bg-opacity-50 p-3 rounded-full text-white hover:bg-opacity-70 transition-all"
+          className="bg-black bg-opacity-50 p-4 rounded-full text-white hover:bg-opacity-70 transition-all"
           aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
         >
-          {fullscreen ? <Minimize2 size={24} /> : <Maximize2 size={24} />}
+          {fullscreen ? <Minimize2 size={28} /> : <Maximize2 size={28} />}
         </button>
       </div>
     </div>
