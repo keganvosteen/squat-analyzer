@@ -70,9 +70,19 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     // Reset session in backend
     fetch('https://squat-analyzer-backend.onrender.com/reset-session', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
       body: JSON.stringify({ sessionId: sessionIdRef.current }),
-    }).catch(console.error);
+      mode: 'cors',
+      credentials: 'omit'
+    }).catch(error => {
+      console.error('Failed to reset session on backend, continuing locally:', error);
+      // If backend reset fails, initialize local state
+      setSquatCount(0);
+      setFeedbackData([]);
+    });
     
     return () => {
       if (streamRef.current) {
@@ -109,11 +119,16 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         
         fetch('https://squat-analyzer-backend.onrender.com/analyze-squat', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
           body: JSON.stringify({ 
             image: imageData,
             sessionId: sessionIdRef.current
           }),
+          mode: 'cors',
+          credentials: 'omit'
         })
         .then(response => response.json())
         .then(data => {
@@ -163,7 +178,14 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     const videoUrl = URL.createObjectURL(blob);
     
     // Get final session data from backend
-    fetch(`https://squat-analyzer-backend.onrender.com/get-session-data?sessionId=${sessionIdRef.current}`)
+    fetch(`https://squat-analyzer-backend.onrender.com/get-session-data?sessionId=${sessionIdRef.current}`, {
+      method: 'GET',
+      headers: { 
+        'Accept': 'application/json'
+      },
+      mode: 'cors',
+      credentials: 'omit'
+    })
       .then(response => response.json())
       .then(sessionData => {
         // Combine all data and pass to parent component
@@ -178,7 +200,20 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           });
         }
       })
-      .catch(console.error);
+      .catch(error => {
+        console.error('Failed to get session data from backend, using local data:', error);
+        // Use local data if backend fails
+        if (onRecordingComplete) {
+          onRecordingComplete({
+            videoUrl,
+            feedbackData,
+            squatCount: squatCount,
+            squatTimings: [],
+            sessionId: sessionIdRef.current,
+            duration: recordingTime
+          });
+        }
+      });
       
     // Reset recording timer
     setRecordingTime(0);
@@ -201,9 +236,17 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Reset backend session
       fetch('https://squat-analyzer-backend.onrender.com/reset-session', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
         body: JSON.stringify({ sessionId: sessionIdRef.current }),
-      }).catch(console.error);
+        mode: 'cors',
+        credentials: 'omit'
+      }).catch(error => {
+        console.error('Failed to reset session on backend, continuing locally:', error);
+        // Will continue with local tracking for this recording
+      });
     }
   };
   
