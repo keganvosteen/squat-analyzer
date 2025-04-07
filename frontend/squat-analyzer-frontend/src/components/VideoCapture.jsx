@@ -10,6 +10,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
   const sessionIdRef = useRef(uuidv4());
+  const recordingStartTimeRef = useRef(null);  // NEW: Ref for recording start time
   const [skeletonImage, setSkeletonImage] = useState(null);
   
   const [isRecording, setIsRecording] = useState(false);
@@ -17,7 +18,6 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const [squatCount, setSquatCount] = useState(0);
   const [fullscreen, setFullscreen] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
-  const [recordingStartTime, setRecordingStartTime] = useState(null);
   const [feedbackData, setFeedbackData] = useState([]);
   
   // Initialize video stream
@@ -70,19 +70,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     // Reset session in backend
     fetch('https://squat-analyzer-backend.onrender.com/reset-session', {
       method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sessionId: sessionIdRef.current }),
-      mode: 'no-cors',  // Use no-cors mode to allow requests despite CORS restrictions
-      credentials: 'omit'
-    }).catch(error => {
-      console.error('Failed to reset session on backend, continuing locally:', error);
-      // If backend reset fails, initialize local state
-      setSquatCount(0);
-      setFeedbackData([]);
-    });
+    }).catch(console.error);
     
     return () => {
       if (streamRef.current) {
@@ -95,7 +85,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   useEffect(() => {
     let interval;
     if (isRecording) {
-      setRecordingStartTime(Date.now());
+      // Set the recording start time using the ref
+      recordingStartTimeRef.current = Date.now();
       setFeedbackData([]);
       
       // Start video recording - one continuous recording until manually stopped
@@ -103,8 +94,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       mediaRecorderRef.current?.start();
       
       interval = setInterval(() => {
-        // Update recording timer
-        setRecordingTime(Math.floor((Date.now() - recordingStartTime) / 1000));
+        // Update recording timer based on the stable start time from the ref
+        setRecordingTime(Math.floor((Date.now() - recordingStartTimeRef.current) / 1000));
         
         // Capture and analyze frame
         const video = videoRef.current;
@@ -119,51 +110,28 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         
         fetch('https://squat-analyzer-backend.onrender.com/analyze-squat', {
           method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
             image: imageData,
             sessionId: sessionIdRef.current
           }),
-          mode: 'no-cors',  // Use no-cors mode to allow requests despite CORS restrictions
-          credentials: 'omit'
         })
-        .then(response => {
-          // When using no-cors mode, we can't read the response
-          // Instead, update UI based on local state
-          return {}; // Return empty object to continue chain
-        })
+        .then(response => response.json())
         .then(data => {
-          // Since we're using no-cors mode, we'll implement local processing
-          // This is a simplified version that only increments count on deep knee bend
+          // Update skeleton image
+          setSkeletonImage(data.skeletonImage);
           
-          // Capture current video frame for analysis
-          try {
-            const timestamp = Date.now() - recordingStartTime;
-            
-            // Every ~3 seconds, increment squat count to simulate detection
-            // This is just a placeholder - real detection would happen in the backend
-            if (Math.floor(timestamp / 3000) > Math.floor((timestamp - 200) / 3000)) {
-              setSquatCount(prev => prev + 1);
-            }
-            
-            // Create simple feedback data
-            const localData = {
-              timestamp,
-              squatCount: squatCount,
-              warnings: []
-            };
-            
-            // Store feedback data
-            setFeedbackData(prev => [...prev, localData]);
-            
-            // Pass data to parent
-            if (onFrameCapture) onFrameCapture(localData);
-          } catch (err) {
-            console.error("Error in local processing:", err);
+          // Update squat count
+          if (data.squatCount !== undefined) {
+            setSquatCount(data.squatCount);
           }
+          
+          // Store feedback data with timestamp
+          const timestamp = Date.now() - recordingStartTimeRef.current;
+          setFeedbackData(prev => [...prev, { ...data, timestamp }]);
+          
+          // Pass frame data to parent component if callback exists
+          if (onFrameCapture) onFrameCapture(data);
         })
         .catch(console.error);
       }, 200); // Analyze frames at 5fps
@@ -179,7 +147,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         mediaRecorderRef.current.stop();
       }
     };
-  }, [isRecording, onFrameCapture, recordingStartTime]);
+  }, [isRecording, onFrameCapture]);
 
   // Handler for media recorder data chunks
   const handleDataAvailable = (event) => {
@@ -196,19 +164,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     const videoUrl = URL.createObjectURL(blob);
     
     // Get final session data from backend
-    fetch(`https://squat-analyzer-backend.onrender.com/get-session-data?sessionId=${sessionIdRef.current}`, {
-      method: 'GET',
-      headers: { 
-        'Accept': 'application/json'
-      },
-      mode: 'no-cors',  // Use no-cors mode to allow requests despite CORS restrictions
-      credentials: 'omit'
-    })
-      .then(response => {
-        // When using no-cors mode, we can't read the response
-        // So we'll always use the fallback path
-        throw new Error('Using fallback path with no-cors mode');
-      })
+    fetch(`https://squat-analyzer-backend.onrender.com/get-session-data?sessionId=${sessionIdRef.current}`)
+      .then(response => response.json())
       .then(sessionData => {
         // Combine all data and pass to parent component
         if (onRecordingComplete) {
@@ -222,20 +179,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           });
         }
       })
-      .catch(error => {
-        console.error('Failed to get session data from backend, using local data:', error);
-        // Use local data if backend fails
-        if (onRecordingComplete) {
-          onRecordingComplete({
-            videoUrl,
-            feedbackData,
-            squatCount: squatCount,
-            squatTimings: [],
-            sessionId: sessionIdRef.current,
-            duration: recordingTime
-          });
-        }
-      });
+      .catch(console.error);
       
     // Reset recording timer
     setRecordingTime(0);
@@ -252,23 +196,14 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     } else {
       // Start new recording
       setIsRecording(true);
-      setRecordingStartTime(Date.now());
       // Generate new session ID for this recording
       sessionIdRef.current = uuidv4();
       // Reset backend session
       fetch('https://squat-analyzer-backend.onrender.com/reset-session', {
         method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId: sessionIdRef.current }),
-        mode: 'no-cors',  // Use no-cors mode to allow requests despite CORS restrictions
-        credentials: 'omit'
-      }).catch(error => {
-        console.error('Failed to reset session on backend, continuing locally:', error);
-        // Will continue with local tracking for this recording
-      });
+      }).catch(console.error);
     }
   };
   
