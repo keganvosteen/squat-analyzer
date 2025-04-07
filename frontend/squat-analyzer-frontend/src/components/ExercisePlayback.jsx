@@ -33,7 +33,12 @@ const AnalysisPanel = styled.div`
   max-width: 300px;
 `;
 
-const ExercisePlayback = ({ videoUrl, feedbackData = [], squatTimings = [], analysisData }) => {
+const ExercisePlayback = ({ videoUrl, feedbackData, squatCount, squatTimings, sessionId }) => {
+  console.log('ExercisePlayback Component');
+  console.log('Video URL:', videoUrl);
+  console.log('Feedback data points:', feedbackData?.length || 0);
+  console.log('Squat timings:', squatTimings?.length || 0);
+  
   const containerRef = useRef(null);
   const videoRef = useRef(null);
   const timelineRef = useRef(null);
@@ -51,6 +56,9 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatTimings = [], anal
   const [videoError, setVideoError] = useState(null);
   const [debugInfo, setDebugInfo] = useState(false);
   const [currentFrame, setCurrentFrame] = useState(0);
+  const [error, setError] = useState(null);
+  const [apiConnectionFailed, setApiConnectionFailed] = useState(false);
+  const [stream, setStream] = useState(null);
 
   // Debug info for development
   useEffect(() => {
@@ -557,22 +565,24 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatTimings = [], anal
       
       // Draw body landmarks
       const landmarks = analysisData.frames[currentFrame].landmarks;
-      ctx.strokeStyle = '#00ff00';
-      ctx.lineWidth = 2;
-      
-      // Draw connections between landmarks
-      Object.entries(landmarks).forEach(([key, point]) => {
-        ctx.beginPath();
-        ctx.arc(point.x, point.y, 4, 0, 2 * Math.PI);
-        ctx.fillStyle = '#00ff00';
-        ctx.fill();
-      });
+      if (landmarks) {
+        ctx.strokeStyle = '#00ff00';
+        ctx.lineWidth = 2;
+        
+        // Draw connections between landmarks
+        Object.entries(landmarks).forEach(([key, point]) => {
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, 4, 0, 2 * Math.PI);
+          ctx.fillStyle = '#00ff00';
+          ctx.fill();
+        });
+      }
 
       // Draw analysis arrows and feedback
       const feedback = analysisData.frames[currentFrame].feedback;
       if (feedback) {
         feedback.forEach(item => {
-          if (item.type === 'arrow') {
+          if (item.type === 'arrow' && item.start && item.end) {
             ctx.beginPath();
             ctx.moveTo(item.start.x, item.start.y);
             ctx.lineTo(item.end.x, item.end.y);
@@ -589,8 +599,18 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatTimings = [], anal
       drawOverlays();
     };
 
+    const handleError = (e) => {
+      console.error('Video error:', e);
+      setError('Error playing video. Please try again.');
+    };
+
     video.addEventListener('timeupdate', handleTimeUpdate);
-    return () => video.removeEventListener('timeupdate', handleTimeUpdate);
+    video.addEventListener('error', handleError);
+
+    return () => {
+      video.removeEventListener('timeupdate', handleTimeUpdate);
+      video.removeEventListener('error', handleError);
+    };
   }, [videoRef, canvasRef, analysisData, currentFrame]);
 
   return (
@@ -848,14 +868,18 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatTimings = [], anal
       {/* Analysis panel */}
       {analysisData && (
         <AnalysisPanel>
-          {analysisData.frames[currentFrame]?.feedback?.map((item, index) => (
-            item.type === 'tip' && (
-              <div key={index} style={{ marginBottom: '10px' }}>
-                <strong>{item.title}</strong>
-                <p>{item.text}</p>
-              </div>
-            )
-          ))}
+          {error ? (
+            <div style={{ color: 'red' }}>{error}</div>
+          ) : (
+            analysisData.frames[currentFrame]?.feedback?.map((item, index) => (
+              item.type === 'tip' && (
+                <div key={index} style={{ marginBottom: '10px' }}>
+                  <strong>{item.title}</strong>
+                  <p>{item.text}</p>
+                </div>
+              )
+            ))
+          )}
         </AnalysisPanel>
       )}
     </div>

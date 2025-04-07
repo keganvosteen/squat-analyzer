@@ -25,34 +25,43 @@ const App = () => {
   const [recordedVideo, setRecordedVideo] = useState(null);
   const [analysisData, setAnalysisData] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [showAnalysis, setShowAnalysis] = useState(false);
+  const [apiConnectionFailed, setApiConnectionFailed] = useState(false);
+  const [error, setError] = useState(null);
 
-  const handleRecordingComplete = async (videoUrl, videoBlob) => {
+  const handleRecordingComplete = (videoUrl, videoBlob) => {
+    console.log('Recording complete:', { videoUrl, videoBlob });
     setRecordedVideo(videoUrl);
-    setIsAnalyzing(true);
-
-    // Create FormData to send the video to the backend
+    setShowAnalysis(false);
+    setAnalysisData(null);
+    setApiConnectionFailed(false);
+    setError(null);
+    
+    // Create FormData and append the video blob
     const formData = new FormData();
     formData.append('video', videoBlob, 'squat-recording.webm');
-
-    try {
-      // Send the video to the backend for analysis
-      const response = await fetch('http://localhost:3000/api/analyze', {
-        method: 'POST',
-        body: formData,
-      });
-
+    
+    // Send video for analysis
+    fetch(`${API_URL}/api/analyze`, {
+      method: 'POST',
+      body: formData
+    })
+    .then(response => {
       if (!response.ok) {
-        throw new Error('Analysis failed');
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
-
-      const data = await response.json();
+      return response.json();
+    })
+    .then(data => {
+      console.log('Analysis complete:', data);
       setAnalysisData(data);
-    } catch (error) {
+      setShowAnalysis(true);
+    })
+    .catch(error => {
       console.error('Error analyzing video:', error);
-      alert('Error analyzing video. Please try again.');
-    } finally {
-      setIsAnalyzing(false);
-    }
+      setError('Failed to analyze video. Please try again.');
+      setApiConnectionFailed(true);
+    });
   };
 
   return (
@@ -73,6 +82,18 @@ const App = () => {
       {isAnalyzing && (
         <div style={{ textAlign: 'center' }}>
           Analyzing your squat... Please wait.
+        </div>
+      )}
+
+      {showAnalysis && (
+        <div style={{ textAlign: 'center' }}>
+          Analysis complete!
+        </div>
+      )}
+
+      {apiConnectionFailed && (
+        <div style={{ textAlign: 'center', color: 'red' }}>
+          {error}
         </div>
       )}
     </AppContainer>

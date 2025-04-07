@@ -65,7 +65,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const [feedbackData, setFeedbackData] = useState([]);
   const [error, setError] = useState(null);
   const [apiConnectionFailed, setApiConnectionFailed] = useState(false);
-  
+  const [stream, setStream] = useState(null);
+
   // Initialize video stream
   useEffect(() => {
     async function setupVideo() {
@@ -494,6 +495,56 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     return `${mins}:${secs}`;
   };
 
+  const startRecording = async () => {
+    try {
+      const mediaStream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          facingMode: 'user',
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false 
+      });
+      
+      setStream(mediaStream);
+      videoRef.current.srcObject = mediaStream;
+      
+      const mediaRecorder = new MediaRecorder(mediaStream, {
+        mimeType: 'video/webm;codecs=vp8'
+      });
+      mediaRecorderRef.current = mediaRecorder;
+      recordedChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        const videoUrl = URL.createObjectURL(blob);
+        if (onRecordingComplete) {
+          onRecordingComplete(videoUrl, blob);
+        }
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (error) {
+      console.error('Error accessing camera:', error);
+      alert('Error accessing camera. Please make sure you have granted camera permissions.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      stream.getTracks().forEach(track => track.stop());
+      setIsRecording(false);
+    }
+  };
+
   return (
     <RecorderContainer>
       <VideoPreview
@@ -504,7 +555,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       />
       <Controls>
         <Button
-          onClick={handleRecording}
+          onClick={isRecording ? stopRecording : startRecording}
           recording={isRecording}
         >
           {isRecording ? 'Stop Recording' : 'Start Recording'}
