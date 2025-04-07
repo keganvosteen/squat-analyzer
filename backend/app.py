@@ -66,6 +66,9 @@ def analyze_frame(frame, session_id=None):
     }
     
     if results.pose_landmarks:
+        # Create an overlay copy from the original frame
+        overlay = frame.copy()
+        
         landmarks = results.pose_landmarks.landmark
         
         # Extract key points
@@ -134,7 +137,7 @@ def analyze_frame(frame, session_id=None):
         previous_states[session_id] = current_state
         feedback["squatState"] = current_state
         
-        # Analyze form and collect warnings
+        # Analyze form and provide feedback warnings
         warnings = []
         if knee_avg > 160:
             warnings.append({

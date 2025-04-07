@@ -12,21 +12,23 @@ const ExercisePlayback = ({ videoUrl, feedbackData, squatTimings = [] }) => {
   const [currentAngle, setCurrentAngle] = useState(null);
   const [activeFeedback, setActiveFeedback] = useState(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [debugInfo, setDebugInfo] = useState(false);
+  const [debugInfo, setDebugInfo] = useState(true); // Default to true for debugging
+  const [hoveredMarker, setHoveredMarker] = useState(null);
+  
+  // Debug log for video URL
+  console.log("ExercisePlayback received videoUrl:", videoUrl);
 
   // Detect iOS devices for video rotation
   const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-
-  // Video rotation style based on device
   const videoStyle = {
     width: '100%',
     ...(isIOS ? { transform: 'rotate(-90deg)' } : {})
   };
 
-  // Jump to a specific time in the video
-  const jumpToTime = (time) => {
+  // Jump to a specific time in the video (input in ms)
+  const jumpToTime = (timeInMs) => {
     if (videoRef.current) {
-      videoRef.current.currentTime = time / 1000; // Convert to seconds
+      videoRef.current.currentTime = timeInMs / 1000;
       if (!isPlaying) {
         videoRef.current.play();
         setIsPlaying(true);
@@ -47,34 +49,31 @@ const ExercisePlayback = ({ videoUrl, feedbackData, squatTimings = [] }) => {
     setIsPlaying(!isPlaying);
   };
 
-  // Skip to next or previous squat
+  // Skip to next or previous squat marker
   const skipToSquat = (direction) => {
     const video = videoRef.current;
     if (!video || !squatTimings.length) return;
 
     const currentTimeMs = video.currentTime * 1000;
     
-    // Filter squat bottom points
-    const bottomPoints = squatTimings
-      .filter(t => t.bottom)
-      .map(t => ({ time: t.bottom, type: 'bottom', count: t.count }));
-      
-    // Filter completed squat points
-    const completedPoints = squatTimings
-      .filter(t => t.completed)
-      .map(t => ({ time: t.completed, type: 'completed', count: t.count }));
-      
-    // Combine all points and sort by time
-    const allPoints = [...bottomPoints, ...completedPoints].sort((a, b) => a.time - b.time);
+    // Combine bottom and completed squat points
+    const allPoints = [];
+    squatTimings.forEach((timing) => {
+      if (timing.bottom) {
+        allPoints.push({ time: timing.bottom, type: 'bottom', count: timing.count });
+      }
+      if (timing.completed) {
+        allPoints.push({ time: timing.completed, type: 'completed', count: timing.count });
+      }
+    });
+    allPoints.sort((a, b) => a.time - b.time);
     
     if (direction === 'next') {
-      // Find next point after current time
       const nextPoint = allPoints.find(point => point.time * 1000 > currentTimeMs);
       if (nextPoint) {
         jumpToTime(nextPoint.time * 1000);
       }
     } else {
-      // Find previous point before current time
       const prevPoints = allPoints.filter(point => point.time * 1000 < currentTimeMs);
       if (prevPoints.length > 0) {
         jumpToTime(prevPoints[prevPoints.length - 1].time * 1000);
@@ -82,32 +81,24 @@ const ExercisePlayback = ({ videoUrl, feedbackData, squatTimings = [] }) => {
     }
   };
 
-  // Create timeline markers for key events
+  // Create timeline markers for key events with interactive hover events
   const createMarkers = () => {
     const video = videoRef.current;
     const timeline = timelineRef.current;
-
     if (!video || !timeline || !video.duration) return;
 
     // Clear existing markers
     timeline.innerHTML = '';
 
-    // Process feedback data to create markers
+    // Process feedback data to create warning markers
     if (feedbackData && feedbackData.length) {
-      // Group markers by type to avoid too many markers
-      const warningMarkers = new Map(); // timestamp -> warning[]
-      
-      feedbackData.forEach(data => {
+      const warningMarkers = new Map(); // timestamp (sec) -> warnings array
+      feedbackData.forEach((data) => {
         const timestamp = data.timestamp / 1000; // convert to seconds
-        const relativePosition = (timestamp / video.duration) * 100;
-        
-        // Only create markers for frames with warnings
         if (data.warnings && data.warnings.length > 0) {
           if (!warningMarkers.has(timestamp)) {
             warningMarkers.set(timestamp, []);
           }
-          
-          // Add unique warnings by type
           data.warnings.forEach(warning => {
             const warnings = warningMarkers.get(timestamp);
             if (!warnings.find(w => w.type === warning.type)) {
@@ -116,7 +107,6 @@ const ExercisePlayback = ({ videoUrl, feedbackData, squatTimings = [] }) => {
           });
         }
       });
-      
       // Create warning markers
       warningMarkers.forEach((warnings, timestamp) => {
         const marker = document.createElement('div');
@@ -124,14 +114,16 @@ const ExercisePlayback = ({ videoUrl, feedbackData, squatTimings = [] }) => {
         marker.style.left = `${(timestamp / video.duration) * 100}%`;
         marker.title = warnings.map(w => w.message).join('\n');
         marker.onclick = () => jumpToTime(timestamp * 1000);
+        // Set interactive hover events
+        marker.onmouseenter = () => setHoveredMarker({ time: timestamp, warnings });
+        marker.onmouseleave = () => setHoveredMarker(null);
         timeline.appendChild(marker);
       });
     }
     
-    // Add squat timing markers
+    // Create markers for squat timings
     if (squatTimings && squatTimings.length) {
-      // Bottom of squat markers
-      squatTimings.forEach(timing => {
+      squatTimings.forEach((timing) => {
         if (timing.bottom) {
           const marker = document.createElement('div');
           marker.className = 'absolute top-0 h-full w-1.5 bg-blue-500 cursor-pointer';
@@ -140,8 +132,6 @@ const ExercisePlayback = ({ videoUrl, feedbackData, squatTimings = [] }) => {
           marker.onclick = () => jumpToTime(timing.bottom * 1000);
           timeline.appendChild(marker);
         }
-        
-        // Completed squat markers
         if (timing.completed) {
           const marker = document.createElement('div');
           marker.className = 'absolute top-0 h-full w-1.5 bg-green-500 cursor-pointer';
@@ -154,24 +144,18 @@ const ExercisePlayback = ({ videoUrl, feedbackData, squatTimings = [] }) => {
     }
   };
 
-  // Find active feedback based on current video timestamp
+  // Find active feedback based on current video time
   const findActiveFeedback = () => {
     if (!feedbackData || !feedbackData.length || !videoRef.current) return null;
-    
     const currentTimeMs = videoRef.current.currentTime * 1000;
-    
-    // Find closest feedback data to current time (within 500ms window)
     const closeItems = feedbackData.filter(
       data => Math.abs(data.timestamp - currentTimeMs) < 500
     );
-    
-    if (closeItems.length === 0) return null;
-    
-    // Get the closest one
-    return closeItems.reduce((closest, current) => {
-      return Math.abs(current.timestamp - currentTimeMs) < 
-             Math.abs(closest.timestamp - currentTimeMs) ? current : closest;
-    });
+    if (!closeItems.length) return null;
+    return closeItems.reduce((closest, curr) =>
+      Math.abs(curr.timestamp - currentTimeMs) < Math.abs(closest.timestamp - currentTimeMs)
+        ? curr : closest
+    );
   };
 
   // Format time in MM:SS.ms format
@@ -185,13 +169,12 @@ const ExercisePlayback = ({ videoUrl, feedbackData, squatTimings = [] }) => {
   // Video event handlers
   useEffect(() => {
     const video = videoRef.current;
-    
     if (!video) return;
+    
+    console.log("Setting up video event listeners");
     
     const onTimeUpdate = () => {
       setCurrentTime(video.currentTime);
-      
-      // Find and set active feedback
       const feedback = findActiveFeedback();
       if (feedback) {
         setActiveFeedback(feedback);
@@ -203,46 +186,104 @@ const ExercisePlayback = ({ videoUrl, feedbackData, squatTimings = [] }) => {
     };
     
     const onDurationChange = () => {
+      console.log("Duration changed:", video.duration);
       setDuration(video.duration);
       createMarkers();
     };
     
-    const onPlay = () => setIsPlaying(true);
-    const onPause = () => setIsPlaying(false);
+    const onLoadedMetadata = () => {
+      console.log("Loaded metadata, duration:", video.duration);
+      setDuration(video.duration);
+      createMarkers();
+      
+      // Try to play the video automatically
+      try {
+        video.play().catch(err => {
+          console.warn("Auto-play failed (expected in some browsers):", err);
+        });
+      } catch (err) {
+        console.warn("Auto-play error:", err);
+      }
+    };
+    
+    const onLoadedData = () => {
+      console.log("Video data loaded");
+    };
+    
+    const onPlay = () => {
+      console.log("Video play event");
+      setIsPlaying(true);
+    };
+    
+    const onPause = () => {
+      console.log("Video pause event");
+      setIsPlaying(false);
+    };
+    
+    const onError = (e) => {
+      console.error("Video error:", e);
+    };
     
     video.addEventListener('timeupdate', onTimeUpdate);
     video.addEventListener('durationchange', onDurationChange);
-    video.addEventListener('loadedmetadata', onDurationChange);
+    video.addEventListener('loadedmetadata', onLoadedMetadata);
+    video.addEventListener('loadeddata', onLoadedData);
     video.addEventListener('play', onPlay);
     video.addEventListener('pause', onPause);
+    video.addEventListener('error', onError);
     
     return () => {
       video.removeEventListener('timeupdate', onTimeUpdate);
       video.removeEventListener('durationchange', onDurationChange);
-      video.removeEventListener('loadedmetadata', onDurationChange);
+      video.removeEventListener('loadedmetadata', onLoadedMetadata);
+      video.removeEventListener('loadeddata', onLoadedData);
       video.removeEventListener('play', onPlay);
       video.removeEventListener('pause', onPause);
+      video.removeEventListener('error', onError);
     };
-  }, [feedbackData]);
+  }, [feedbackData, squatTimings]);
 
-  // Update timeline markers when video or feedback changes
+  // Effect specifically for video URL changes
+  useEffect(() => {
+    console.log("Video URL changed to:", videoUrl);
+    
+    if (!videoUrl) return;
+    
+    // If video element exists, update its src and load it
+    if (videoRef.current) {
+      console.log("Updating video element with new URL");
+      
+      // Force reload the video element
+      videoRef.current.src = videoUrl;
+      videoRef.current.load();
+      
+      // Try to play after a short delay
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.play().catch(err => {
+            console.warn("Delayed play failed (expected in some browsers):", err);
+          });
+        }
+      }, 300);
+    }
+  }, [videoUrl]);
+  
+  // Effect for updating markers
   useEffect(() => {
     if (videoRef.current && videoRef.current.duration) {
+      console.log("Creating markers");
       createMarkers();
     }
   }, [videoUrl, feedbackData, squatTimings]);
 
-  // Handle timeline click for seeking
+  // Handle click on timeline for seeking
   const handleTimelineClick = (e) => {
     const timeline = timelineRef.current;
     const video = videoRef.current;
-    
     if (!timeline || !video) return;
-    
     const rect = timeline.getBoundingClientRect();
     const clickPosition = (e.clientX - rect.left) / rect.width;
     const seekTime = video.duration * clickPosition;
-    
     video.currentTime = seekTime;
   };
 
@@ -250,16 +291,28 @@ const ExercisePlayback = ({ videoUrl, feedbackData, squatTimings = [] }) => {
     <div className="flex flex-col w-full bg-gray-900 rounded-lg overflow-hidden">
       {/* Video container */}
       <div className="relative aspect-video bg-black">
-        <video
-          ref={videoRef}
-          src={videoUrl}
-          className="w-full h-full object-contain"
-          style={videoStyle}
-          playsInline
-        />
+        {videoUrl ? (
+          <video
+            ref={videoRef}
+            src={videoUrl}
+            className="w-full h-full object-contain"
+            style={videoStyle}
+            playsInline
+            controls
+            preload="auto"
+            type="video/webm"
+            autoPlay
+            onLoadedData={() => console.log("Video loaded data")}
+            onError={(e) => console.error("Video error:", e)}
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-white">
+            No video recorded.
+          </div>
+        )}
         <canvas ref={canvasRef} className="absolute inset-0 pointer-events-none z-10" />
         
-        {/* Display current angles if available */}
+        {/* Current angles overlay */}
         {currentAngle && (
           <div className="absolute bottom-4 left-4 bg-black bg-opacity-50 p-2 rounded text-white text-sm">
             {currentAngle.leftKnee && <div>Left Knee: {currentAngle.leftKnee}°</div>}
@@ -319,44 +372,23 @@ const ExercisePlayback = ({ videoUrl, feedbackData, squatTimings = [] }) => {
         )}
       </div>
       
-      {/* Timeline */}
-      <div className="relative px-4 py-2 bg-gray-800">
-        {/* Current time display */}
+      {/* Interactive timeline */}
+      <div className="relative px-4 py-2 bg-gray-800" onClick={handleTimelineClick}>
         <div className="text-white text-sm mb-1 font-mono">
           {formatTime(currentTime)} / {formatTime(duration)}
         </div>
-        
-        {/* Scrubber timeline */}
         <div 
           ref={timelineRef} 
           className="relative w-full h-4 bg-gray-700 rounded cursor-pointer"
-          onClick={handleTimelineClick}
         >
-          {/* Progress indicator */}
           <div 
             className="absolute top-0 left-0 h-full bg-gray-500 pointer-events-none"
             style={{ width: `${(currentTime / duration) * 100}%` }}
           />
-          
-          {/* Timeline legend */}
-          <div className="absolute -bottom-6 left-0 right-0 flex justify-between text-xs text-gray-400">
-            <div className="flex items-center">
-              <div className="w-3 h-3 bg-blue-500 rounded-full mr-1"></div>
-              <span>Bottom</span>
-            </div>
-            <div className="flex items-center">
-              <div className="w-3 h-3 bg-green-500 rounded-full mr-1"></div>
-              <span>Completed</span>
-            </div>
-            <div className="flex items-center">
-              <div className="w-3 h-3 bg-red-500 rounded-full mr-1"></div>
-              <span>Form issues</span>
-            </div>
-          </div>
         </div>
       </div>
       
-      {/* Controls */}
+      {/* Playback Controls */}
       <div className="flex justify-between items-center p-3 bg-gray-800 text-white">
         <button
           onClick={() => skipToSquat('prev')}
@@ -383,12 +415,11 @@ const ExercisePlayback = ({ videoUrl, feedbackData, squatTimings = [] }) => {
         </button>
       </div>
       
-      {/* Detailed feedback section */}
+      {/* Detailed Feedback Panel with Interactive Tooltip */}
       {activeFeedback && (
         <div className="p-4 bg-gray-900 text-white rounded-b-lg">
           <h3 className="text-lg font-semibold mb-2">Form Analysis</h3>
           
-          {/* Squat count */}
           {activeFeedback.squatCount !== undefined && (
             <div className="mb-3">
               <span className="font-medium">Squats completed: </span>
@@ -396,7 +427,6 @@ const ExercisePlayback = ({ videoUrl, feedbackData, squatTimings = [] }) => {
             </div>
           )}
           
-          {/* Show current warnings */}
           {activeFeedback.warnings && activeFeedback.warnings.length > 0 ? (
             <div className="mt-2">
               <h4 className="font-medium flex items-center text-red-400">
@@ -413,6 +443,17 @@ const ExercisePlayback = ({ videoUrl, feedbackData, squatTimings = [] }) => {
             <div className="mt-2 flex items-center text-green-400">
               <CheckCircle size={16} className="mr-1" />
               <span>Good form in this frame!</span>
+            </div>
+          )}
+          
+          {hoveredMarker && (
+            <div className="mt-2 p-2 bg-gray-800 rounded border border-gray-600">
+              <strong>Marker at {formatTime(hoveredMarker.time)}:</strong>
+              <ul className="ml-4 list-disc">
+                {hoveredMarker.warnings.map((w, i) => (
+                  <li key={i} className="text-sm">{w.message}</li>
+                ))}
+              </ul>
             </div>
           )}
         </div>

@@ -159,9 +159,21 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
 
   // Handler for when recording stops
   const handleRecordingStop = () => {
+    console.log("Recording stopped. Chunks:", recordedChunksRef.current.length);
+    
+    // Ensure we have chunks to process
+    if (recordedChunksRef.current.length === 0) {
+      console.error("No video data recorded");
+      return;
+    }
+    
     // Create video blob from recorded chunks
     const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+    console.log("Created blob of size:", blob.size);
+    
+    // Create object URL and log it
     const videoUrl = URL.createObjectURL(blob);
+    console.log("Created video URL:", videoUrl);
     
     // Get final session data from backend
     fetch(`https://squat-analyzer-backend.onrender.com/get-session-data?sessionId=${sessionIdRef.current}`)

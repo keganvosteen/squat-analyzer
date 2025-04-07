@@ -17,6 +17,9 @@ function App() {
 
   // Save recording when completed
   const handleRecordingComplete = (data) => {
+    console.log("Recording complete with data:", data);
+    console.log("Video URL received:", data.videoUrl);
+    
     // Only store one recording at a time
     setRecordings([data]);
     setActiveRecordingIndex(0); // Always set to first (and only) recording
