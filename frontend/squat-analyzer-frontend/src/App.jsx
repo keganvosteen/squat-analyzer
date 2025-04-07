@@ -19,11 +19,27 @@ function App() {
   const handleRecordingComplete = (data) => {
     console.log("Recording complete with data:", data);
     console.log("Video URL received:", data.videoUrl);
+    console.log("Feedback data points:", data.feedbackData?.length || 0);
+    console.log("Squat timings:", data.squatTimings?.length || 0);
+    
+    // Validate the data before storing
+    if (!data.videoUrl) {
+      console.error("No video URL provided!");
+      return;
+    }
     
     // Only store one recording at a time
     setRecordings([data]);
     setActiveRecordingIndex(0); // Always set to first (and only) recording
     setIsRecordingMode(false); // Switch to playback mode
+    
+    // Create an anchor element to verify URL is valid
+    try {
+      const testUrl = new URL(data.videoUrl);
+      console.log("Valid URL created:", testUrl.href);
+    } catch (err) {
+      console.error("Invalid video URL:", err);
+    }
   };
 
   // Switch to recording mode

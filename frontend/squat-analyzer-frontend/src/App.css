@@ -40,3 +40,20 @@
 .read-the-docs {
   color: #888;
 }
+
+/* Responsive design for mobile devices */
+@media (max-width: 768px) {
+  #root {
+    padding: 1rem;
+  }
+  .container {
+    padding: 1rem;
+  }
+  h1, h2, h3, h4 {
+    font-size: 1.5rem;
+  }
+  video, canvas, img {
+    max-width: 100%;
+    height: auto;
+  }
+}
