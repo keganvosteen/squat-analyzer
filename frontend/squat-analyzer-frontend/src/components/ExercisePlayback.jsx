@@ -1,8 +1,39 @@
 // src/components/ExercisePlayback.jsx
 import React, { useRef, useEffect, useState } from 'react';
 import { Play, Pause, SkipForward, SkipBack, AlertTriangle, CheckCircle, Info, Maximize2, Minimize2 } from 'lucide-react';
+import styled from 'styled-components';
 
-const ExercisePlayback = ({ videoUrl, feedbackData = [], squatTimings = [] }) => {
+const VideoContainer = styled.div`
+  position: relative;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+`;
+
+const Video = styled.video`
+  width: 100%;
+  height: auto;
+`;
+
+const OverlayCanvas = styled.canvas`
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+`;
+
+const AnalysisPanel = styled.div`
+  position: absolute;
+  right: 20px;
+  top: 20px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 15px;
+  border-radius: 8px;
+  max-width: 300px;
+`;
+
+const ExercisePlayback = ({ videoUrl, feedbackData = [], squatTimings = [], analysisData }) => {
   const containerRef = useRef(null);
   const videoRef = useRef(null);
   const timelineRef = useRef(null);
@@ -19,7 +50,8 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatTimings = [] }) =>
   const [hoveredMarker, setHoveredMarker] = useState(null);
   const [videoError, setVideoError] = useState(null);
   const [debugInfo, setDebugInfo] = useState(false);
-  
+  const [currentFrame, setCurrentFrame] = useState(0);
+
   // Debug info for development
   useEffect(() => {
     console.group("ExercisePlayback Component");
@@ -511,6 +543,56 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatTimings = [] }) =>
     };
   }, []);
 
+  useEffect(() => {
+    if (!videoRef.current || !canvasRef.current) return;
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+
+    const drawOverlays = () => {
+      if (!analysisData || !analysisData.frames[currentFrame]) return;
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Draw body landmarks
+      const landmarks = analysisData.frames[currentFrame].landmarks;
+      ctx.strokeStyle = '#00ff00';
+      ctx.lineWidth = 2;
+      
+      // Draw connections between landmarks
+      Object.entries(landmarks).forEach(([key, point]) => {
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, 4, 0, 2 * Math.PI);
+        ctx.fillStyle = '#00ff00';
+        ctx.fill();
+      });
+
+      // Draw analysis arrows and feedback
+      const feedback = analysisData.frames[currentFrame].feedback;
+      if (feedback) {
+        feedback.forEach(item => {
+          if (item.type === 'arrow') {
+            ctx.beginPath();
+            ctx.moveTo(item.start.x, item.start.y);
+            ctx.lineTo(item.end.x, item.end.y);
+            ctx.strokeStyle = item.color || '#ff0000';
+            ctx.stroke();
+          }
+        });
+      }
+    };
+
+    const handleTimeUpdate = () => {
+      const frame = Math.floor(video.currentTime * 30); // Assuming 30fps
+      setCurrentFrame(frame);
+      drawOverlays();
+    };
+
+    video.addEventListener('timeupdate', handleTimeUpdate);
+    return () => video.removeEventListener('timeupdate', handleTimeUpdate);
+  }, [videoRef, canvasRef, analysisData, currentFrame]);
+
   return (
     <div 
       ref={containerRef}
@@ -761,6 +843,20 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatTimings = [] }) =>
             </div>
           )}
         </div>
+      )}
+      
+      {/* Analysis panel */}
+      {analysisData && (
+        <AnalysisPanel>
+          {analysisData.frames[currentFrame]?.feedback?.map((item, index) => (
+            item.type === 'tip' && (
+              <div key={index} style={{ marginBottom: '10px' }}>
+                <strong>{item.title}</strong>
+                <p>{item.text}</p>
+              </div>
+            )
+          ))}
+        </AnalysisPanel>
       )}
     </div>
   );

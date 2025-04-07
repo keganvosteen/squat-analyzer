@@ -2,9 +2,49 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { Camera, RefreshCw, Maximize2, Minimize2, Circle, Square } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
+import styled from 'styled-components';
 
 // API URL with fallback for local development
 const API_URL = 'https://squat-analyzer-backend.onrender.com';
+
+const RecorderContainer = styled.div`
+  position: relative;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+`;
+
+const VideoPreview = styled.video`
+  width: 100%;
+  height: auto;
+  margin-bottom: 20px;
+`;
+
+const Controls = styled.div`
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-top: 20px;
+`;
+
+const Button = styled.button`
+  padding: 10px 20px;
+  border-radius: 5px;
+  border: none;
+  background-color: ${props => props.recording ? '#ff4444' : '#4CAF50'};
+  color: white;
+  cursor: pointer;
+  font-size: 16px;
+  
+  &:hover {
+    opacity: 0.9;
+  }
+  
+  &:disabled {
+    background-color: #cccccc;
+    cursor: not-allowed;
+  }
+`;
 
 const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const videoRef = useRef(null);
@@ -455,105 +495,22 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   };
 
   return (
-    <div 
-      ref={containerRef}
-      className={`relative ${fullscreen || isRecording ? 'fixed inset-0 z-50' : 'w-full h-full aspect-video'} bg-black overflow-hidden`}
-    >
-      {/* Main video display */}
-      <video 
-        ref={videoRef} 
-        autoPlay 
-        playsInline 
+    <RecorderContainer>
+      <VideoPreview
+        ref={videoRef}
+        autoPlay
+        playsInline
         muted
-        className="absolute inset-0 object-cover w-full h-full z-0" 
       />
-      
-      {/* Canvas for frame capture (hidden) */}
-      <canvas ref={canvasRef} className="hidden" />
-      
-      {/* Overlay skeleton image when available */}
-      {skeletonImage && (
-        <img 
-          src={skeletonImage} 
-          alt="Pose skeleton" 
-          className="absolute inset-0 object-cover w-full h-full z-10 pointer-events-none" 
-        />
-      )}
-
-      {/* Error message */}
-      {error && (
-        <div className="absolute top-16 left-1/2 transform -translate-x-1/2 bg-red-600 bg-opacity-90 px-4 py-2 rounded text-white z-30 text-center max-w-xs">
-          {error}
-        </div>
-      )}
-
-      {/* API status indicator */}
-      {apiConnectionFailed && (
-        <div className="absolute top-4 right-4 bg-orange-500 bg-opacity-90 px-3 py-1 rounded-full text-white z-30">
-          Offline Mode
-        </div>
-      )}
-
-      {/* Recording duration */}
-      {isRecording && (
-        <div className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-black bg-opacity-50 px-4 py-1 rounded-full text-white z-20 font-mono">
-          <span className="animate-pulse text-red-500 mr-2">●</span>
-          {formatTime(recordingTime)}
-        </div>
-      )}
-
-      {/* Recording indicator */}
-      {isRecording && (
-        <div className="absolute top-4 left-4 flex items-center gap-2 bg-black bg-opacity-50 px-3 py-1 rounded-full text-white z-20">
-          <span className="animate-ping h-3 w-3 bg-red-500 rounded-full"></span>
-          REC
-        </div>
-      )}
-
-      {/* Squat counter */}
-      {(isRecording || skeletonImage) && (
-        <div className="absolute top-4 right-4 bg-black bg-opacity-50 px-3 py-1 rounded-full text-white z-20">
-          🏋️ {squatCount}
-        </div>
-      )}
-
-      {/* Controls container */}
-      <div className="absolute bottom-6 left-0 w-full flex justify-center items-center gap-6 z-20">
-        {/* Camera toggle button */}
-        <button
-          onClick={toggleCamera}
-          className="bg-black bg-opacity-50 p-4 rounded-full text-white hover:bg-opacity-70 transition-all"
-          aria-label="Toggle camera"
-        >
-          <RefreshCw size={28} />
-        </button>
-        
-        {/* Record/stop button */}
-        <button
+      <Controls>
+        <Button
           onClick={handleRecording}
-          className={`p-5 rounded-full flex items-center justify-center transition-all ${
-            isRecording ? 'bg-white' : 'bg-red-500'
-          }`}
-          aria-label={isRecording ? "Stop recording" : "Start recording"}
-          disabled={!!error}
+          recording={isRecording}
         >
-          {isRecording ? (
-            <Square size={28} className="text-black" />
-          ) : (
-            <Circle size={28} className="text-white" />
-          )}
-        </button>
-        
-        {/* Fullscreen toggle button */}
-        <button
-          onClick={toggleFullscreen}
-          className="bg-black bg-opacity-50 p-4 rounded-full text-white hover:bg-opacity-70 transition-all"
-          aria-label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
-        >
-          {fullscreen ? <Minimize2 size={28} /> : <Maximize2 size={28} />}
-        </button>
-      </div>
-    </div>
+          {isRecording ? 'Stop Recording' : 'Start Recording'}
+        </Button>
+      </Controls>
+    </RecorderContainer>
   );
 };
 

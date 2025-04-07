@@ -321,6 +321,114 @@ def get_session_data():
     
     return jsonify(session_data)
 
+@app.route('/api/analyze', methods=['POST'])
+def analyze_video():
+    if 'video' not in request.files:
+        return jsonify({'error': 'No video file provided'}), 400
+    
+    video_file = request.files['video']
+    
+    # Create a temporary file to store the video
+    temp_path = 'temp_video.webm'
+    video_file.save(temp_path)
+    
+    # Open the video file
+    cap = cv2.VideoCapture(temp_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    # Initialize analysis data structure
+    analysis_data = {
+        'frames': [],
+        'summary': {
+            'total_squats': 0,
+            'form_issues': [],
+            'average_depth': 0,
+            'average_back_angle': 0
+        }
+    }
+    
+    frame_number = 0
+    total_knee_angles = []
+    total_back_angles = []
+    form_issues = set()
+    
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+            
+        # Analyze the frame
+        feedback = analyze_frame(frame)
+        
+        # Extract key points and angles for this frame
+        frame_data = {
+            'frame_number': frame_number,
+            'timestamp': frame_number / fps,
+            'landmarks': {},
+            'angles': feedback['angles'],
+            'feedback': []
+        }
+        
+        # Add landmarks if available
+        if 'keyPoints' in feedback:
+            frame_data['landmarks'] = feedback['keyPoints']
+        
+        # Add form feedback
+        if feedback['warnings']:
+            for warning in feedback['warnings']:
+                frame_data['feedback'].append({
+                    'type': 'tip',
+                    'title': warning['type'].replace('-', ' ').title(),
+                    'text': warning['message'],
+                    'severity': warning['severity']
+                })
+                
+                # Track unique form issues for summary
+                form_issues.add(warning['message'])
+        
+        # Add arrows for visual feedback
+        if feedback['warnings']:
+            for warning in feedback['warnings']:
+                if warning['location'] == 'knees':
+                    frame_data['feedback'].append({
+                        'type': 'arrow',
+                        'start': {'x': feedback['keyPoints']['left_knee'][0], 'y': feedback['keyPoints']['left_knee'][1]},
+                        'end': {'x': feedback['keyPoints']['left_ankle'][0], 'y': feedback['keyPoints']['left_ankle'][1]},
+                        'color': '#ff0000'
+                    })
+                elif warning['location'] == 'back':
+                    frame_data['feedback'].append({
+                        'type': 'arrow',
+                        'start': {'x': feedback['keyPoints']['back_midpoint'][0], 'y': feedback['keyPoints']['back_midpoint'][1]},
+                        'end': {'x': feedback['keyPoints']['hip_midpoint'][0], 'y': feedback['keyPoints']['hip_midpoint'][1]},
+                        'color': '#ff0000'
+                    })
+        
+        # Track angles for summary statistics
+        if 'angles' in feedback:
+            knee_avg = (feedback['angles']['leftKnee'] + feedback['angles']['rightKnee']) / 2
+            total_knee_angles.append(knee_avg)
+            total_back_angles.append(feedback['angles']['back'])
+        
+        analysis_data['frames'].append(frame_data)
+        frame_number += 1
+    
+    # Calculate summary statistics
+    if total_knee_angles:
+        analysis_data['summary']['average_depth'] = sum(total_knee_angles) / len(total_knee_angles)
+    if total_back_angles:
+        analysis_data['summary']['average_back_angle'] = sum(total_back_angles) / len(total_back_angles)
+    
+    analysis_data['summary']['total_squats'] = feedback.get('squatCount', 0)
+    analysis_data['summary']['form_issues'] = list(form_issues)
+    
+    # Clean up
+    cap.release()
+    os.remove(temp_path)
+    
+    return jsonify(analysis_data)
+
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port, debug=True)
