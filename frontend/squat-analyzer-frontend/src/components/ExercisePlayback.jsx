@@ -415,53 +415,130 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTi
   };
 
   // Draw overlays on the canvas
-  const drawOverlays = () => {
-    const canvas = canvasRef.current;
-    const video = videoRef.current;
-    if (!canvas || !video) return;
+  const drawOverlays = (ctx, videoElement, landmarks, feedback) => {
+    if (!ctx || !videoElement || !landmarks) return;
 
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Clear previous frame
+    ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
-    // Draw landmarks if available
-    if (feedbackData && feedbackData.length > 0) {
-      const currentFeedback = feedbackData.find(f => 
-        Math.abs(f.timestamp - currentTime * 1000) < 100
-      );
+    // Set up styles for landmarks and lines
+    ctx.strokeStyle = 'white';
+    ctx.fillStyle = 'white';
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
 
-      if (currentFeedback && currentFeedback.keyPoints) {
-        ctx.strokeStyle = '#00ff00';
-        ctx.lineWidth = 2;
-        
-        // Draw connections between landmarks
-        Object.entries(currentFeedback.keyPoints).forEach(([key, point]) => {
-          ctx.beginPath();
-          ctx.arc(point.x, point.y, 4, 0, 2 * Math.PI);
-          ctx.fillStyle = '#00ff00';
-          ctx.fill();
-        });
-      }
+    // Draw landmarks
+    const points = landmarks.map(point => ({
+      x: point.x * ctx.canvas.width,
+      y: point.y * ctx.canvas.height
+    }));
 
-      // Draw feedback arrows if available
-      if (currentFeedback && currentFeedback.warnings) {
-        currentFeedback.warnings.forEach(warning => {
-          if (warning.type === 'arrow' && warning.start && warning.end) {
-            ctx.beginPath();
-            ctx.moveTo(warning.start.x, warning.start.y);
-            ctx.lineTo(warning.end.x, warning.end.y);
-            ctx.strokeStyle = warning.color || '#ff0000';
-            ctx.stroke();
-          }
-        });
-      }
+    // Draw connecting lines
+    ctx.beginPath();
+    // Right side
+    if (points[11] && points[13] && points[15]) { // Right shoulder to ankle
+      ctx.moveTo(points[11].x, points[11].y); // Right shoulder
+      ctx.lineTo(points[13].x, points[13].y); // Right elbow
+      ctx.lineTo(points[15].x, points[15].y); // Right wrist
     }
+    if (points[23] && points[25] && points[27]) { // Right hip to foot
+      ctx.moveTo(points[23].x, points[23].y); // Right hip
+      ctx.lineTo(points[25].x, points[25].y); // Right knee
+      ctx.lineTo(points[27].x, points[27].y); // Right ankle
+    }
+    // Left side
+    if (points[12] && points[14] && points[16]) { // Left shoulder to ankle
+      ctx.moveTo(points[12].x, points[12].y); // Left shoulder
+      ctx.lineTo(points[14].x, points[14].y); // Left elbow
+      ctx.lineTo(points[16].x, points[16].y); // Left wrist
+    }
+    if (points[24] && points[26] && points[28]) { // Left hip to foot
+      ctx.moveTo(points[24].x, points[24].y); // Left hip
+      ctx.lineTo(points[26].x, points[26].y); // Left knee
+      ctx.lineTo(points[28].x, points[28].y); // Left ankle
+    }
+    ctx.stroke();
+
+    // Draw landmark points
+    const keyPoints = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28]; // Shoulders, elbows, wrists, hips, knees, ankles
+    keyPoints.forEach(index => {
+      if (points[index]) {
+        ctx.beginPath();
+        ctx.arc(points[index].x, points[index].y, 6, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+    });
+
+    // Draw feedback annotations
+    if (feedback && feedback.length > 0) {
+      ctx.font = '20px Arial';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      
+      feedback.forEach((item, index) => {
+        if (item.type === 'annotation' && item.position) {
+          // Draw arrow
+          const start = points[item.position.start];
+          const end = points[item.position.end];
+          if (start && end) {
+            drawArrow(ctx, start.x, start.y, end.x, end.y);
+          }
+          
+          // Draw text with background
+          const text = item.message;
+          const textX = item.position.textX * ctx.canvas.width;
+          const textY = item.position.textY * ctx.canvas.height;
+          
+          // Draw text background
+          const metrics = ctx.measureText(text);
+          const padding = 4;
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+          ctx.fillRect(
+            textX - padding, 
+            textY - padding,
+            metrics.width + padding * 2,
+            parseInt(ctx.font) + padding * 2
+          );
+          
+          // Draw text
+          ctx.fillStyle = 'white';
+          ctx.fillText(text, textX, textY);
+        }
+      });
+    }
+  };
+
+  const drawArrow = (ctx, fromX, fromY, toX, toY) => {
+    const headLength = 15;
+    const angle = Math.atan2(toY - fromY, toX - fromX);
+    
+    // Draw line
+    ctx.beginPath();
+    ctx.moveTo(fromX, fromY);
+    ctx.lineTo(toX, toY);
+    ctx.stroke();
+    
+    // Draw arrowhead
+    ctx.beginPath();
+    ctx.moveTo(toX, toY);
+    ctx.lineTo(
+      toX - headLength * Math.cos(angle - Math.PI / 6),
+      toY - headLength * Math.sin(angle - Math.PI / 6)
+    );
+    ctx.moveTo(toX, toY);
+    ctx.lineTo(
+      toX - headLength * Math.cos(angle + Math.PI / 6),
+      toY - headLength * Math.sin(angle + Math.PI / 6)
+    );
+    ctx.stroke();
   };
 
   // Handle video time updates
   const handleTimeUpdate = () => {
     if (videoRef.current) {
       setCurrentTime(videoRef.current.currentTime);
-      drawOverlays();
+      drawOverlays(canvasRef.current.getContext('2d'), videoRef.current, currentAngle, activeFeedback);
     }
   };
 
@@ -505,7 +582,7 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTi
     const updateCanvasSize = () => {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
-      drawOverlays();
+      drawOverlays(canvas.getContext('2d'), video, currentAngle, activeFeedback);
     };
 
     video.addEventListener('loadedmetadata', updateCanvasSize);

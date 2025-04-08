@@ -9,6 +9,7 @@ import io
 from PIL import Image
 import time
 import os
+import math
 
 app = Flask(__name__)
 # Configure CORS
@@ -334,111 +335,138 @@ def get_session_data():
 
 @app.route('/api/analyze', methods=['POST'])
 def analyze_video():
-    if 'video' not in request.files:
-        return jsonify({'error': 'No video file provided'}), 400
-    
-    video_file = request.files['video']
-    
-    # Create a temporary file to store the video
-    temp_path = 'temp_video.webm'
-    video_file.save(temp_path)
-    
-    # Open the video file
-    cap = cv2.VideoCapture(temp_path)
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    # Initialize analysis data structure
-    analysis_data = {
-        'frames': [],
-        'summary': {
-            'total_squats': 0,
-            'form_issues': [],
-            'average_depth': 0,
-            'average_back_angle': 0
-        }
-    }
-    
-    frame_number = 0
-    total_knee_angles = []
-    total_back_angles = []
-    form_issues = set()
-    
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-            
-        # Analyze the frame
-        feedback = analyze_frame(frame)
+    try:
+        if 'video' not in request.files:
+            return jsonify({'error': 'No video file provided'}), 400
         
-        # Extract key points and angles for this frame
-        frame_data = {
-            'frame_number': frame_number,
-            'timestamp': frame_number / fps,
-            'landmarks': {},
-            'angles': feedback['angles'],
-            'feedback': []
-        }
+        video_file = request.files['video']
+        if not video_file:
+            return jsonify({'error': 'Empty video file'}), 400
+
+        # Save video file temporarily
+        temp_path = 'temp_video.webm'
+        video_file.save(temp_path)
+
+        # Initialize MediaPipe Pose
+        mp_pose = mp.solutions.pose
+        pose = mp_pose.Pose(
+            static_image_mode=False,
+            model_complexity=2,
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+
+        # Process video frames
+        cap = cv2.VideoCapture(temp_path)
+        frame_count = 0
+        analysis_data = []
+        squat_count = 0
+        last_knee_y = None
+        squat_state = "standing"  # Can be "standing", "squatting", or "rising"
         
-        # Add landmarks if available
-        if 'keyPoints' in feedback:
-            frame_data['landmarks'] = feedback['keyPoints']
-        
-        # Add form feedback
-        if feedback['warnings']:
-            for warning in feedback['warnings']:
-                frame_data['feedback'].append({
-                    'type': 'tip',
-                    'title': warning['type'].replace('-', ' ').title(),
-                    'text': warning['message'],
-                    'severity': warning['severity']
-                })
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Convert the BGR image to RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = pose.process(frame_rgb)
+
+            if results.pose_landmarks:
+                landmarks = []
+                for landmark in results.pose_landmarks.landmark:
+                    landmarks.append({
+                        'x': landmark.x,
+                        'y': landmark.y,
+                        'z': landmark.z,
+                        'visibility': landmark.visibility
+                    })
+
+                # Get key points for analysis
+                left_knee = landmarks[mp_pose.PoseLandmark.LEFT_KNEE.value]
+                right_knee = landmarks[mp_pose.PoseLandmark.RIGHT_KNEE.value]
+                left_hip = landmarks[mp_pose.PoseLandmark.LEFT_HIP.value]
+                right_hip = landmarks[mp_pose.PoseLandmark.RIGHT_HIP.value]
+                left_ankle = landmarks[mp_pose.PoseLandmark.LEFT_ANKLE.value]
+                right_ankle = landmarks[mp_pose.PoseLandmark.RIGHT_ANKLE.value]
+                left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER.value]
+                right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER.value]
+
+                # Calculate average knee position for squat detection
+                avg_knee_y = (left_knee['y'] + right_knee['y']) / 2
                 
-                # Track unique form issues for summary
-                form_issues.add(warning['message'])
-        
-        # Add arrows for visual feedback
-        if feedback['warnings']:
-            for warning in feedback['warnings']:
-                if warning['location'] == 'knees':
-                    frame_data['feedback'].append({
-                        'type': 'arrow',
-                        'start': {'x': feedback['keyPoints']['left_knee'][0], 'y': feedback['keyPoints']['left_knee'][1]},
-                        'end': {'x': feedback['keyPoints']['left_ankle'][0], 'y': feedback['keyPoints']['left_ankle'][1]},
-                        'color': '#ff0000'
+                # Detect squat phases
+                if last_knee_y is not None:
+                    if squat_state == "standing" and avg_knee_y > last_knee_y + 0.05:
+                        squat_state = "squatting"
+                    elif squat_state == "squatting" and avg_knee_y < last_knee_y - 0.05:
+                        squat_state = "rising"
+                        squat_count += 1
+                    elif squat_state == "rising" and abs(avg_knee_y - last_knee_y) < 0.02:
+                        squat_state = "standing"
+
+                last_knee_y = avg_knee_y
+
+                # Generate feedback
+                feedback = []
+                
+                # Check knee alignment
+                knee_hip_alignment = abs((left_knee['x'] + right_knee['x'])/2 - 
+                                      (left_hip['x'] + right_hip['x'])/2)
+                if knee_hip_alignment > 0.1:
+                    feedback.append({
+                        'type': 'annotation',
+                        'message': 'Keep knees aligned with hips',
+                        'position': {
+                            'start': mp_pose.PoseLandmark.LEFT_HIP.value,
+                            'end': mp_pose.PoseLandmark.LEFT_KNEE.value,
+                            'textX': 0.1,
+                            'textY': 0.1
+                        }
                     })
-                elif warning['location'] == 'back':
-                    frame_data['feedback'].append({
-                        'type': 'arrow',
-                        'start': {'x': feedback['keyPoints']['back_midpoint'][0], 'y': feedback['keyPoints']['back_midpoint'][1]},
-                        'end': {'x': feedback['keyPoints']['hip_midpoint'][0], 'y': feedback['keyPoints']['hip_midpoint'][1]},
-                        'color': '#ff0000'
+
+                # Check back angle
+                back_angle = calculate_angle(
+                    landmarks[mp_pose.PoseLandmark.SHOULDERS.value],
+                    landmarks[mp_pose.PoseLandmark.HIPS.value],
+                    landmarks[mp_pose.PoseLandmark.KNEES.value]
+                )
+                if back_angle < 45:
+                    feedback.append({
+                        'type': 'annotation',
+                        'message': 'Keep back straight',
+                        'position': {
+                            'start': mp_pose.PoseLandmark.SHOULDERS.value,
+                            'end': mp_pose.PoseLandmark.HIPS.value,
+                            'textX': 0.7,
+                            'textY': 0.2
+                        }
                     })
-        
-        # Track angles for summary statistics
-        if 'angles' in feedback:
-            knee_avg = (feedback['angles']['leftKnee'] + feedback['angles']['rightKnee']) / 2
-            total_knee_angles.append(knee_avg)
-            total_back_angles.append(feedback['angles']['back'])
-        
-        analysis_data['frames'].append(frame_data)
-        frame_number += 1
-    
-    # Calculate summary statistics
-    if total_knee_angles:
-        analysis_data['summary']['average_depth'] = sum(total_knee_angles) / len(total_knee_angles)
-    if total_back_angles:
-        analysis_data['summary']['average_back_angle'] = sum(total_back_angles) / len(total_back_angles)
-    
-    analysis_data['summary']['total_squats'] = feedback.get('squatCount', 0)
-    analysis_data['summary']['form_issues'] = list(form_issues)
-    
-    # Clean up
-    cap.release()
-    os.remove(temp_path)
-    
-    return jsonify(analysis_data)
+
+                # Add frame data
+                analysis_data.append({
+                    'timestamp': frame_count * (1000/30),  # Assuming 30fps
+                    'landmarks': landmarks,
+                    'feedback': feedback,
+                    'squat_state': squat_state
+                })
+
+            frame_count += 1
+
+        cap.release()
+        pose.close()
+        os.remove(temp_path)
+
+        return jsonify({
+            'frames': analysis_data,
+            'squat_count': squat_count,
+            'duration': frame_count * (1/30)  # Duration in seconds
+        })
+
+    except Exception as e:
+        print(f"Error processing video: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 5000))
