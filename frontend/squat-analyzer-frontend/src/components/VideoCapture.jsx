@@ -1,6 +1,6 @@
 // src/components/VideoCapture.jsx
 import React, { useRef, useEffect, useState } from 'react';
-import { Camera, RefreshCw, Maximize2, Minimize2, Square, AlertTriangle } from 'lucide-react';
+import { Camera, RefreshCw, Maximize2, Minimize2, Square, AlertTriangle, Circle } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import styled from 'styled-components';
 
