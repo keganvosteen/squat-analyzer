@@ -90,6 +90,12 @@ const StatValue = styled.div`
   color: #007bff;
 `;
 
+const StatLabel = styled.div`
+  font-size: 0.875rem;
+  color: #666;
+  margin-bottom: 0.25rem;
+`;
+
 const FeedbackList = styled.ul`
   list-style: none;
   padding: 0;
@@ -99,6 +105,18 @@ const FeedbackList = styled.ul`
 const FeedbackItem = styled.li`
   padding: 0.5rem;
   margin-bottom: 0.5rem;
+  background: white;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+`;
+
+const FeedbackSection = styled.div`
+  margin-top: 1rem;
+`;
+
+const FeedbackTip = styled.div`
+  padding: 0.75rem;
+  margin: 0.5rem 0;
   background: white;
   border-radius: 4px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.1);

@@ -48,6 +48,11 @@ const App = () => {
       const response = await fetch(`${API_URL}/api/analyze`, {
         method: 'POST',
         body: formData,
+        credentials: 'include',
+        headers: {
+          'Accept': 'application/json',
+        },
+        mode: 'cors'
       });
 
       if (!response.ok) {
@@ -59,7 +64,7 @@ const App = () => {
       setAnalysisData(data);
     } catch (error) {
       console.error('Error analyzing video:', error);
-      setError('Failed to analyze video. Please try again.');
+      setError(`Failed to analyze video: ${error.message}`);
     } finally {
       setIsAnalyzing(false);
     }

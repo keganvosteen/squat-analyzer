@@ -82,6 +82,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const initializeCamera = async () => {
     try {
       setError(null);
+      // Stop any existing stream
+      cleanupStream();
+
       const constraints = {
         video: {
           facingMode: 'user',
@@ -91,11 +94,13 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         audio: false
       };
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      streamRef.current = stream;
+      const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+      streamRef.current = newStream;
+      setStream(newStream);
       
       if (videoRef.current) {
-        videoRef.current.srcObject = stream;
+        videoRef.current.srcObject = newStream;
+        await videoRef.current.play().catch(console.error);
       }
 
       // Initialize MediaRecorder with supported MIME type
@@ -104,7 +109,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         throw new Error('No supported video MIME type found');
       }
 
-      const mediaRecorder = new MediaRecorder(stream, {
+      const mediaRecorder = new MediaRecorder(newStream, {
         mimeType,
         videoBitsPerSecond: 2500000
       });
@@ -491,7 +496,13 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
 
   const startRecording = async () => {
     try {
-      if (!isInitialized) {
+      if (!isInitialized || !streamRef.current || !mediaRecorderRef.current) {
+        await initializeCamera();
+      }
+
+      // Verify stream is active
+      if (!streamRef.current || !streamRef.current.active) {
+        console.log('Stream is not active, reinitializing camera');
         await initializeCamera();
       }
 
@@ -563,11 +574,16 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
 
   const cleanupStream = () => {
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current.getTracks().forEach(track => {
+        track.stop();
+        streamRef.current.removeTrack(track);
+      });
+      streamRef.current = null;
     }
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+    setStream(null);
   };
 
   return (
