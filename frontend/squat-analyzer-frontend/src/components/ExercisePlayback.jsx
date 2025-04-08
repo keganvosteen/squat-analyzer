@@ -141,11 +141,10 @@ const OverlayCanvas = styled.canvas`
   height: 100%;
 `;
 
-const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTimings = [], sessionId }) => {
+const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings = [], sessionId }) => {
   console.log('ExercisePlayback Component');
   console.log('Video URL:', videoUrl);
-  console.log('Feedback data points:', feedbackData?.length || 0);
-  console.log('Squat timings:', squatTimings?.length || 0);
+  console.log('Analysis data:', analysisData);
   
   const containerRef = useRef(null);
   const videoRef = useRef(null);
@@ -155,355 +154,99 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTi
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [currentAngle, setCurrentAngle] = useState(null);
   const [activeFeedback, setActiveFeedback] = useState(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [hoverPosition, setHoverPosition] = useState(null);
   const [isDraggingTimeline, setIsDraggingTimeline] = useState(false);
-  const [hoveredMarker, setHoveredMarker] = useState(null);
-  const [videoError, setVideoError] = useState(null);
-  const [debugInfo, setDebugInfo] = useState(false);
-  const [currentFrame, setCurrentFrame] = useState(0);
   const [error, setError] = useState(null);
-  const [apiConnectionFailed, setApiConnectionFailed] = useState(false);
-  const [stream, setStream] = useState(null);
-
-  // Debug info for development
-  useEffect(() => {
-    console.group("ExercisePlayback Component");
-    console.log("Video URL:", videoUrl);
-    console.log("Feedback data points:", feedbackData?.length || 0);
-    console.log("Squat timings:", squatTimings?.length || 0);
-    console.groupEnd();
-  }, [videoUrl, feedbackData, squatTimings]);
-
-  // Handle fullscreen toggle
-  const toggleFullscreen = () => {
-    if (!isFullscreen) {
-      const element = containerRef.current;
-      if (element) {
-        if (element.requestFullscreen) {
-          element.requestFullscreen();
-        } else if (element.webkitRequestFullscreen) { 
-          element.webkitRequestFullscreen();
-        } else if (element.msRequestFullscreen) { 
-          element.msRequestFullscreen();
-        }
-      }
-    } else {
-      if (document.exitFullscreen) {
-        document.exitFullscreen();
-      } else if (document.webkitExitFullscreen) { 
-        document.webkitExitFullscreen();
-      } else if (document.msExitFullscreen) {
-        document.msExitFullscreen();
-      }
-    }
-  };
   
-  // Listen for fullscreen changes
+  // Check if we have valid analysis data
+  const hasAnalysisData = analysisData && 
+                        analysisData.success && 
+                        Array.isArray(analysisData.frames) && 
+                        analysisData.frames.length > 0;
+
+  // Reset error when video URL changes
   useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-    };
-    
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
-    document.addEventListener('mozfullscreenchange', handleFullscreenChange);
-    document.addEventListener('MSFullscreenChange', handleFullscreenChange);
-    
-    return () => {
-      document.removeEventListener('fullscreenchange', handleFullscreenChange);
-      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
-      document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
-      document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
-    };
-  }, []);
-
-  // Jump to a specific time in the video (input in ms)
-  const jumpToTime = (timeInMs) => {
-    if (!videoRef.current) return;
-    
-    try {
-      const time = timeInMs / 1000; // Convert to seconds
-      videoRef.current.currentTime = Math.max(0, Math.min(time, videoRef.current.duration || 0));
-      
-      if (!isPlaying) {
-        videoRef.current.play().catch(err => {
-          console.warn("Auto-play failed after seek:", err);
-        });
-      }
-    } catch (err) {
-      console.error("Error jumping to time:", err);
+    if (videoUrl) {
+      setError(null);
     }
-  };
-
-  // Toggle play/pause
-  const togglePlayPause = () => {
-    if (!videoRef.current) return;
-
-    try {
-      if (isPlaying) {
-        videoRef.current.pause();
-      } else {
-        videoRef.current.play().catch(err => {
-          console.warn("Play failed:", err);
-          setVideoError("Browser blocked autoplay. Please click play again or use the video controls.");
-        });
-      }
-    } catch (err) {
-      console.error("Toggle play/pause error:", err);
-      setVideoError("Video playback error");
-    }
-  };
-
-  // Skip to next or previous squat marker
-  const skipToSquat = (direction) => {
-    if (!videoRef.current || !squatTimings.length) return;
-    
-    try {
-      const currentTimeMs = videoRef.current.currentTime * 1000;
-      
-      // Combine bottom and completed squat points
-      const allPoints = [];
-      squatTimings.forEach((timing) => {
-        if (timing.bottom) {
-          allPoints.push({ time: timing.bottom, type: 'bottom', count: timing.count });
-        }
-        if (timing.completed) {
-          allPoints.push({ time: timing.completed, type: 'completed', count: timing.count });
-        }
-      });
-      allPoints.sort((a, b) => a.time - b.time);
-      
-      if (direction === 'next') {
-        const nextPoint = allPoints.find(point => point.time * 1000 > currentTimeMs);
-        if (nextPoint) {
-          jumpToTime(nextPoint.time * 1000);
-        }
-      } else {
-        const prevPoints = allPoints.filter(point => point.time * 1000 < currentTimeMs);
-        if (prevPoints.length > 0) {
-          jumpToTime(prevPoints[prevPoints.length - 1].time * 1000);
-        }
-      }
-    } catch (err) {
-      console.error("Skip to squat error:", err);
-    }
-  };
-
-  // Create timeline markers for key events
-  const createMarkers = () => {
-    const video = videoRef.current;
-    const timeline = timelineRef.current;
-    if (!video || !timeline || !video.duration) return;
-
-    try {
-      // Clear existing markers
-      while (timeline.firstChild) {
-        timeline.removeChild(timeline.firstChild);
-      }
-
-      // Process feedback data to create warning markers
-      if (feedbackData && feedbackData.length) {
-        const warningTimeMap = new Map(); // timestamp (sec) -> warnings array
-        
-        feedbackData.forEach((data) => {
-          if (!data.timestamp) return;
-          
-          const timestamp = data.timestamp / 1000; // convert to seconds
-          if (timestamp < 0 || timestamp > video.duration) return;
-          
-          if (data.warnings && data.warnings.length > 0) {
-            if (!warningTimeMap.has(timestamp)) {
-              warningTimeMap.set(timestamp, []);
-            }
-            
-            data.warnings.forEach(warning => {
-              const warnings = warningTimeMap.get(timestamp);
-              if (!warnings.find(w => w.type === warning.type)) {
-                warnings.push(warning);
-              }
-            });
-          }
-        });
-        
-        // Create warning markers
-        warningTimeMap.forEach((warnings, timestamp) => {
-          const percent = (timestamp / video.duration) * 100;
-          if (percent < 0 || percent > 100) return;
-          
-          const marker = document.createElement('div');
-          marker.className = 'absolute top-0 h-full w-1.5 bg-red-500 cursor-pointer hover:w-2.5 transition-all';
-          marker.style.left = `${percent}%`;
-          marker.title = warnings.map(w => w.message).join('\n');
-          
-          // Interaction events
-          marker.onclick = () => jumpToTime(timestamp * 1000);
-          marker.onmouseenter = () => setHoveredMarker({ time: timestamp, warnings });
-          marker.onmouseleave = () => setHoveredMarker(null);
-          
-          timeline.appendChild(marker);
-        });
-      }
-      
-      // Create markers for squat timings
-      if (squatTimings && squatTimings.length) {
-        squatTimings.forEach((timing) => {
-          if (timing.bottom) {
-            const percent = (timing.bottom / video.duration) * 100;
-            if (percent < 0 || percent > 100) return;
-            
-            const marker = document.createElement('div');
-            marker.className = 'absolute top-0 h-full w-1.5 bg-blue-500 cursor-pointer hover:w-2.5 transition-all';
-            marker.style.left = `${percent}%`;
-            marker.title = `Bottom of squat #${timing.count}`;
-            marker.onclick = () => jumpToTime(timing.bottom * 1000);
-            
-            // Add tooltip on hover
-            marker.onmouseenter = () => setHoveredMarker({ 
-              time: timing.bottom, 
-              type: 'bottom',
-              count: timing.count,
-              message: `Bottom of squat #${timing.count}`
-            });
-            marker.onmouseleave = () => setHoveredMarker(null);
-            
-            timeline.appendChild(marker);
-          }
-          
-          if (timing.completed) {
-            const percent = (timing.completed / video.duration) * 100;
-            if (percent < 0 || percent > 100) return;
-            
-            const marker = document.createElement('div');
-            marker.className = 'absolute top-0 h-full w-1.5 bg-green-500 cursor-pointer hover:w-2.5 transition-all';
-            marker.style.left = `${percent}%`;
-            marker.title = `Completed squat #${timing.count}`;
-            marker.onclick = () => jumpToTime(timing.completed * 1000);
-            
-            // Add tooltip on hover
-            marker.onmouseenter = () => setHoveredMarker({ 
-              time: timing.completed, 
-              type: 'completed',
-              count: timing.count,
-              message: `Completed squat #${timing.count}`
-            });
-            marker.onmouseleave = () => setHoveredMarker(null);
-            
-            timeline.appendChild(marker);
-          }
-        });
-      }
-    } catch (err) {
-      console.error("Error creating timeline markers:", err);
-    }
-  };
-
-  // Find active feedback based on current video time
-  const findActiveFeedback = () => {
-    if (!feedbackData?.length || !videoRef.current) return null;
-    
-    try {
-      const currentTimeMs = videoRef.current.currentTime * 1000;
-      
-      // Find feedback within 500ms of current time
-      const closeItems = feedbackData.filter(
-        data => data.timestamp && Math.abs(data.timestamp - currentTimeMs) < 500
-      );
-      
-      if (!closeItems.length) return null;
-      
-      // Return the closest one
-      return closeItems.reduce((closest, curr) => {
-        if (!closest.timestamp) return curr;
-        if (!curr.timestamp) return closest;
-        
-        return Math.abs(curr.timestamp - currentTimeMs) < Math.abs(closest.timestamp - currentTimeMs)
-          ? curr : closest;
-      });
-    } catch (err) {
-      console.error("Error finding active feedback:", err);
-      return null;
-    }
-  };
-
-  // Format time in MM:SS.ms format
-  const formatTime = (seconds) => {
-    try {
-      if (isNaN(seconds) || seconds < 0) return "00:00.0";
-      
-      const mins = Math.floor(seconds / 60).toString().padStart(2, '0');
-      const secs = Math.floor(seconds % 60).toString().padStart(2, '0');
-      const ms = Math.floor((seconds % 1) * 10);
-      
-      return `${mins}:${secs}.${ms}`;
-    } catch (err) {
-      return "00:00.0";
-    }
-  };
+  }, [videoUrl]);
 
   // Draw overlays on the canvas
-  const drawOverlays = useCallback((ctx, landmarks, feedback) => {
-    if (!landmarks || landmarks.length === 0) {
-      console.log('No landmarks data available');
-      return;
-    }
-
-    console.log('Drawing overlays with landmarks:', landmarks);
-    console.log('Feedback data:', feedback);
-
-    // Clear the canvas
+  const drawOverlays = useCallback((ctx, timestamp) => {
+    if (!ctx || !hasAnalysisData) return;
+    
+    // Clear canvas
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
     
-    // Set styles for landmark points and connections
-    ctx.lineWidth = 2;
-    ctx.strokeStyle = 'white';
-    ctx.fillStyle = 'red';
+    // Find the closest frame to the current timestamp
+    const currentSeconds = timestamp || 0;
+    const frames = analysisData.frames;
     
-    // Draw landmark points and connections
-    landmarks.forEach((point, index) => {
-      if (point.visibility && point.visibility > 0.5) {
-        const x = point.x * ctx.canvas.width;
-        const y = point.y * ctx.canvas.height;
-        
-        // Draw point
-        ctx.beginPath();
-        ctx.arc(x, y, 4, 0, 2 * Math.PI);
-        ctx.fill();
-        
-        // Connect points based on body structure
-        const connections = [
-          [11, 13, 15], // Right arm
-          [12, 14, 16], // Left arm
-          [23, 25, 27, 31], // Right leg
-          [24, 26, 28, 32], // Left leg
-          [11, 23], // Right torso
-          [12, 24], // Left torso
-          [11, 12], // Shoulders
-          [23, 24], // Hips
-        ];
-        
-        connections.forEach(chain => {
-          if (chain.includes(index)) {
-            const nextIndex = chain[chain.indexOf(index) + 1];
-            if (nextIndex && landmarks[nextIndex] && landmarks[nextIndex].visibility > 0.5) {
-              ctx.beginPath();
-              ctx.moveTo(x, y);
-              ctx.lineTo(
-                landmarks[nextIndex].x * ctx.canvas.width,
-                landmarks[nextIndex].y * ctx.canvas.height
-              );
-              ctx.stroke();
-            }
-          }
-        });
+    // Find the frame that's closest to our current time
+    let closestFrame = null;
+    let smallestDiff = Infinity;
+    
+    for (const frame of frames) {
+      const diff = Math.abs(frame.timestamp - currentSeconds);
+      if (diff < smallestDiff) {
+        smallestDiff = diff;
+        closestFrame = frame;
       }
-    });
+    }
+    
+    if (!closestFrame) return;
+    
+    // Draw landmarks if available
+    if (closestFrame.landmarks && Array.isArray(closestFrame.landmarks)) {
+      console.log("Drawing landmarks:", closestFrame.landmarks.length);
+      
+      // Draw skeleton lines connecting landmarks
+      const connections = [
+        // Torso
+        [11, 12], [11, 23], [12, 24], [23, 24],
+        // Right arm
+        [11, 13], [13, 15],
+        // Left arm
+        [12, 14], [14, 16],
+        // Right leg
+        [23, 25], [25, 27], [27, 31],
+        // Left leg
+        [24, 26], [26, 28], [28, 32]
+      ];
+      
+      ctx.strokeStyle = 'white';
+      ctx.lineWidth = 2;
+      
+      connections.forEach(([startIdx, endIdx]) => {
+        const start = closestFrame.landmarks[startIdx];
+        const end = closestFrame.landmarks[endIdx];
+        
+        if (start && end) {
+          ctx.beginPath();
+          ctx.moveTo(start.x * ctx.canvas.width, start.y * ctx.canvas.height);
+          ctx.lineTo(end.x * ctx.canvas.width, end.y * ctx.canvas.height);
+          ctx.stroke();
+        }
+      });
+      
+      // Draw landmark points
+      ctx.fillStyle = 'red';
+      closestFrame.landmarks.forEach(landmark => {
+        ctx.beginPath();
+        ctx.arc(
+          landmark.x * ctx.canvas.width, 
+          landmark.y * ctx.canvas.height, 
+          3, 0, 2 * Math.PI
+        );
+        ctx.fill();
+      });
+    }
 
     // Draw measurements and analysis
-    if (feedback && feedback.measurements) {
-      const { kneeAngle, depthRatio, shoulderMidfootDiff } = feedback.measurements;
+    if (closestFrame.measurements) {
+      const { kneeAngle, depthRatio, shoulderMidfootDiff } = closestFrame.measurements;
       
       // Position text in top-left corner
       ctx.font = '16px Arial';
@@ -511,25 +254,29 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTi
       const xOffset = 10;
       
       // Knee Angle
-      ctx.fillStyle = 'blue';
+      ctx.fillStyle = 'white';
       ctx.fillText('Knee Angle:', xOffset, yOffset);
       ctx.fillStyle = '#00ff00';
       ctx.fillText(` ${Math.round(kneeAngle)}°`, xOffset + 90, yOffset);
       yOffset += 25;
       
       // Depth Ratio
-      ctx.fillStyle = 'red';
-      ctx.fillText(`Depth Ratio: ${depthRatio.toFixed(2)}`, xOffset, yOffset);
+      ctx.fillStyle = 'white';
+      ctx.fillText('Depth Ratio:', xOffset, yOffset);
+      ctx.fillStyle = '#ff9900';
+      ctx.fillText(` ${depthRatio.toFixed(2)}`, xOffset + 100, yOffset);
       yOffset += 25;
       
       // Shoulder-Midfoot Difference
-      ctx.fillStyle = 'cyan';
-      ctx.fillText(`Shoulder-Midfoot Diff: ${shoulderMidfootDiff.toFixed(1)}px`, xOffset, yOffset);
+      ctx.fillStyle = 'white';
+      ctx.fillText('Shoulder-Midfoot Diff:', xOffset, yOffset);
+      ctx.fillStyle = '#00ffff';
+      ctx.fillText(` ${shoulderMidfootDiff.toFixed(1)}`, xOffset + 170, yOffset);
     }
 
-    // Draw feedback arrows if available
-    if (feedback && feedback.arrows) {
-      feedback.arrows.forEach(arrow => {
+    // Draw feedback arrows
+    if (closestFrame.arrows && Array.isArray(closestFrame.arrows)) {
+      closestFrame.arrows.forEach(arrow => {
         if (arrow.start && arrow.end) {
           ctx.beginPath();
           ctx.strokeStyle = arrow.color || 'yellow';
@@ -561,16 +308,26 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTi
             endY - arrowLength * Math.sin(angle + Math.PI / 6)
           );
           ctx.stroke();
+          
+          // Draw message
+          if (arrow.message) {
+            ctx.font = '14px Arial';
+            ctx.fillStyle = 'white';
+            ctx.fillText(arrow.message, endX + 10, endY);
+          }
         }
       });
     }
-  }, []);
+  }, [hasAnalysisData, analysisData]);
 
   // Handle video time updates
   const handleTimeUpdate = () => {
     if (videoRef.current) {
       setCurrentTime(videoRef.current.currentTime);
-      drawOverlays(canvasRef.current.getContext('2d'), currentAngle, activeFeedback);
+      const ctx = canvasRef.current?.getContext('2d');
+      if (ctx) {
+        drawOverlays(ctx, videoRef.current.currentTime);
+      }
     }
   };
 
@@ -578,13 +335,25 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTi
   const handleLoadedMetadata = () => {
     if (videoRef.current) {
       setDuration(videoRef.current.duration);
+      console.log(`Video loaded: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}, duration: ${videoRef.current.duration}s`);
+      
+      // Initialize canvas size
+      if (canvasRef.current) {
+        const canvas = canvasRef.current;
+        canvas.width = videoRef.current.videoWidth;
+        canvas.height = videoRef.current.videoHeight;
+        
+        // Initial render of overlays
+        const ctx = canvas.getContext('2d');
+        drawOverlays(ctx, 0);
+      }
     }
   };
 
   // Handle video errors
   const handleError = (e) => {
     console.error('Video error:', e);
-    setError('Error playing video. Please try again.');
+    setError('Error playing video. Please try recording again.');
   };
 
   // Set up video event listeners
@@ -603,255 +372,106 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTi
       video.removeEventListener('loadedmetadata', handleLoadedMetadata);
       video.removeEventListener('error', handleError);
     };
-  }, [videoRef.current]);
+  }, [videoRef.current, drawOverlays]);
 
-  // Update canvas size when video dimensions change
-  useEffect(() => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) return;
-
-    const updateCanvasSize = () => {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      drawOverlays(canvas.getContext('2d'), currentAngle, activeFeedback);
-    };
-
-    video.addEventListener('loadedmetadata', updateCanvasSize);
-    video.addEventListener('resize', updateCanvasSize);
-
-    return () => {
-      video.removeEventListener('loadedmetadata', updateCanvasSize);
-      video.removeEventListener('resize', updateCanvasSize);
-    };
-  }, [videoRef.current]);
-
-  // Handle video URL changes
-  useEffect(() => {
-    if (videoUrl) {
-      console.log('Video URL changed:', videoUrl);
-      
-      // Reset state
-      setError(null);
-      setCurrentTime(0);
-      setDuration(0);
-      setIsPlaying(false);
-      
-      // Ensure video element is properly initialized
-      if (videoRef.current) {
-        // Reset video element
-        videoRef.current.pause();
-        videoRef.current.currentTime = 0;
-        
-        // Load and play video
-        videoRef.current.load();
-        
-        // Try playing after a short delay to ensure proper initialization
-        setTimeout(() => {
-          if (videoRef.current) {
-            videoRef.current.play().catch(error => {
-              console.error('Error playing video:', error);
-              if (error.name === 'NotSupportedError') {
-                setError('Video format not supported. Please try recording again.');
-              } else {
-                setError('Failed to play video. Please try again.');
-              }
-            });
-          }
-        }, 100);
-      }
-    }
+  // Toggle play/pause
+  const togglePlayPause = () => {
+    if (!videoRef.current) return;
     
-    return () => {
-      // Cleanup
-      if (videoRef.current) {
-        videoRef.current.pause();
-        videoRef.current.removeAttribute('src');
-        videoRef.current.load();
-      }
-    };
-  }, [videoUrl]);
-
-  // Handle timeline interactions
-  const handleTimelineClick = (e) => {
-    if (!videoRef.current || !timelineRef.current) return;
-    
-    const rect = timelineRef.current.getBoundingClientRect();
-    const clickPosition = (e.clientX - rect.left) / rect.width;
-    
-    if (clickPosition < 0 || clickPosition > 1) return;
-    
-    const seekTime = videoRef.current.duration * clickPosition;
-    if (isNaN(seekTime)) return;
-    
-    videoRef.current.currentTime = seekTime;
-  };
-  
-  // Handle timeline hover
-  const handleTimelineHover = (e) => {
-    if (!timelineRef.current || isDraggingTimeline) return;
-    
-    const rect = timelineRef.current.getBoundingClientRect();
-    const position = (e.clientX - rect.left) / rect.width;
-    
-    if (position >= 0 && position <= 1) {
-      setHoverPosition(position);
+    if (isPlaying) {
+      videoRef.current.pause();
     } else {
-      setHoverPosition(null);
+      videoRef.current.play().catch(e => {
+        console.error("Error playing video:", e);
+        setError("Could not play video. This may be due to browser permissions or an unsupported format.");
+      });
     }
-  };
-  
-  // Handle timeline mouse leave
-  const handleTimelineLeave = () => {
-    if (!isDraggingTimeline) {
-      setHoverPosition(null);
-    }
-  };
-  
-  // Handle mouse down for dragging
-  const handleTimelineMouseDown = (e) => {
-    setIsDraggingTimeline(true);
-    handleTimelineClick(e);
     
-    // Add document-level event listeners
-    document.addEventListener('mousemove', handleDocumentMouseMove);
-    document.addEventListener('mouseup', handleDocumentMouseUp);
+    setIsPlaying(!isPlaying);
   };
-  
-  // Handle document mouse move (for dragging)
-  const handleDocumentMouseMove = (e) => {
-    if (isDraggingTimeline) {
-      handleTimelineClick(e);
-    }
-  };
-  
-  // Handle document mouse up (for dragging)
-  const handleDocumentMouseUp = () => {
-    setIsDraggingTimeline(false);
-    setHoverPosition(null);
-    
-    // Remove document-level event listeners
-    document.removeEventListener('mousemove', handleDocumentMouseMove);
-    document.removeEventListener('mouseup', handleDocumentMouseUp);
-  };
-  
-  // Clean up document-level event listeners
-  useEffect(() => {
-    return () => {
-      document.removeEventListener('mousemove', handleDocumentMouseMove);
-      document.removeEventListener('mouseup', handleDocumentMouseUp);
-    };
-  }, []);
 
   return (
-    <div className="flex flex-col items-center gap-4 p-4">
-      <div className="relative w-full max-w-3xl">
-        <video
-          ref={videoRef}
-          className="w-full h-full object-contain"
-          controls
-          playsInline
-          preload="auto"
-          onTimeUpdate={handleTimeUpdate}
-          onLoadedMetadata={handleLoadedMetadata}
-          onError={(e) => {
-            console.error('Video error:', e);
-            const video = e.target;
-            if (video.error) {
-              console.error('Video error code:', video.error.code);
-              console.error('Video error message:', video.error.message);
-              
-              // Handle specific error cases
-              switch (video.error.code) {
-                case 1:
-                  setError('Video loading was aborted. Please try again.');
-                  break;
-                case 2:
-                  setError('Network error occurred. Please check your connection.');
-                  break;
-                case 3:
-                  setError('Video decoding error. Please try recording again.');
-                  break;
-                case 4:
-                  setError('Video format not supported. Please try recording again.');
-                  break;
-                default:
-                  // For Firefox privacy mode errors
-                  if (video.error.message.includes('NS_ERROR_DOM_MEDIA_METADATA_ERR')) {
-                    setError('Video metadata error. Please try recording again with a different browser or disable privacy.resistFingerprinting.');
-                  } else {
-                    setError('Failed to load video. Please try recording again.');
-                  }
-              }
-            }
-          }}
-          onLoadStart={() => {
-            console.log('Video load started');
-            setError(null);
-          }}
-          onLoadedData={() => {
-            console.log('Video data loaded');
-            setError(null);
-          }}
-          onCanPlay={() => {
-            console.log('Video can play');
-            setError(null);
-          }}
-          crossOrigin="anonymous"
-        >
-          <source src={videoUrl} type="video/webm;codecs=vp8,opus" />
-          <source src={videoUrl} type="video/webm;codecs=vp8" />
-          <source src={videoUrl} type="video/webm" />
-          <source src={videoUrl} type="video/mp4" />
-          Your browser does not support the video tag.
-        </video>
-        <canvas
-          ref={canvasRef}
-          className="absolute top-0 left-0 w-full h-full pointer-events-none"
-        />
-      </div>
+    <Container ref={containerRef}>
+      <h2>Exercise Playback</h2>
       
-      <div className="w-full max-w-3xl">
-        <div className="bg-gray-800 p-4 rounded-lg">
-          {error ? (
-            <ErrorMessage>
-              <AlertTriangle size={20} />
-              <span>{error}</span>
-            </ErrorMessage>
-          ) : (
-            <>
-              <h3 className="text-xl font-semibold mb-4">Analysis Results</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="bg-gray-700 p-4 rounded-lg">
-                  <h4 className="text-lg font-medium mb-2">Squat Count</h4>
-                  <p className="text-2xl font-bold">{squatTimings?.length || 0}</p>
-                </div>
-                <div className="bg-gray-700 p-4 rounded-lg">
-                  <h4 className="text-lg font-medium mb-2">Current Time</h4>
-                  <p className="text-2xl font-bold">{formatTime(currentTime)}</p>
-                </div>
-              </div>
-              <div className="mt-4">
-                <h4 className="text-lg font-medium mb-2">Feedback Tips</h4>
-                <div className="space-y-2">
-                  {feedbackData && feedbackData.length > 0 ? (
-                    feedbackData.map((tip, index) => (
-                      <div key={index} className="bg-gray-700 p-3 rounded-lg">
-                        {tip.message || tip}
-                      </div>
-                    ))
-                  ) : (
-                    <div className="bg-gray-700 p-3 rounded-lg">
-                      No feedback available yet.
+      {error && (
+        <ErrorMessage>
+          <AlertTriangle size={18} />
+          {error}
+        </ErrorMessage>
+      )}
+      
+      <VideoContainer>
+        <Video
+          ref={videoRef}
+          src={videoUrl}
+          controls={false}
+          onError={handleError}
+        >
+          <source src={videoUrl} type="video/webm" />
+          Your browser does not support the video tag.
+        </Video>
+        <Canvas ref={canvasRef} />
+      </VideoContainer>
+      
+      <Controls>
+        <Button onClick={togglePlayPause}>
+          {isPlaying ? <Pause size={20} /> : <Play size={20} />}
+          {isPlaying ? 'Pause' : 'Play'}
+        </Button>
+      </Controls>
+      
+      <AnalysisPanel>
+        <h3>Analysis Results</h3>
+        
+        {hasAnalysisData ? (
+          <>
+            <StatBox>
+              <StatTitle>Measurements</StatTitle>
+              <div className="flex flex-wrap mt-2">
+                {analysisData.frames.length > 0 && analysisData.frames[0].measurements && (
+                  Object.entries(analysisData.frames[0].measurements).map(([key, value]) => (
+                    <div key={key} className="w-1/3 mb-2">
+                      <StatLabel>{key}</StatLabel>
+                      <StatValue>{typeof value === 'number' ? value.toFixed(1) : value}</StatValue>
                     </div>
-                  )}
-                </div>
+                  ))
+                )}
               </div>
-            </>
-          )}
-        </div>
-      </div>
-    </div>
+            </StatBox>
+            
+            <FeedbackSection>
+              <h4>Feedback Tips</h4>
+              {analysisData.frames.some(frame => frame.arrows && frame.arrows.length > 0) ? (
+                <FeedbackList>
+                  {Array.from(new Set(
+                    analysisData.frames
+                      .flatMap(frame => frame.arrows || [])
+                      .map(arrow => arrow.message)
+                      .filter(Boolean)
+                  )).map((message, index) => (
+                    <FeedbackTip key={index}>
+                      <Info size={16} className="mr-2" />
+                      {message}
+                    </FeedbackTip>
+                  ))}
+                </FeedbackList>
+              ) : (
+                <p>Great job! No significant issues detected.</p>
+              )}
+            </FeedbackSection>
+          </>
+        ) : (
+          <div>
+            {analysisData ? (
+              <p>Analysis failed. You can still review your recording, but feedback is not available.</p>
+            ) : (
+              <p>Video recorded successfully. Analysis data is not available.</p>
+            )}
+          </div>
+        )}
+      </AnalysisPanel>
+    </Container>
   );
 };
 
