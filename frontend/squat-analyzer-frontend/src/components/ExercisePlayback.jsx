@@ -1,5 +1,5 @@
 // src/components/ExercisePlayback.jsx
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Play, Pause, SkipForward, SkipBack, AlertTriangle, CheckCircle, Info, Maximize2, Minimize2 } from 'lucide-react';
 import styled from 'styled-components';
 
@@ -444,130 +444,127 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTi
   };
 
   // Draw overlays on the canvas
-  const drawOverlays = (ctx, videoElement, landmarks, feedback) => {
-    if (!ctx || !videoElement || !landmarks) return;
+  const drawOverlays = useCallback((ctx, landmarks, feedback) => {
+    if (!landmarks || landmarks.length === 0) return;
 
-    // Clear previous frame
+    // Clear the canvas
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-
-    // Set up styles for landmarks and lines
+    
+    // Set styles for landmark points and connections
+    ctx.lineWidth = 2;
     ctx.strokeStyle = 'white';
-    ctx.fillStyle = 'white';
-    ctx.lineWidth = 3;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-
-    // Draw landmarks
-    const points = landmarks.map(point => ({
-      x: point.x * ctx.canvas.width,
-      y: point.y * ctx.canvas.height
-    }));
-
-    // Draw connecting lines
-    ctx.beginPath();
-    // Right side
-    if (points[11] && points[13] && points[15]) { // Right shoulder to ankle
-      ctx.moveTo(points[11].x, points[11].y); // Right shoulder
-      ctx.lineTo(points[13].x, points[13].y); // Right elbow
-      ctx.lineTo(points[15].x, points[15].y); // Right wrist
-    }
-    if (points[23] && points[25] && points[27]) { // Right hip to foot
-      ctx.moveTo(points[23].x, points[23].y); // Right hip
-      ctx.lineTo(points[25].x, points[25].y); // Right knee
-      ctx.lineTo(points[27].x, points[27].y); // Right ankle
-    }
-    // Left side
-    if (points[12] && points[14] && points[16]) { // Left shoulder to ankle
-      ctx.moveTo(points[12].x, points[12].y); // Left shoulder
-      ctx.lineTo(points[14].x, points[14].y); // Left elbow
-      ctx.lineTo(points[16].x, points[16].y); // Left wrist
-    }
-    if (points[24] && points[26] && points[28]) { // Left hip to foot
-      ctx.moveTo(points[24].x, points[24].y); // Left hip
-      ctx.lineTo(points[26].x, points[26].y); // Left knee
-      ctx.lineTo(points[28].x, points[28].y); // Left ankle
-    }
-    ctx.stroke();
-
-    // Draw landmark points
-    const keyPoints = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28]; // Shoulders, elbows, wrists, hips, knees, ankles
-    keyPoints.forEach(index => {
-      if (points[index]) {
+    ctx.fillStyle = 'red';
+    
+    // Draw landmark points and connections
+    landmarks.forEach((point, index) => {
+      if (point.visibility && point.visibility > 0.5) {
+        const x = point.x * ctx.canvas.width;
+        const y = point.y * ctx.canvas.height;
+        
+        // Draw point
         ctx.beginPath();
-        ctx.arc(points[index].x, points[index].y, 6, 0, 2 * Math.PI);
+        ctx.arc(x, y, 4, 0, 2 * Math.PI);
         ctx.fill();
+        
+        // Connect points based on body structure
+        const connections = [
+          [11, 13, 15], // Right arm
+          [12, 14, 16], // Left arm
+          [23, 25, 27, 31], // Right leg
+          [24, 26, 28, 32], // Left leg
+          [11, 23], // Right torso
+          [12, 24], // Left torso
+          [11, 12], // Shoulders
+          [23, 24], // Hips
+        ];
+        
+        connections.forEach(chain => {
+          if (chain.includes(index)) {
+            const nextIndex = chain[chain.indexOf(index) + 1];
+            if (nextIndex && landmarks[nextIndex] && landmarks[nextIndex].visibility > 0.5) {
+              ctx.beginPath();
+              ctx.moveTo(x, y);
+              ctx.lineTo(
+                landmarks[nextIndex].x * ctx.canvas.width,
+                landmarks[nextIndex].y * ctx.canvas.height
+              );
+              ctx.stroke();
+            }
+          }
+        });
       }
     });
 
-    // Draw feedback annotations
-    if (feedback && feedback.length > 0) {
-      ctx.font = '20px Arial';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
+    // Draw measurements and analysis
+    if (feedback && feedback.measurements) {
+      const { kneeAngle, depthRatio, shoulderMidfootDiff } = feedback.measurements;
       
-      feedback.forEach((item, index) => {
-        if (item.type === 'annotation' && item.position) {
-          // Draw arrow
-          const start = points[item.position.start];
-          const end = points[item.position.end];
-          if (start && end) {
-            drawArrow(ctx, start.x, start.y, end.x, end.y);
-          }
+      // Position text in top-left corner
+      ctx.font = '16px Arial';
+      let yOffset = 30;
+      const xOffset = 10;
+      
+      // Knee Angle
+      ctx.fillStyle = 'blue';
+      ctx.fillText('Knee Angle:', xOffset, yOffset);
+      ctx.fillStyle = '#00ff00';
+      ctx.fillText(` ${Math.round(kneeAngle)}°`, xOffset + 90, yOffset);
+      yOffset += 25;
+      
+      // Depth Ratio
+      ctx.fillStyle = 'red';
+      ctx.fillText(`Depth Ratio: ${depthRatio.toFixed(2)}`, xOffset, yOffset);
+      yOffset += 25;
+      
+      // Shoulder-Midfoot Difference
+      ctx.fillStyle = 'cyan';
+      ctx.fillText(`Shoulder-Midfoot Diff: ${shoulderMidfootDiff.toFixed(1)}px`, xOffset, yOffset);
+    }
+
+    // Draw feedback arrows if available
+    if (feedback && feedback.arrows) {
+      feedback.arrows.forEach(arrow => {
+        if (arrow.start && arrow.end) {
+          ctx.beginPath();
+          ctx.strokeStyle = arrow.color || 'yellow';
+          ctx.lineWidth = 3;
           
-          // Draw text with background
-          const text = item.message;
-          const textX = item.position.textX * ctx.canvas.width;
-          const textY = item.position.textY * ctx.canvas.height;
+          const startX = arrow.start.x * ctx.canvas.width;
+          const startY = arrow.start.y * ctx.canvas.height;
+          const endX = arrow.end.x * ctx.canvas.width;
+          const endY = arrow.end.y * ctx.canvas.height;
           
-          // Draw text background
-          const metrics = ctx.measureText(text);
-          const padding = 4;
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-          ctx.fillRect(
-            textX - padding, 
-            textY - padding,
-            metrics.width + padding * 2,
-            parseInt(ctx.font) + padding * 2
+          // Draw line
+          ctx.moveTo(startX, startY);
+          ctx.lineTo(endX, endY);
+          ctx.stroke();
+          
+          // Draw arrowhead
+          const angle = Math.atan2(endY - startY, endX - startX);
+          const arrowLength = 15;
+          
+          ctx.beginPath();
+          ctx.moveTo(endX, endY);
+          ctx.lineTo(
+            endX - arrowLength * Math.cos(angle - Math.PI / 6),
+            endY - arrowLength * Math.sin(angle - Math.PI / 6)
           );
-          
-          // Draw text
-          ctx.fillStyle = 'white';
-          ctx.fillText(text, textX, textY);
+          ctx.moveTo(endX, endY);
+          ctx.lineTo(
+            endX - arrowLength * Math.cos(angle + Math.PI / 6),
+            endY - arrowLength * Math.sin(angle + Math.PI / 6)
+          );
+          ctx.stroke();
         }
       });
     }
-  };
-
-  const drawArrow = (ctx, fromX, fromY, toX, toY) => {
-    const headLength = 15;
-    const angle = Math.atan2(toY - fromY, toX - fromX);
-    
-    // Draw line
-    ctx.beginPath();
-    ctx.moveTo(fromX, fromY);
-    ctx.lineTo(toX, toY);
-    ctx.stroke();
-    
-    // Draw arrowhead
-    ctx.beginPath();
-    ctx.moveTo(toX, toY);
-    ctx.lineTo(
-      toX - headLength * Math.cos(angle - Math.PI / 6),
-      toY - headLength * Math.sin(angle - Math.PI / 6)
-    );
-    ctx.moveTo(toX, toY);
-    ctx.lineTo(
-      toX - headLength * Math.cos(angle + Math.PI / 6),
-      toY - headLength * Math.sin(angle + Math.PI / 6)
-    );
-    ctx.stroke();
-  };
+  }, []);
 
   // Handle video time updates
   const handleTimeUpdate = () => {
     if (videoRef.current) {
       setCurrentTime(videoRef.current.currentTime);
-      drawOverlays(canvasRef.current.getContext('2d'), videoRef.current, currentAngle, activeFeedback);
+      drawOverlays(canvasRef.current.getContext('2d'), currentAngle, activeFeedback);
     }
   };
 
@@ -611,7 +608,7 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTi
     const updateCanvasSize = () => {
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
-      drawOverlays(canvas.getContext('2d'), video, currentAngle, activeFeedback);
+      drawOverlays(canvas.getContext('2d'), currentAngle, activeFeedback);
     };
 
     video.addEventListener('loadedmetadata', updateCanvasSize);
