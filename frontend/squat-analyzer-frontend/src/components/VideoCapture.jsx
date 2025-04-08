@@ -1,37 +1,98 @@
 // src/components/VideoCapture.jsx
 import React, { useRef, useEffect, useState } from 'react';
-import { Camera, RefreshCw, Maximize2, Minimize2, Circle, Square, AlertTriangle } from 'lucide-react';
+import { Camera, RefreshCw, Maximize2, Minimize2, Square, AlertTriangle } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import styled from 'styled-components';
 
 // API URL with fallback for local development
 const API_URL = 'https://squat-analyzer-backend.onrender.com';
 
-const RecorderContainer = styled.div`
+const Container = styled.div`
   position: relative;
   width: 100%;
   max-width: 800px;
   margin: 0 auto;
 `;
 
-const VideoPreview = styled.video`
+const Heading = styled.h1`
+  font-size: 24px;
+  font-weight: bold;
+  margin-bottom: 20px;
+`;
+
+const ErrorMessage = styled.div`
+  background-color: #ff4444;
+  color: white;
+  padding: 10px;
+  border-radius: 5px;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+`;
+
+const CameraContainer = styled.div`
+  position: relative;
+  width: 100%;
+  max-width: 800px;
+  margin-bottom: 20px;
+`;
+
+const Video = styled.video`
   width: 100%;
   height: auto;
   margin-bottom: 20px;
 `;
 
-const Controls = styled.div`
+const CameraPermissionMessage = styled.div`
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  color: white;
+  padding: 20px;
+`;
+
+const RecordingIndicator = styled.div`
+  position: absolute;
+  top: 0;
+  right: 0;
+  background-color: ${props => props.isRecording ? '#ff4136' : '#4CAF50'};
+  color: white;
+  padding: 5px 10px;
+  border-radius: 5px;
+  margin: 10px;
+`;
+
+const RecordingTimer = styled.div`
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  background-color: rgba(0, 0, 0, 0.5);
+  color: white;
+  padding: 5px 10px;
+  border-radius: 5px;
+  margin: 10px;
+`;
+
+const ControlsContainer = styled.div`
   display: flex;
   gap: 10px;
   justify-content: center;
   margin-top: 20px;
 `;
 
-const Button = styled.button`
+const RecordButton = styled.button`
   padding: 10px 20px;
   border-radius: 5px;
   border: none;
-  background-color: ${props => props.recording ? '#ff4444' : '#4CAF50'};
+  background-color: ${props => props.disabled ? '#cccccc' : '#ff4136'};
   color: white;
   cursor: pointer;
   font-size: 16px;
@@ -44,6 +105,27 @@ const Button = styled.button`
     background-color: #cccccc;
     cursor: not-allowed;
   }
+`;
+
+const StopButton = styled.button`
+  padding: 10px 20px;
+  border-radius: 5px;
+  border: none;
+  background-color: #ff4136;
+  color: white;
+  cursor: pointer;
+  font-size: 16px;
+  
+  &:hover {
+    opacity: 0.9;
+  }
+`;
+
+const InstructionsContainer = styled.div`
+  margin-top: 20px;
+  padding: 20px;
+  background-color: #f0f0f0;
+  border-radius: 5px;
 `;
 
 const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
@@ -69,6 +151,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const chunksRef = useRef([]);
   const timerRef = useRef(null);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [streamReady, setStreamReady] = useState(false);
 
   // Initialize video stream
   useEffect(() => {
@@ -81,66 +164,76 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
 
   const initializeCamera = async () => {
     try {
-      // Clean up any existing stream first
-      cleanupStream();
-
-      // Request camera access with specific constraints
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30 }
-        },
-        audio: false
-      });
-
-      // Verify stream is active
-      if (!stream.active) {
-        throw new Error('Stream is not active after initialization');
+      setError(null);
+      console.log("Initializing camera...");
+      
+      // Check if we're in a secure context (needed for camera access)
+      if (!window.isSecureContext) {
+        throw new Error("Camera access requires a secure context (HTTPS)");
       }
-
-      // Store stream reference
+      
+      // Clean up any existing stream
+      cleanupStream();
+      
+      // Check for camera permissions
+      try {
+        const permissionStatus = await navigator.permissions.query({ name: 'camera' });
+        if (permissionStatus.state === 'denied') {
+          throw new Error("Camera access permission denied by browser");
+        }
+      } catch (permErr) {
+        console.log("Permission API not supported, continuing with getUserMedia");
+      }
+      
+      // Set constraints
+      const constraints = {
+        audio: true,
+        video: {
+          width: { ideal: 1280, max: 1920 },
+          height: { ideal: 720, max: 1080 },
+          facingMode: 'user'
+        }
+      };
+      
+      // Get user media
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      
+      if (!stream || !stream.active) {
+        throw new Error("Failed to get an active media stream");
+      }
+      
+      // Store the stream reference
       streamRef.current = stream;
-
-      // Update video element with new stream
+      
+      // Connect stream to video element
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(error => {
-          console.error('Error playing video:', error);
-          throw new Error('Failed to play video stream');
-        });
+        videoRef.current.muted = true; // Prevent feedback
+        await videoRef.current.play();
       }
-
-      setIsInitialized(true);
-      setError(null);
-      console.log('Camera initialized successfully');
+      
+      console.log("Camera initialized successfully");
+      setStreamReady(true);
+      return stream;
     } catch (error) {
-      console.error('Error initializing camera:', error);
-      setError('Failed to access camera. Please check permissions and try again.');
-      setIsInitialized(false);
-      cleanupStream();
+      console.error("Camera initialization error:", error);
+      setError(`Camera error: ${error.message || 'Could not access camera'}`);
+      setStreamReady(false);
+      return null;
     }
   };
 
+  // Function to get the supported MIME type for video recording
   const getSupportedMimeType = () => {
-    const types = [
+    const possibleTypes = [
+      'video/webm;codecs=vp9,opus',
       'video/webm;codecs=vp8,opus',
-      'video/webm;codecs=vp8',
+      'video/webm;codecs=h264,opus',
       'video/webm',
-      'video/mp4',
-      'video/ogg;codecs=theora,vorbis',
-      'video/ogg'
+      'video/mp4'
     ];
     
-    for (const type of types) {
-      if (MediaRecorder.isTypeSupported(type)) {
-        console.log('Using MIME type:', type);
-        return type;
-      }
-    }
-    
-    console.warn('No supported MIME type found, using default');
-    return null;
+    return possibleTypes.find(type => MediaRecorder.isTypeSupported(type));
   };
 
   // Reset session with the backend
@@ -535,7 +628,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Ensure we have a fresh stream
       const stream = await initializeCamera();
       if (!stream || !stream.active) {
-        throw new Error("Failed to initialize camera stream");
+        console.error("Could not get an active stream for recording");
+        setError("Camera not available. Please check permissions and reload the page.");
+        return; // Exit early without throwing to prevent Uncaught Promise errors
       }
 
       // If MediaRecorder is already recording, stop it first
@@ -544,9 +639,22 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         mediaRecorderRef.current.stop();
       }
 
+      // Check for supported MIME types
+      const mimeType = getSupportedMimeType();
+      if (!mimeType) {
+        setError("Your browser doesn't support video recording. Please try a different browser.");
+        return;
+      }
+
       // Create a new MediaRecorder instance
-      const options = { mimeType: 'video/webm;codecs=vp8,opus' };
-      mediaRecorderRef.current = new MediaRecorder(stream, options);
+      const options = { mimeType };
+      try {
+        mediaRecorderRef.current = new MediaRecorder(stream, options);
+      } catch (err) {
+        console.error("Failed to create MediaRecorder:", err);
+        setError(`Recording error: ${err.message}`);
+        return;
+      }
       
       // Set up event handlers
       mediaRecorderRef.current.ondataavailable = (event) => {
@@ -556,11 +664,15 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       };
 
       mediaRecorderRef.current.onstop = () => {
-        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        const blob = new Blob(recordedChunksRef.current, { type: mimeType });
         console.log("Recording stopped, created blob: ", blob);
         recordedChunksRef.current = [];
         stopTimer();
-        onRecordingComplete(blob);
+        if (blob.size > 0) {
+          onRecordingComplete(blob);
+        } else {
+          setError("Recording failed - no data captured");
+        }
       };
 
       // Clear previous chunks
@@ -568,14 +680,13 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       // Start recording with timeslice of 1000ms (1 second)
       mediaRecorderRef.current.start(1000);
-      console.log("MediaRecorder restarted");
+      console.log("MediaRecorder started");
       startTimer();
       setIsRecording(true);
     } catch (error) {
       console.error("Error starting recording:", error);
       stopTimer();
       setIsRecording(false);
-      throw error;
     }
   };
 
@@ -619,33 +730,73 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   };
 
   return (
-    <RecorderContainer>
-      <VideoPreview
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted
-      />
-      <Controls>
-        <Button
-          onClick={isRecording ? stopRecording : startRecording}
-          recording={isRecording}
-          disabled={!isInitialized}
-        >
-          {isRecording ? (
-            <>
-              <Square size={16} />
-              Stop Recording ({formatTime(recordingTime)})
-            </>
-          ) : (
-            <>
-              <Camera size={16} />
-              Start Recording
-            </>
-          )}
-        </Button>
-      </Controls>
-    </RecorderContainer>
+    <Container>
+      <Heading>Record Your Squat</Heading>
+      
+      {error && (
+        <ErrorMessage>
+          <AlertTriangle size={18} />
+          {error}
+        </ErrorMessage>
+      )}
+      
+      <CameraContainer>
+        <Video 
+          ref={videoRef}
+          autoPlay 
+          playsInline
+          muted
+        />
+        
+        {!streamReady && !isRecording && (
+          <CameraPermissionMessage>
+            <Camera size={32} />
+            <p>Camera access is required</p>
+            <button onClick={initializeCamera} className="bg-blue-500 text-white px-4 py-2 rounded mt-2">
+              Enable Camera
+            </button>
+          </CameraPermissionMessage>
+        )}
+        
+        <RecordingIndicator isRecording={isRecording}>
+          <Circle size={12} fill="#ff4136" />
+          {isRecording ? 'Recording' : ''}
+        </RecordingIndicator>
+        
+        {isRecording && (
+          <RecordingTimer>
+            {formatTime(recordingTime)}
+          </RecordingTimer>
+        )}
+      </CameraContainer>
+      
+      <ControlsContainer>
+        {!isRecording ? (
+          <RecordButton 
+            onClick={startRecording}
+            disabled={!streamReady || isRecording}
+          >
+            <Circle size={16} fill="#ff4136" />
+            Start Recording
+          </RecordButton>
+        ) : (
+          <StopButton onClick={stopRecording}>
+            <Square size={16} fill="#fff" />
+            Stop Recording
+          </StopButton>
+        )}
+      </ControlsContainer>
+      
+      <InstructionsContainer>
+        <h3>How to Record a Proper Squat</h3>
+        <ol>
+          <li>Position your device so your entire body is visible from the side.</li>
+          <li>Stand about 6-8 feet from the camera.</li>
+          <li>Perform a squat with proper form.</li>
+          <li>Record a single squat repetition (down and up).</li>
+        </ol>
+      </InstructionsContainer>
+    </Container>
   );
 };
 
