@@ -175,16 +175,24 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
 
   // Draw overlays on the canvas
   const drawOverlays = useCallback((ctx, timestamp) => {
-    if (!ctx || !hasAnalysisData) return;
+    if (!ctx) return;
     
     // Clear canvas
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
     
+    if (!hasAnalysisData) {
+      // Draw "Analysis not available" message
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+      ctx.fillRect(0, 0, 220, 30);
+      ctx.font = '16px Arial';
+      ctx.fillStyle = 'white';
+      ctx.fillText('Analysis not available', 10, 20);
+      return;
+    }
+    
     // Find the closest frame to the current timestamp
     const currentSeconds = timestamp || 0;
     const frames = analysisData.frames;
-    
-    console.log(`Drawing overlay for time ${currentSeconds.toFixed(2)}s, ${frames.length} total frames`);
     
     // Find the frame that's closest to our current time
     let closestFrame = null;
@@ -199,7 +207,6 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
     }
     
     if (!closestFrame) {
-      console.log("No suitable frame found for current timestamp");
       return;
     }
     
@@ -480,7 +487,7 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
         <Video
           ref={videoRef}
           src={videoUrl}
-          controls={false}
+          controls={true}
           onError={handleError}
         >
           <source src={videoUrl} type="video/webm" />
@@ -559,12 +566,15 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
             </FeedbackSection>
           </>
         ) : (
-          <div>
-            {analysisData ? (
-              <p>Analysis failed. You can still review your recording, but feedback is not available.</p>
-            ) : (
-              <p>Video recorded successfully. Analysis data is not available.</p>
-            )}
+          <div className="p-4 bg-gray-100 rounded text-center">
+            <p className="font-semibold">Analysis data not available</p>
+            <p className="mt-2">This may be due to:</p>
+            <ul className="list-disc list-inside mt-2 text-left">
+              <li>Backend server timeout (common on free Render tier)</li>
+              <li>Network connectivity issues</li>
+              <li>Backend processing errors</li>
+            </ul>
+            <p className="mt-2">You can still review your form in the recording above.</p>
           </div>
         )}
       </AnalysisPanel>

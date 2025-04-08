@@ -354,15 +354,30 @@ def analyze_video():
         frame_number = 0
         processed_frames = 0
         
-        while cap.isOpened():
+        # Calculate frame skip rate based on video length to reduce processing time
+        # Process 1 frame per second for longer videos
+        max_frames_to_process = 30  # Maximum number of frames to process
+        
+        if frame_count > max_frames_to_process:
+            frame_skip = max(1, int(frame_count / max_frames_to_process))
+        else:
+            frame_skip = 5  # Default: process every 5th frame
+            
+        app.logger.info(f"Processing every {frame_skip}th frame")
+        
+        while cap.isOpened() and processed_frames < max_frames_to_process:
             success, frame = cap.read()
             if not success:
                 break
             
-            # Only process every 5th frame for efficiency
-            if frame_number % 5 == 0:
+            # Only process frames at the specified interval
+            if frame_number % frame_skip == 0:
                 # Convert BGR to RGB
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Resize frame to reduce memory usage if needed
+                if frame.shape[0] > 720 or frame.shape[1] > 1280:
+                    frame_rgb = cv2.resize(frame_rgb, (0, 0), fx=0.5, fy=0.5)
                 
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
                 detection_result = pose_landmarker.detect(mp_image)
@@ -423,6 +438,13 @@ def analyze_video():
                     
                     results.append(feedback)
                     processed_frames += 1
+                    
+                # Free memory
+                del frame_rgb
+                if processed_frames % 5 == 0:
+                    # Force garbage collection every 5 processed frames
+                    import gc
+                    gc.collect()
             
             frame_number += 1
         

@@ -6,12 +6,13 @@ import VideoCapture from './components/VideoCapture';
 import ExercisePlayback from './components/ExercisePlayback';
 import './App.css';
 
+// Define the backend URL with a fallback
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://squat-analyzer-backend.onrender.com';
 
-// Create an axios instance
+// Create an axios instance with shorter timeout for free Render tier
 const api = axios.create({
   baseURL: BACKEND_URL,
-  timeout: 60000, // 60 seconds timeout
+  timeout: 30000, // 30 seconds timeout instead of 60
   headers: {
     'Content-Type': 'multipart/form-data',
   }
@@ -30,7 +31,7 @@ const Title = styled.h1`
 `;
 
 const App = () => {
-  const [recordedVideo, setRecordedVideo] = useState(null);
+  const [videoBlob, setVideoBlob] = useState(null);
   const [analysisData, setAnalysisData] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState(null);
@@ -44,6 +45,9 @@ const App = () => {
       setLoading(true);
       setError(null);
       
+      // Save the blob for potential direct playback
+      setVideoBlob(videoBlob);
+      
       // Create URL for local playback
       const videoUrl = URL.createObjectURL(videoBlob);
       setVideoUrl(videoUrl);
@@ -54,7 +58,12 @@ const App = () => {
       console.log(`Sending request to ${BACKEND_URL}/analyze`);
       
       // Use axios instead of fetch
-      const response = await api.post('/analyze', formData);
+      const response = await api.post('/analyze', formData, {
+        onUploadProgress: progressEvent => {
+          const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+          console.log(`Upload progress: ${percentCompleted}%`);
+        }
+      });
       
       console.log("Analysis data received:", response.data);
       setAnalysisData(response.data);
@@ -64,13 +73,15 @@ const App = () => {
       
       // Extract the most useful error message
       let errorMessage = "Unknown error";
-      if (error.response) {
+      if (error.code === 'ECONNABORTED') {
+        errorMessage = "Analysis took too long and timed out. This is common on the free Render tier. You can still watch your recording without the analysis overlays.";
+      } else if (error.response) {
         // Server responded with an error status
         errorMessage = `Server error: ${error.response.status} ${error.response.statusText}`;
         console.error("Server error details:", error.response.data);
       } else if (error.request) {
         // Request was made but no response received
-        errorMessage = "No response from server. Please check your connection.";
+        errorMessage = "No response from server. The backend may be offline or restarting.";
       } else {
         // Something else caused the error
         errorMessage = error.message;
@@ -78,10 +89,23 @@ const App = () => {
       
       // Still show the video for playback even if analysis failed
       setShowPlayback(true);
-      setError(`Failed to analyze video: ${errorMessage}`);
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleBackToRecord = () => {
+    // Clean up resources
+    if (videoUrl) {
+      URL.revokeObjectURL(videoUrl);
+    }
+    
+    setVideoBlob(null);
+    setVideoUrl(null);
+    setAnalysisData(null);
+    setError(null);
+    setShowPlayback(false);
   };
 
   return (
@@ -97,12 +121,16 @@ const App = () => {
               videoUrl={videoUrl}
               analysisData={analysisData}
             />
+            
+            {error && (
+              <div className="mt-4 p-4 bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700">
+                <p className="font-bold">Analysis Warning:</p>
+                <p>{error}</p>
+              </div>
+            )}
+            
             <button
-              onClick={() => {
-                setShowPlayback(false);
-                setVideoUrl(null);
-                setAnalysisData(null);
-              }}
+              onClick={handleBackToRecord}
               className="mt-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
             >
               Record New Video
@@ -111,14 +139,9 @@ const App = () => {
         )}
 
         {loading && (
-          <div className="text-center mt-4">
-            <p>Analyzing video...</p>
-          </div>
-        )}
-
-        {error && (
-          <div className="text-red-500 text-center mt-4">
-            <p>{error}</p>
+          <div className="text-center mt-4 p-4 bg-blue-100 rounded">
+            <p className="font-semibold">Analyzing video...</p>
+            <p className="text-sm text-gray-600 mt-2">This can take up to 30 seconds on the free Render tier. Please be patient.</p>
           </div>
         )}
       </div>
