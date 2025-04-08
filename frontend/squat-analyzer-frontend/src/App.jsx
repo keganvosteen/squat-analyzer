@@ -26,69 +26,90 @@ const App = () => {
   const [analysisData, setAnalysisData] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState(null);
+  const [videoUrl, setVideoUrl] = useState(null);
+  const [showPlayback, setShowPlayback] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  const handleRecordingComplete = async (data) => {
-    console.log('Recording complete:', data);
-    if (!data.videoBlob || data.videoBlob.size === 0) {
-      setError('Recording failed. Please try again.');
-      return;
-    }
-    setRecordedVideo(data);
-    await analyzeVideo(data.videoBlob);
-  };
-
-  const analyzeVideo = async (videoBlob) => {
+  const handleRecordingComplete = async (videoBlob) => {
     try {
-      setIsAnalyzing(true);
+      setLoading(true);
       setError(null);
 
+      // Store video URL for playback
+      const videoUrl = URL.createObjectURL(videoBlob);
+      setVideoUrl(videoUrl);
+
+      // Create FormData and append video
       const formData = new FormData();
       formData.append('video', videoBlob, 'squat-recording.webm');
 
-      const response = await fetch(`${API_URL}/api/analyze`, {
+      // Send video to backend for analysis
+      console.log('Sending video for analysis...');
+      const response = await fetch('http://localhost:5000/analyze', {
         method: 'POST',
         body: formData,
-        credentials: 'include',
-        headers: {
-          'Accept': 'application/json',
-        },
-        mode: 'cors'
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        throw new Error('Failed to analyze video');
       }
 
       const data = await response.json();
-      console.log('Analysis complete:', data);
+      console.log('Received analysis data:', data);
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
       setAnalysisData(data);
-    } catch (error) {
-      console.error('Error analyzing video:', error);
-      setError(`Failed to analyze video: ${error.message}`);
+      setShowPlayback(true);
+    } catch (err) {
+      console.error('Error analyzing video:', err);
+      setError(err.message);
     } finally {
-      setIsAnalyzing(false);
+      setLoading(false);
     }
   };
 
   return (
-    <Container>
-      <Title>Squat Analyzer</Title>
-      {!recordedVideo ? (
-        <VideoCapture onRecordingComplete={handleRecordingComplete} />
-      ) : (
-        <ExercisePlayback
-          videoUrl={recordedVideo.videoUrl}
-          analysisData={analysisData}
-          isAnalyzing={isAnalyzing}
-          error={error}
-          onReset={() => {
-            setRecordedVideo(null);
-            setAnalysisData(null);
-            setError(null);
-          }}
-        />
-      )}
-    </Container>
+    <div className="min-h-screen bg-gray-100 py-8">
+      <div className="container mx-auto px-4">
+        <h1 className="text-3xl font-bold text-center mb-8">Squat Form Analyzer</h1>
+        
+        {!showPlayback ? (
+          <VideoCapture onRecordingComplete={handleRecordingComplete} />
+        ) : (
+          <div>
+            <ExercisePlayback
+              videoUrl={videoUrl}
+              analysisData={analysisData}
+            />
+            <button
+              onClick={() => {
+                setShowPlayback(false);
+                setVideoUrl(null);
+                setAnalysisData(null);
+              }}
+              className="mt-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+            >
+              Record New Video
+            </button>
+          </div>
+        )}
+
+        {loading && (
+          <div className="text-center mt-4">
+            <p>Analyzing video...</p>
+          </div>
+        )}
+
+        {error && (
+          <div className="text-red-500 text-center mt-4">
+            <p>{error}</p>
+          </div>
+        )}
+      </div>
+    </div>
   );
 };
 

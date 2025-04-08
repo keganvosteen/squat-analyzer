@@ -445,7 +445,13 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTi
 
   // Draw overlays on the canvas
   const drawOverlays = useCallback((ctx, landmarks, feedback) => {
-    if (!landmarks || landmarks.length === 0) return;
+    if (!landmarks || landmarks.length === 0) {
+      console.log('No landmarks data available');
+      return;
+    }
+
+    console.log('Drawing overlays with landmarks:', landmarks);
+    console.log('Feedback data:', feedback);
 
     // Clear the canvas
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);

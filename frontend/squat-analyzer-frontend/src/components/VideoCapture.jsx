@@ -496,77 +496,68 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     return `${mins}:${secs}`;
   };
 
+  const handleRecordingComplete = () => {
+    console.log('Recording complete');
+    if (!mediaRecorderRef.current) {
+      console.error('No media recorder available');
+      return;
+    }
+
+    mediaRecorderRef.current.stop();
+    mediaRecorderRef.current.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        console.log('Video data available:', event.data);
+        // Pass the video blob directly to the parent component
+        onRecordingComplete(event.data);
+      }
+    };
+  };
+
   const startRecording = async () => {
     try {
-      // Always reinitialize camera to ensure fresh stream
-      await initializeCamera();
-
-      // Double check stream is active
-      if (!streamRef.current || !streamRef.current.active) {
-        console.log('Stream is not active, reinitializing camera');
+      // Initialize camera if not already done
+      if (!streamRef.current) {
         await initializeCamera();
-        
-        // If still not active, throw error
-        if (!streamRef.current || !streamRef.current.active) {
-          throw new Error('Failed to initialize active camera stream');
-        }
       }
 
-      // Ensure MediaRecorder is properly initialized with active stream
+      if (!streamRef.current || !streamRef.current.active) {
+        throw new Error('Camera stream is not active');
+      }
+
+      // Get the supported MIME type
       const mimeType = getSupportedMimeType();
       if (!mimeType) {
         throw new Error('No supported video MIME type found');
       }
 
-      // Create new MediaRecorder with active stream
-      const newMediaRecorder = new MediaRecorder(streamRef.current, {
+      // Create MediaRecorder instance
+      mediaRecorderRef.current = new MediaRecorder(streamRef.current, {
         mimeType,
-        videoBitsPerSecond: 2500000
+        videoBitsPerSecond: 2500000 // 2.5 Mbps
       });
 
-      // Clear previous chunks
-      chunksRef.current = [];
-      
-      // Set up event handlers
-      newMediaRecorder.ondataavailable = (event) => {
+      // Set up data handling
+      const chunks = [];
+      mediaRecorderRef.current.ondataavailable = (event) => {
         if (event.data.size > 0) {
-          console.log('Received data chunk of size:', event.data.size);
-          chunksRef.current.push(event.data);
+          chunks.push(event.data);
         }
       };
 
-      newMediaRecorder.onstop = () => {
-        console.log('MediaRecorder stopped, chunks:', chunksRef.current.length);
-        if (chunksRef.current.length > 0) {
-          const blob = new Blob(chunksRef.current, { type: newMediaRecorder.mimeType });
-          console.log('Created blob of size:', blob.size);
-          const url = URL.createObjectURL(blob);
-          onRecordingComplete({ videoUrl: url, videoBlob: blob });
-        } else {
-          console.error('No recorded chunks available');
-          setError('Recording failed. Please try again.');
-        }
+      mediaRecorderRef.current.onstop = () => {
+        const videoBlob = new Blob(chunks, { type: mimeType });
+        console.log('Recording stopped, created blob:', videoBlob);
+        onRecordingComplete(videoBlob);
       };
 
-      // Store the MediaRecorder reference
-      mediaRecorderRef.current = newMediaRecorder;
-
-      // Start recording with a timeslice
-      mediaRecorderRef.current.start(1000);
+      // Start recording
+      mediaRecorderRef.current.start(1000); // Collect data every second
       setIsRecording(true);
-      setRecordingTime(0);
-      
-      // Start timer
-      timerRef.current = setInterval(() => {
-        setRecordingTime(prev => prev + 1);
-      }, 1000);
+      startTimer();
 
-      console.log('Started recording with MediaRecorder');
     } catch (error) {
       console.error('Error starting recording:', error);
-      setError('Failed to start recording. Please try again.');
-      cleanupStream();
-      setIsRecording(false);
+      setError(error.message);
     }
   };
 
