@@ -9,101 +9,81 @@ const API_URL = process.env.NODE_ENV === 'production'
   ? 'https://squat-analyzer-backend.onrender.com'
   : 'http://localhost:3000';
 
-const AppContainer = styled.div`
+const Container = styled.div`
   max-width: 1200px;
   margin: 0 auto;
-  padding: 20px;
+  padding: 2rem;
 `;
 
 const Title = styled.h1`
   text-align: center;
   color: #333;
-  margin-bottom: 30px;
-`;
-
-const Section = styled.div`
-  margin-bottom: 40px;
+  margin-bottom: 2rem;
 `;
 
 const App = () => {
   const [recordedVideo, setRecordedVideo] = useState(null);
   const [analysisData, setAnalysisData] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [showAnalysis, setShowAnalysis] = useState(false);
-  const [apiConnectionFailed, setApiConnectionFailed] = useState(false);
   const [error, setError] = useState(null);
 
-  const handleRecordingComplete = (videoUrl, videoBlob) => {
-    console.log('Recording complete:', { videoUrl, videoBlob });
-    setRecordedVideo(videoUrl);
-    setShowAnalysis(false);
-    setAnalysisData(null);
-    setApiConnectionFailed(false);
-    setError(null);
-    
-    // Create FormData and append the video blob
-    const formData = new FormData();
-    formData.append('video', videoBlob, 'squat-recording.webm');
-    
-    // Send video for analysis
-    fetch(`${API_URL}/api/analyze`, {
-      method: 'POST',
-      body: formData
-    })
-    .then(response => {
+  const handleRecordingComplete = async (data) => {
+    console.log('Recording complete:', data);
+    if (!data.videoBlob || data.videoBlob.size === 0) {
+      setError('Recording failed. Please try again.');
+      return;
+    }
+    setRecordedVideo(data);
+    await analyzeVideo(data.videoBlob);
+  };
+
+  const analyzeVideo = async (videoBlob) => {
+    try {
+      setIsAnalyzing(true);
+      setError(null);
+
+      const formData = new FormData();
+      formData.append('video', videoBlob, 'squat-recording.webm');
+
+      const response = await fetch(`${API_URL}/api/analyze`, {
+        method: 'POST',
+        body: formData,
+      });
+
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
-      return response.json();
-    })
-    .then(data => {
+
+      const data = await response.json();
       console.log('Analysis complete:', data);
       setAnalysisData(data);
-      setShowAnalysis(true);
-    })
-    .catch(error => {
+    } catch (error) {
       console.error('Error analyzing video:', error);
       setError('Failed to analyze video. Please try again.');
-      setApiConnectionFailed(true);
-    });
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   return (
-    <AppContainer>
-      <Title>Squat Analysis</Title>
-      
-      <Section>
-        {!recordedVideo ? (
-          <VideoCapture onRecordingComplete={handleRecordingComplete} />
-        ) : (
-          <ExercisePlayback 
-            videoUrl={recordedVideo}
-            feedbackData={analysisData?.feedback || []}
-            squatCount={analysisData?.squatCount || 0}
-            squatTimings={analysisData?.squatTimings || []}
-            sessionId={analysisData?.sessionId}
-          />
-        )}
-      </Section>
-
-      {isAnalyzing && (
-        <div style={{ textAlign: 'center' }}>
-          Analyzing your squat... Please wait.
-        </div>
+    <Container>
+      <Title>Squat Analyzer</Title>
+      {!recordedVideo ? (
+        <VideoCapture onRecordingComplete={handleRecordingComplete} />
+      ) : (
+        <ExercisePlayback
+          videoUrl={recordedVideo.videoUrl}
+          analysisData={analysisData}
+          isAnalyzing={isAnalyzing}
+          error={error}
+          onReset={() => {
+            setRecordedVideo(null);
+            setAnalysisData(null);
+            setError(null);
+          }}
+        />
       )}
-
-      {showAnalysis && (
-        <div style={{ textAlign: 'center' }}>
-          Analysis complete!
-        </div>
-      )}
-
-      {apiConnectionFailed && (
-        <div style={{ textAlign: 'center', color: 'red' }}>
-          {error}
-        </div>
-      )}
-    </AppContainer>
+    </Container>
   );
 };
 

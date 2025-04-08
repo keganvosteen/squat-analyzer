@@ -3,16 +3,105 @@ import React, { useRef, useEffect, useState } from 'react';
 import { Play, Pause, SkipForward, SkipBack, AlertTriangle, CheckCircle, Info, Maximize2, Minimize2 } from 'lucide-react';
 import styled from 'styled-components';
 
+// Styled components
+const Container = styled.div`
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  max-width: 1200px;
+  margin: 0 auto;
+`;
+
 const VideoContainer = styled.div`
   position: relative;
   width: 100%;
   max-width: 800px;
-  margin: 0 auto;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
 `;
 
 const Video = styled.video`
   width: 100%;
   height: auto;
+  display: block;
+`;
+
+const Canvas = styled.canvas`
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+`;
+
+const Controls = styled.div`
+  display: flex;
+  gap: 1rem;
+  margin-top: 1rem;
+`;
+
+const Button = styled.button`
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 4px;
+  background: #007bff;
+  color: white;
+  cursor: pointer;
+  transition: background 0.2s;
+
+  &:hover {
+    background: #0056b3;
+  }
+
+  &:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+  }
+`;
+
+const AnalysisPanel = styled.div`
+  width: 100%;
+  max-width: 800px;
+  padding: 1rem;
+  background: #f8f9fa;
+  border-radius: 8px;
+  margin-top: 1rem;
+`;
+
+const StatBox = styled.div`
+  background: white;
+  padding: 1rem;
+  border-radius: 4px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  margin-bottom: 1rem;
+`;
+
+const StatTitle = styled.h3`
+  margin: 0 0 0.5rem 0;
+  color: #333;
+`;
+
+const StatValue = styled.div`
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: #007bff;
+`;
+
+const FeedbackList = styled.ul`
+  list-style: none;
+  padding: 0;
+  margin: 0;
+`;
+
+const FeedbackItem = styled.li`
+  padding: 0.5rem;
+  margin-bottom: 0.5rem;
+  background: white;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 `;
 
 const OverlayCanvas = styled.canvas`
@@ -21,16 +110,6 @@ const OverlayCanvas = styled.canvas`
   left: 0;
   width: 100%;
   height: 100%;
-`;
-
-const AnalysisPanel = styled.div`
-  position: absolute;
-  right: 20px;
-  top: 20px;
-  background: rgba(255, 255, 255, 0.9);
-  padding: 15px;
-  border-radius: 8px;
-  max-width: 300px;
 `;
 
 const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTimings = [], sessionId }) => {
