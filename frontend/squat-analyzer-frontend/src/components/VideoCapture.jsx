@@ -81,63 +81,65 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
 
   const initializeCamera = async () => {
     try {
-      setError(null);
-      // Stop any existing stream
+      // Clean up any existing stream first
       cleanupStream();
 
-      const constraints = {
+      // Request camera access with specific constraints
+      const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          facingMode: 'user',
           width: { ideal: 1280 },
-          height: { ideal: 720 }
+          height: { ideal: 720 },
+          frameRate: { ideal: 30 }
         },
         audio: false
-      };
-
-      const newStream = await navigator.mediaDevices.getUserMedia(constraints);
-      streamRef.current = newStream;
-      setStream(newStream);
-      
-      if (videoRef.current) {
-        videoRef.current.srcObject = newStream;
-        await videoRef.current.play().catch(console.error);
-      }
-
-      // Initialize MediaRecorder with supported MIME type
-      const mimeType = getSupportedMimeType();
-      if (!mimeType) {
-        throw new Error('No supported video MIME type found');
-      }
-
-      const mediaRecorder = new MediaRecorder(newStream, {
-        mimeType,
-        videoBitsPerSecond: 2500000
       });
 
-      mediaRecorderRef.current = mediaRecorder;
+      // Verify stream is active
+      if (!stream.active) {
+        throw new Error('Stream is not active after initialization');
+      }
+
+      // Store stream reference
+      streamRef.current = stream;
+
+      // Update video element with new stream
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(error => {
+          console.error('Error playing video:', error);
+          throw new Error('Failed to play video stream');
+        });
+      }
+
       setIsInitialized(true);
-      console.log('Camera and MediaRecorder initialized successfully');
+      setError(null);
+      console.log('Camera initialized successfully');
     } catch (error) {
       console.error('Error initializing camera:', error);
       setError('Failed to access camera. Please check permissions and try again.');
       setIsInitialized(false);
+      cleanupStream();
     }
   };
 
   const getSupportedMimeType = () => {
     const types = [
-      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8,opus',
       'video/webm;codecs=vp8',
       'video/webm',
-      'video/mp4'
+      'video/mp4',
+      'video/ogg;codecs=theora,vorbis',
+      'video/ogg'
     ];
-
+    
     for (const type of types) {
       if (MediaRecorder.isTypeSupported(type)) {
         console.log('Using MIME type:', type);
         return type;
       }
     }
+    
+    console.warn('No supported MIME type found, using default');
     return null;
   };
 
@@ -496,41 +498,47 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
 
   const startRecording = async () => {
     try {
-      if (!isInitialized || !streamRef.current || !mediaRecorderRef.current) {
-        await initializeCamera();
-      }
+      // Always reinitialize camera to ensure fresh stream
+      await initializeCamera();
 
-      // Verify stream is active
+      // Double check stream is active
       if (!streamRef.current || !streamRef.current.active) {
         console.log('Stream is not active, reinitializing camera');
         await initializeCamera();
+        
+        // If still not active, throw error
+        if (!streamRef.current || !streamRef.current.active) {
+          throw new Error('Failed to initialize active camera stream');
+        }
       }
 
-      if (!mediaRecorderRef.current) {
-        throw new Error('MediaRecorder not initialized');
+      // Ensure MediaRecorder is properly initialized with active stream
+      const mimeType = getSupportedMimeType();
+      if (!mimeType) {
+        throw new Error('No supported video MIME type found');
       }
 
-      if (mediaRecorderRef.current.state === 'recording') {
-        console.log('MediaRecorder is already recording, stopping first');
-        stopRecording();
-        return;
-      }
+      // Create new MediaRecorder with active stream
+      const newMediaRecorder = new MediaRecorder(streamRef.current, {
+        mimeType,
+        videoBitsPerSecond: 2500000
+      });
 
       // Clear previous chunks
       chunksRef.current = [];
       
       // Set up event handlers
-      mediaRecorderRef.current.ondataavailable = (event) => {
+      newMediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           console.log('Received data chunk of size:', event.data.size);
           chunksRef.current.push(event.data);
         }
       };
 
-      mediaRecorderRef.current.onstop = () => {
+      newMediaRecorder.onstop = () => {
         console.log('MediaRecorder stopped, chunks:', chunksRef.current.length);
         if (chunksRef.current.length > 0) {
-          const blob = new Blob(chunksRef.current, { type: mediaRecorderRef.current.mimeType });
+          const blob = new Blob(chunksRef.current, { type: newMediaRecorder.mimeType });
           console.log('Created blob of size:', blob.size);
           const url = URL.createObjectURL(blob);
           onRecordingComplete({ videoUrl: url, videoBlob: blob });
@@ -539,6 +547,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           setError('Recording failed. Please try again.');
         }
       };
+
+      // Store the MediaRecorder reference
+      mediaRecorderRef.current = newMediaRecorder;
 
       // Start recording with a timeslice
       mediaRecorderRef.current.start(1000);
@@ -555,7 +566,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       console.error('Error starting recording:', error);
       setError('Failed to start recording. Please try again.');
       cleanupStream();
-      await initializeCamera();
+      setIsRecording(false);
     }
   };
 
@@ -576,14 +587,19 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => {
         track.stop();
-        streamRef.current.removeTrack(track);
       });
       streamRef.current = null;
     }
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
-    setStream(null);
+    if (mediaRecorderRef.current) {
+      if (mediaRecorderRef.current.state === 'recording') {
+        mediaRecorderRef.current.stop();
+      }
+      mediaRecorderRef.current = null;
+    }
+    chunksRef.current = [];
   };
 
   return (

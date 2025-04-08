@@ -96,6 +96,17 @@ const StatLabel = styled.div`
   margin-bottom: 0.25rem;
 `;
 
+const ErrorMessage = styled.div`
+  color: #dc2626;
+  padding: 1rem;
+  background-color: #fee2e2;
+  border-radius: 0.375rem;
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+`;
+
 const FeedbackList = styled.ul`
   list-style: none;
   padding: 0;
@@ -614,38 +625,48 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTi
 
   // Handle video URL changes
   useEffect(() => {
-    console.log("Video URL changed:", videoUrl);
-    setVideoError(null);
-    
-    if (!videoUrl) {
-      return;
-    }
-    
-    const video = videoRef.current;
-    if (!video) return;
-    
-    // Reset state
-    setIsPlaying(false);
-    setCurrentTime(0);
-    setDuration(0);
-    
-    try {
-      // Set video source
-      video.src = videoUrl;
-      video.load();
+    if (videoUrl) {
+      console.log('Video URL changed:', videoUrl);
       
-      // Try playing after a delay
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.play().catch(err => {
-            console.warn("Delayed auto-play failed (expected):", err);
-          });
-        }
-      }, 500);
-    } catch (err) {
-      console.error("Error setting video source:", err);
-      setVideoError("Couldn't load video. Please try again.");
+      // Reset state
+      setError(null);
+      setCurrentTime(0);
+      setDuration(0);
+      setIsPlaying(false);
+      
+      // Ensure video element is properly initialized
+      if (videoRef.current) {
+        // Reset video element
+        videoRef.current.pause();
+        videoRef.current.currentTime = 0;
+        
+        // Load and play video
+        videoRef.current.load();
+        
+        // Try playing after a short delay to ensure proper initialization
+        setTimeout(() => {
+          if (videoRef.current) {
+            videoRef.current.play().catch(error => {
+              console.error('Error playing video:', error);
+              if (error.name === 'NotSupportedError') {
+                setError('Video format not supported. Please try recording again.');
+              } else {
+                setError('Failed to play video. Please try again.');
+              }
+            });
+          }
+        }, 100);
+      }
     }
+    
+    return () => {
+      // Cleanup
+      if (videoRef.current) {
+        videoRef.current.pause();
+        videoRef.current.removeAttribute('src');
+        videoRef.current.load();
+      }
+    };
   }, [videoUrl]);
 
   // Handle timeline interactions
@@ -720,284 +741,113 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTi
   }, []);
 
   return (
-    <div 
-      ref={containerRef}
-      className={`flex flex-col w-full bg-gray-900 rounded-lg overflow-hidden ${isFullscreen ? 'fixed inset-0 z-50' : ''}`}
-    >
-      {/* Video container */}
-      <div className="relative aspect-video bg-black">
-        {videoUrl ? (
-          <>
-            <video
-              ref={videoRef}
-              className="w-full h-full object-contain"
-              playsInline
-              controls
-              preload="auto"
-              type="video/webm"
-              muted={false}
-              crossOrigin="anonymous"
-              onLoadedData={() => console.log("Video loaded data")}
-              onError={(e) => console.error("Video error:", e)}
-            />
-            
-            {/* Overlay canvas (can be used for drawing) */}
-            <canvas ref={canvasRef} className="absolute inset-0 pointer-events-none z-10" />
-            
-            {/* Error message */}
-            {videoError && (
-              <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-red-600 bg-opacity-80 px-4 py-2 rounded text-white z-30 text-center max-w-sm">
-                {videoError}
-              </div>
-            )}
-            
-            {/* Angles overlay */}
-            {currentAngle && (
-              <div className="absolute bottom-4 left-4 bg-black bg-opacity-70 p-2 rounded text-white text-sm z-20">
-                {currentAngle.leftKnee && <div>Left Knee: {currentAngle.leftKnee}°</div>}
-                {currentAngle.rightKnee && <div>Right Knee: {currentAngle.rightKnee}°</div>}
-                {currentAngle.back && <div>Back: {currentAngle.back}°</div>}
-              </div>
-            )}
-            
-            {/* Active feedback warnings */}
-            {activeFeedback && activeFeedback.warnings && activeFeedback.warnings.length > 0 && (
-              <div className="absolute top-4 right-4 bg-black bg-opacity-75 p-3 rounded text-white max-w-sm z-20">
-                <h4 className="font-semibold flex items-center">
-                  <AlertTriangle size={16} className="text-red-500 mr-1" />
-                  Form Corrections
-                </h4>
-                <ul className="mt-1 text-sm">
-                  {activeFeedback.warnings.map((warning, idx) => (
-                    <li key={idx} className="flex items-start mt-1">
-                      <span className="mr-2">•</span>
-                      <span>{warning.message}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            
-            {/* Squat state indicator */}
-            {activeFeedback && activeFeedback.squatState && (
-              <div className={`absolute top-4 left-4 px-3 py-1 rounded-full text-sm font-medium z-20 ${
-                activeFeedback.squatState === 'bottom' ? 'bg-green-500 text-white' :
-                activeFeedback.squatState === 'descending' ? 'bg-yellow-500 text-black' :
-                'bg-blue-500 text-white'
-              }`}>
-                {activeFeedback.squatState.charAt(0).toUpperCase() + activeFeedback.squatState.slice(1)}
-              </div>
-            )}
-            
-            {/* Fullscreen button */}
-            <button
-              onClick={toggleFullscreen}
-              className="absolute top-12 right-4 bg-black bg-opacity-50 p-2 rounded-full text-white hover:bg-opacity-70 transition-all z-20"
-            >
-              {isFullscreen ? <Minimize2 size={20} /> : <Maximize2 size={20} />}
-            </button>
-            
-            {/* Debug info toggle */}
-            <button 
-              onClick={() => setDebugInfo(!debugInfo)} 
-              className="absolute top-4 left-1/2 transform -translate-x-1/2 bg-black bg-opacity-50 p-1 rounded-full z-20"
-              aria-label="Toggle debug info"
-            >
-              <Info size={16} className="text-white" />
-            </button>
-            
-            {/* Debug information panel */}
-            {debugInfo && (
-              <div className="absolute inset-x-0 top-12 bg-black bg-opacity-75 p-2 text-white text-xs font-mono z-20">
-                <div>Video URL: {videoUrl ? 'Provided' : 'Missing'}</div>
-                <div>Video Duration: {formatTime(duration)}</div>
-                <div>Current Time: {formatTime(currentTime)}</div>
-                <div>Feedback Data: {feedbackData?.length || 0} points</div>
-                <div>Squat Timings: {squatTimings?.length || 0} events</div>
-                <div>Playback State: {isPlaying ? 'Playing' : 'Paused'}</div>
-                <div>Active Feedback: {activeFeedback ? 'Yes' : 'No'}</div>
-              </div>
-            )}
-          </>
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-white text-lg">
-            No video available. Record a squat first.
-          </div>
-        )}
+    <div className="flex flex-col items-center gap-4 p-4">
+      <div className="relative w-full max-w-3xl">
+        <video
+          ref={videoRef}
+          className="w-full h-full object-contain"
+          controls
+          playsInline
+          preload="auto"
+          onTimeUpdate={handleTimeUpdate}
+          onLoadedMetadata={handleLoadedMetadata}
+          onError={(e) => {
+            console.error('Video error:', e);
+            const video = e.target;
+            if (video.error) {
+              console.error('Video error code:', video.error.code);
+              console.error('Video error message:', video.error.message);
+              
+              // Handle specific error cases
+              switch (video.error.code) {
+                case 1:
+                  setError('Video loading was aborted. Please try again.');
+                  break;
+                case 2:
+                  setError('Network error occurred. Please check your connection.');
+                  break;
+                case 3:
+                  setError('Video decoding error. Please try recording again.');
+                  break;
+                case 4:
+                  setError('Video format not supported. Please try recording again.');
+                  break;
+                default:
+                  // For Firefox privacy mode errors
+                  if (video.error.message.includes('NS_ERROR_DOM_MEDIA_METADATA_ERR')) {
+                    setError('Video metadata error. Please try recording again with a different browser or disable privacy.resistFingerprinting.');
+                  } else {
+                    setError('Failed to load video. Please try recording again.');
+                  }
+              }
+            }
+          }}
+          onLoadStart={() => {
+            console.log('Video load started');
+            setError(null);
+          }}
+          onLoadedData={() => {
+            console.log('Video data loaded');
+            setError(null);
+          }}
+          onCanPlay={() => {
+            console.log('Video can play');
+            setError(null);
+          }}
+          crossOrigin="anonymous"
+        >
+          <source src={videoUrl} type="video/webm;codecs=vp8,opus" />
+          <source src={videoUrl} type="video/webm;codecs=vp8" />
+          <source src={videoUrl} type="video/webm" />
+          <source src={videoUrl} type="video/mp4" />
+          Your browser does not support the video tag.
+        </video>
+        <canvas
+          ref={canvasRef}
+          className="absolute top-0 left-0 w-full h-full pointer-events-none"
+        />
       </div>
       
-      {/* Custom timeline control */}
-      {videoUrl && (
-        <div 
-          className="relative px-4 py-2 bg-gray-800"
-          onMouseMove={handleTimelineHover}
-          onMouseLeave={handleTimelineLeave}
-        >
-          <div className="text-white text-sm mb-1 font-mono flex justify-between">
-            <span>{formatTime(currentTime)}</span>
-            <span>{formatTime(duration)}</span>
-          </div>
-          
-          {/* Timeline bar */}
-          <div 
-            ref={timelineRef} 
-            className="relative w-full h-4 bg-gray-700 rounded cursor-pointer"
-            onClick={handleTimelineClick}
-            onMouseDown={handleTimelineMouseDown}
-          >
-            {/* Progress bar */}
-            <div 
-              className="absolute top-0 left-0 h-full bg-gray-500 pointer-events-none"
-              style={{ width: `${(currentTime / (duration || 1)) * 100}%` }}
-            />
-            
-            {/* Hover indicator */}
-            {hoverPosition !== null && (
-              <div 
-                className="absolute top-0 h-full w-0.5 bg-white pointer-events-none"
-                style={{ left: `${hoverPosition * 100}%` }}
-              />
-            )}
-            
-            {/* Hover time tooltip */}
-            {hoverPosition !== null && duration > 0 && (
-              <div 
-                className="absolute bottom-full mb-1 bg-gray-900 text-white px-2 py-0.5 rounded text-xs transform -translate-x-1/2 pointer-events-none"
-                style={{ left: `${hoverPosition * 100}%` }}
-              >
-                {formatTime(hoverPosition * duration)}
-              </div>
-            )}
-          </div>
-          
-          {/* Timeline legend */}
-          <div className="flex justify-center gap-4 mt-2 text-xs text-gray-300">
-            <div className="flex items-center">
-              <div className="w-2 h-2 bg-blue-500 rounded-full mr-1"></div>
-              <span>Bottom of Squat</span>
-            </div>
-            <div className="flex items-center">
-              <div className="w-2 h-2 bg-green-500 rounded-full mr-1"></div>
-              <span>Completed Squat</span>
-            </div>
-            <div className="flex items-center">
-              <div className="w-2 h-2 bg-red-500 rounded-full mr-1"></div>
-              <span>Form Issues</span>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* Custom playback controls */}
-      {videoUrl && (
-        <div className="flex justify-between items-center p-3 bg-gray-800 text-white">
-          <button
-            onClick={() => skipToSquat('prev')}
-            className="p-2 rounded-full hover:bg-gray-700 transition-colors"
-            aria-label="Previous squat"
-          >
-            <SkipBack size={20} />
-          </button>
-          
-          <button
-            onClick={togglePlayPause}
-            className="p-3 bg-white text-black rounded-full hover:bg-gray-200 transition-colors"
-            aria-label={isPlaying ? "Pause" : "Play"}
-          >
-            {isPlaying ? <Pause size={24} /> : <Play size={24} />}
-          </button>
-          
-          <button
-            onClick={() => skipToSquat('next')}
-            className="p-2 rounded-full hover:bg-gray-700 transition-colors"
-            aria-label="Next squat"
-          >
-            <SkipForward size={20} />
-          </button>
-        </div>
-      )}
-      
-      {/* Feedback panel */}
-      {videoUrl && activeFeedback && (
-        <div className="p-4 bg-gray-900 text-white rounded-b-lg">
-          <h3 className="text-lg font-semibold mb-2">Form Analysis</h3>
-          
-          {activeFeedback.squatCount !== undefined && (
-            <div className="mb-3">
-              <span className="font-medium">Squats completed: </span>
-              <span className="text-green-400">{activeFeedback.squatCount}</span>
-            </div>
-          )}
-          
-          {activeFeedback.warnings && activeFeedback.warnings.length > 0 ? (
-            <div className="mt-2">
-              <h4 className="font-medium flex items-center text-red-400">
-                <AlertTriangle size={16} className="mr-1" />
-                Form Corrections Needed
-              </h4>
-              <ul className="ml-6 mt-1 list-disc">
-                {activeFeedback.warnings.map((warning, idx) => (
-                  <li key={idx} className="text-sm mt-1">{warning.message}</li>
-                ))}
-              </ul>
-            </div>
+      <div className="w-full max-w-3xl">
+        <div className="bg-gray-800 p-4 rounded-lg">
+          {error ? (
+            <ErrorMessage>
+              <AlertTriangle size={20} />
+              <span>{error}</span>
+            </ErrorMessage>
           ) : (
-            <div className="mt-2 flex items-center text-green-400">
-              <CheckCircle size={16} className="mr-1" />
-              <span>Good form in this frame!</span>
-            </div>
-          )}
-          
-          {/* Hover tooltip for timeline markers */}
-          {hoveredMarker && (
-            <div className="mt-3 p-2 bg-gray-800 rounded border border-gray-600">
-              <div className="font-medium">
-                {hoveredMarker.message || (
-                  hoveredMarker.type ? 
-                    `${hoveredMarker.type.charAt(0).toUpperCase() + hoveredMarker.type.slice(1)} of squat #${hoveredMarker.count}` : 
-                    `Marker at ${formatTime(hoveredMarker.time)}`
-                )}
+            <>
+              <h3 className="text-xl font-semibold mb-4">Analysis Results</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="bg-gray-700 p-4 rounded-lg">
+                  <h4 className="text-lg font-medium mb-2">Squat Count</h4>
+                  <p className="text-2xl font-bold">{squatTimings?.length || 0}</p>
+                </div>
+                <div className="bg-gray-700 p-4 rounded-lg">
+                  <h4 className="text-lg font-medium mb-2">Current Time</h4>
+                  <p className="text-2xl font-bold">{formatTime(currentTime)}</p>
+                </div>
               </div>
-              
-              {hoveredMarker.warnings && hoveredMarker.warnings.length > 0 && (
-                <ul className="mt-1 ml-4 list-disc">
-                  {hoveredMarker.warnings.map((w, i) => (
-                    <li key={i} className="text-sm">{w.message}</li>
-                  ))}
-                </ul>
-              )}
-            </div>
+              <div className="mt-4">
+                <h4 className="text-lg font-medium mb-2">Feedback Tips</h4>
+                <div className="space-y-2">
+                  {feedbackData && feedbackData.length > 0 ? (
+                    feedbackData.map((tip, index) => (
+                      <div key={index} className="bg-gray-700 p-3 rounded-lg">
+                        {tip.message || tip}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="bg-gray-700 p-3 rounded-lg">
+                      No feedback available yet.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
           )}
         </div>
-      )}
-      
-      {/* Analysis panel */}
-      {error ? (
-        <AnalysisPanel>
-          <ErrorMessage>{error}</ErrorMessage>
-        </AnalysisPanel>
-      ) : (
-        <AnalysisPanel>
-          <h3>Analysis Results</h3>
-          <StatBox>
-            <StatLabel>Total Squats</StatLabel>
-            <StatValue>{squatCount}</StatValue>
-          </StatBox>
-          
-          <FeedbackSection>
-            <h4>Feedback Tips</h4>
-            {feedbackData && feedbackData.length > 0 ? (
-              feedbackData.map((tip, index) => (
-                <FeedbackTip key={index}>
-                  {tip.message || tip}
-                </FeedbackTip>
-              ))
-            ) : (
-              <FeedbackTip>No feedback available yet.</FeedbackTip>
-            )}
-          </FeedbackSection>
-        </AnalysisPanel>
-      )}
+      </div>
     </div>
   );
 };
