@@ -1,0 +1,23 @@
+{
+    "python.defaultInterpreterPath": "${env:LOCALAPPDATA}/Microsoft/WindowsApps/python3.12.exe",
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/backend",
+        "${env:APPDATA}/Local/Packages/PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0/LocalCache/local-packages/Python312/site-packages"
+    ],
+    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.include": [
+        "backend/**"
+    ],
+    "python.analysis.diagnosticMode": "workspace",
+    "python.analysis.packageIndexDepths": [
+        {
+            "name": "flask",
+            "depth": 3
+        },
+        {
+            "name": "flask-cors",
+            "depth": 3
+        }
+    ]
+} 

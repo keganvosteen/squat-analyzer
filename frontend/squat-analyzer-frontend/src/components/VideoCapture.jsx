@@ -513,66 +513,91 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     };
   };
 
+  const startTimer = () => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    setRecordingTime(0);
+    timerRef.current = setInterval(() => {
+      setRecordingTime(prev => prev + 1);
+    }, 1000);
+  };
+
+  const stopTimer = () => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    setRecordingTime(0);
+  };
+
   const startRecording = async () => {
+    console.log("Starting MediaRecorder");
     try {
-      // Initialize camera if not already done
-      if (!streamRef.current) {
-        await initializeCamera();
+      // Ensure we have a fresh stream
+      const stream = await initializeCamera();
+      if (!stream || !stream.active) {
+        throw new Error("Failed to initialize camera stream");
       }
 
-      if (!streamRef.current || !streamRef.current.active) {
-        throw new Error('Camera stream is not active');
+      // If MediaRecorder is already recording, stop it first
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+        console.log("MediaRecorder is already recording, stopping first");
+        mediaRecorderRef.current.stop();
       }
 
-      // Get the supported MIME type
-      const mimeType = getSupportedMimeType();
-      if (!mimeType) {
-        throw new Error('No supported video MIME type found');
-      }
-
-      // Create MediaRecorder instance
-      mediaRecorderRef.current = new MediaRecorder(streamRef.current, {
-        mimeType,
-        videoBitsPerSecond: 2500000 // 2.5 Mbps
-      });
-
-      // Set up data handling
-      const chunks = [];
+      // Create a new MediaRecorder instance
+      const options = { mimeType: 'video/webm;codecs=vp8,opus' };
+      mediaRecorderRef.current = new MediaRecorder(stream, options);
+      
+      // Set up event handlers
       mediaRecorderRef.current.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          chunks.push(event.data);
+        if (event.data && event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
         }
       };
 
       mediaRecorderRef.current.onstop = () => {
-        const videoBlob = new Blob(chunks, { type: mimeType });
-        console.log('Recording stopped, created blob:', videoBlob);
-        onRecordingComplete(videoBlob);
+        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        console.log("Recording stopped, created blob: ", blob);
+        recordedChunksRef.current = [];
+        stopTimer();
+        onRecordingComplete(blob);
       };
 
-      // Start recording
-      mediaRecorderRef.current.start(1000); // Collect data every second
-      setIsRecording(true);
+      // Clear previous chunks
+      recordedChunksRef.current = [];
+      
+      // Start recording with timeslice of 1000ms (1 second)
+      mediaRecorderRef.current.start(1000);
+      console.log("MediaRecorder restarted");
       startTimer();
-
+      setIsRecording(true);
     } catch (error) {
-      console.error('Error starting recording:', error);
-      setError(error.message);
+      console.error("Error starting recording:", error);
+      stopTimer();
+      setIsRecording(false);
+      throw error;
     }
   };
 
   const stopRecording = () => {
-    try {
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-        mediaRecorderRef.current.stop();
-        clearInterval(timerRef.current);
-        setIsRecording(false);
-      }
-    } catch (error) {
-      console.error('Error stopping recording:', error);
-      setError('Failed to stop recording properly.');
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+      mediaRecorderRef.current.stop();
+      stopTimer();
+      setIsRecording(false);
     }
   };
+
+  useEffect(() => {
+    return () => {
+      stopTimer();
+      if (mediaRecorderRef.current) {
+        if (mediaRecorderRef.current.state === "recording") {
+          mediaRecorderRef.current.stop();
+        }
+        setIsRecording(false);
+      }
+    };
+  }, []);
 
   const cleanupStream = () => {
     if (streamRef.current) {

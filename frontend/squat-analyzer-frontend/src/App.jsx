@@ -5,9 +5,7 @@ import VideoCapture from './components/VideoCapture';
 import ExercisePlayback from './components/ExercisePlayback';
 import './App.css';
 
-const API_URL = process.env.NODE_ENV === 'production' 
-  ? 'https://squat-analyzer-backend.onrender.com'
-  : 'http://localhost:3000';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://squat-analyzer-backend.onrender.com';
 
 const Container = styled.div`
   max-width: 1200px;
@@ -31,43 +29,26 @@ const App = () => {
   const [loading, setLoading] = useState(false);
 
   const handleRecordingComplete = async (videoBlob) => {
+    console.log("Sending video for analysis...");
     try {
-      setLoading(true);
-      setError(null);
-
-      // Store video URL for playback
-      const videoUrl = URL.createObjectURL(videoBlob);
-      setVideoUrl(videoUrl);
-
-      // Create FormData and append video
       const formData = new FormData();
       formData.append('video', videoBlob, 'squat-recording.webm');
 
-      // Send video to backend for analysis
-      console.log('Sending video for analysis...');
-      const response = await fetch('http://localhost:5000/analyze', {
+      const response = await fetch(`${BACKEND_URL}/analyze`, {
         method: 'POST',
         body: formData,
       });
 
       if (!response.ok) {
-        throw new Error('Failed to analyze video');
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      const data = await response.json();
-      console.log('Received analysis data:', data);
-
-      if (data.error) {
-        throw new Error(data.error);
-      }
-
-      setAnalysisData(data);
-      setShowPlayback(true);
-    } catch (err) {
-      console.error('Error analyzing video:', err);
-      setError(err.message);
-    } finally {
-      setLoading(false);
+      const analysisData = await response.json();
+      console.log("Analysis data received:", analysisData);
+      setAnalysisData(analysisData);
+    } catch (error) {
+      console.error("Error analyzing video:", error);
+      setError(`Failed to analyze video: ${error.message}`);
     }
   };
 
