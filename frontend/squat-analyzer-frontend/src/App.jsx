@@ -5,6 +5,10 @@ import VideoCapture from './components/VideoCapture';
 import ExercisePlayback from './components/ExercisePlayback';
 import './App.css';
 
+const API_URL = process.env.NODE_ENV === 'production' 
+  ? 'https://squat-analyzer-backend.onrender.com'
+  : 'http://localhost:3000';
+
 const AppContainer = styled.div`
   max-width: 1200px;
   margin: 0 auto;
@@ -74,7 +78,10 @@ const App = () => {
         ) : (
           <ExercisePlayback 
             videoUrl={recordedVideo}
-            analysisData={analysisData}
+            feedbackData={analysisData?.feedback || []}
+            squatCount={analysisData?.squatCount || 0}
+            squatTimings={analysisData?.squatTimings || []}
+            sessionId={analysisData?.sessionId}
           />
         )}
       </Section>

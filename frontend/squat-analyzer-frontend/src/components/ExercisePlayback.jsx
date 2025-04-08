@@ -33,7 +33,7 @@ const AnalysisPanel = styled.div`
   max-width: 300px;
 `;
 
-const ExercisePlayback = ({ videoUrl, feedbackData, squatCount, squatTimings, sessionId }) => {
+const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTimings = [], sessionId }) => {
   console.log('ExercisePlayback Component');
   console.log('Video URL:', videoUrl);
   console.log('Feedback data points:', feedbackData?.length || 0);

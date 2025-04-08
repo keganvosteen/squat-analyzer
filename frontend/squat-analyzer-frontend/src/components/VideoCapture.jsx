@@ -66,6 +66,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const [error, setError] = useState(null);
   const [apiConnectionFailed, setApiConnectionFailed] = useState(false);
   const [stream, setStream] = useState(null);
+  const chunksRef = useRef([]);
 
   // Initialize video stream
   useEffect(() => {
@@ -497,6 +498,12 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
 
   const startRecording = async () => {
     try {
+      // If already recording, stop first
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+        stopRecording();
+        return;
+      }
+
       const mediaStream = await navigator.mediaDevices.getUserMedia({ 
         video: { 
           facingMode: 'user',
@@ -513,16 +520,16 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         mimeType: 'video/webm;codecs=vp8'
       });
       mediaRecorderRef.current = mediaRecorder;
-      recordedChunksRef.current = [];
+      chunksRef.current = [];
 
       mediaRecorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
-          recordedChunksRef.current.push(event.data);
+          chunksRef.current.push(event.data);
         }
       };
 
       mediaRecorder.onstop = () => {
-        const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+        const blob = new Blob(chunksRef.current, { type: 'video/webm' });
         const videoUrl = URL.createObjectURL(blob);
         if (onRecordingComplete) {
           onRecordingComplete(videoUrl, blob);
@@ -538,12 +545,23 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
       mediaRecorderRef.current.stop();
-      stream.getTracks().forEach(track => track.stop());
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
       setIsRecording(false);
     }
   };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+      }
+    };
+  }, [stream]);
 
   return (
     <RecorderContainer>
