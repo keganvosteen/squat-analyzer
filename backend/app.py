@@ -11,8 +11,19 @@ import time
 import os
 
 app = Flask(__name__)
-# Configure CORS to allow requests from your frontend domain
-CORS(app, origins=["*"], methods=["GET", "POST", "OPTIONS"], allow_headers=["Content-Type", "Authorization"])
+# Configure CORS
+CORS(app, resources={
+    r"/*": {
+        "origins": [
+            "https://squat-analyzer-frontend.onrender.com",
+            "http://localhost:5173"
+        ],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True,
+        "expose_headers": ["Content-Type", "Authorization"]
+    }
+})
 
 # Initialize MediaPipe Pose.
 mp_pose = mp.solutions.pose

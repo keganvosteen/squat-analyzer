@@ -236,8 +236,22 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       try {
         console.log("Starting MediaRecorder");
         recordedChunksRef.current = [];
-        mediaRecorderRef.current?.start(1000); // Record in 1-second chunks
-        console.log("MediaRecorder state:", mediaRecorderRef.current?.state);
+        
+        // Check if MediaRecorder is already recording
+        if (mediaRecorderRef.current?.state === 'recording') {
+          console.log("MediaRecorder is already recording, stopping first");
+          mediaRecorderRef.current.stop();
+          // Wait a moment before starting again
+          setTimeout(() => {
+            if (mediaRecorderRef.current) {
+              mediaRecorderRef.current.start(1000); // Record in 1-second chunks
+              console.log("MediaRecorder restarted");
+            }
+          }, 100);
+        } else {
+          mediaRecorderRef.current?.start(1000); // Record in 1-second chunks
+          console.log("MediaRecorder started");
+        }
       } catch (error) {
         console.error("Error starting MediaRecorder:", error);
         setError(`Recording failed to start: ${error.message}`);

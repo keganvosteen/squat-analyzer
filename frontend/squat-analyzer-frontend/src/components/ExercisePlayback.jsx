@@ -335,116 +335,110 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTi
     }
   };
 
-  // Video event handlers
+  // Draw overlays on the canvas
+  const drawOverlays = () => {
+    const canvas = canvasRef.current;
+    const video = videoRef.current;
+    if (!canvas || !video) return;
+
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Draw landmarks if available
+    if (feedbackData && feedbackData.length > 0) {
+      const currentFeedback = feedbackData.find(f => 
+        Math.abs(f.timestamp - currentTime * 1000) < 100
+      );
+
+      if (currentFeedback && currentFeedback.keyPoints) {
+        ctx.strokeStyle = '#00ff00';
+        ctx.lineWidth = 2;
+        
+        // Draw connections between landmarks
+        Object.entries(currentFeedback.keyPoints).forEach(([key, point]) => {
+          ctx.beginPath();
+          ctx.arc(point.x, point.y, 4, 0, 2 * Math.PI);
+          ctx.fillStyle = '#00ff00';
+          ctx.fill();
+        });
+      }
+
+      // Draw feedback arrows if available
+      if (currentFeedback && currentFeedback.warnings) {
+        currentFeedback.warnings.forEach(warning => {
+          if (warning.type === 'arrow' && warning.start && warning.end) {
+            ctx.beginPath();
+            ctx.moveTo(warning.start.x, warning.start.y);
+            ctx.lineTo(warning.end.x, warning.end.y);
+            ctx.strokeStyle = warning.color || '#ff0000';
+            ctx.stroke();
+          }
+        });
+      }
+    }
+  };
+
+  // Handle video time updates
+  const handleTimeUpdate = () => {
+    if (videoRef.current) {
+      setCurrentTime(videoRef.current.currentTime);
+      drawOverlays();
+    }
+  };
+
+  // Handle video metadata loading
+  const handleLoadedMetadata = () => {
+    if (videoRef.current) {
+      setDuration(videoRef.current.duration);
+    }
+  };
+
+  // Handle video errors
+  const handleError = (e) => {
+    console.error('Video error:', e);
+    setError('Error playing video. Please try again.');
+  };
+
+  // Set up video event listeners
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    
+
     console.log("Setting up video event listeners");
     
-    // Time update handler
-    const onTimeUpdate = () => {
-      setCurrentTime(video.currentTime);
-      
-      // Find feedback for current time
-      const feedback = findActiveFeedback();
-      if (feedback) {
-        setActiveFeedback(feedback);
-        setCurrentAngle(feedback.angles);
-      } else {
-        setActiveFeedback(null);
-        setCurrentAngle(null);
-      }
-    };
-    
-    // Duration change handler
-    const onDurationChange = () => {
-      console.log("Duration changed:", video.duration);
-      setDuration(video.duration);
-      createMarkers();
-    };
-    
-    // Metadata loaded handler
-    const onLoadedMetadata = () => {
-      console.log("Loaded metadata, duration:", video.duration);
-      if (video.duration && !isNaN(video.duration)) {
-        setDuration(video.duration);
-        createMarkers();
-        
-        // Try to play automatically
-        video.play().catch(err => {
-          console.warn("Auto-play failed (expected):", err);
-        });
-      }
-    };
-    
-    // Video data loaded handler
-    const onLoadedData = () => {
-      console.log("Video data loaded");
-      
-      // Force a seek to ensure the video is ready
-      try {
-        video.currentTime = 0;
-      } catch (err) {
-        console.warn("Couldn't set initial currentTime:", err);
-      }
-    };
-    
-    // Play event handler
-    const onPlay = () => {
-      console.log("Video play event");
-      setIsPlaying(true);
-      setVideoError(null);
-    };
-    
-    // Pause event handler
-    const onPause = () => {
-      console.log("Video pause event");
-      setIsPlaying(false);
-    };
-    
-    // Error handler
-    const onError = (e) => {
-      console.error("Video error:", e);
-      setVideoError("Video playback error. Try a different browser or device.");
-    };
-    
-    // Stalled handler
-    const onStalled = () => {
-      console.warn("Video playback stalled");
-    };
-    
-    // End event handler
-    const onEnded = () => {
-      setIsPlaying(false);
-    };
-    
-    // Add event listeners
-    video.addEventListener('timeupdate', onTimeUpdate);
-    video.addEventListener('durationchange', onDurationChange);
-    video.addEventListener('loadedmetadata', onLoadedMetadata);
-    video.addEventListener('loadeddata', onLoadedData);
-    video.addEventListener('play', onPlay);
-    video.addEventListener('pause', onPause);
-    video.addEventListener('error', onError);
-    video.addEventListener('stalled', onStalled);
-    video.addEventListener('ended', onEnded);
-    
-    // Clean up
-    return () => {
-      video.removeEventListener('timeupdate', onTimeUpdate);
-      video.removeEventListener('durationchange', onDurationChange);
-      video.removeEventListener('loadedmetadata', onLoadedMetadata);
-      video.removeEventListener('loadeddata', onLoadedData);
-      video.removeEventListener('play', onPlay);
-      video.removeEventListener('pause', onPause);
-      video.removeEventListener('error', onError);
-      video.removeEventListener('stalled', onStalled);
-      video.removeEventListener('ended', onEnded);
-    };
-  }, [feedbackData, squatTimings]);
+    video.addEventListener('timeupdate', handleTimeUpdate);
+    video.addEventListener('loadedmetadata', handleLoadedMetadata);
+    video.addEventListener('error', handleError);
 
-  // Effect for video URL changes
+    return () => {
+      video.removeEventListener('timeupdate', handleTimeUpdate);
+      video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      video.removeEventListener('error', handleError);
+    };
+  }, [videoRef.current]);
+
+  // Update canvas size when video dimensions change
+  useEffect(() => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+
+    const updateCanvasSize = () => {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      drawOverlays();
+    };
+
+    video.addEventListener('loadedmetadata', updateCanvasSize);
+    video.addEventListener('resize', updateCanvasSize);
+
+    return () => {
+      video.removeEventListener('loadedmetadata', updateCanvasSize);
+      video.removeEventListener('resize', updateCanvasSize);
+    };
+  }, [videoRef.current]);
+
+  // Handle video URL changes
   useEffect(() => {
     console.log("Video URL changed:", videoUrl);
     setVideoError(null);
@@ -550,68 +544,6 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTi
       document.removeEventListener('mouseup', handleDocumentMouseUp);
     };
   }, []);
-
-  useEffect(() => {
-    if (!videoRef.current || !canvasRef.current) return;
-
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-
-    const drawOverlays = () => {
-      if (!analysisData || !analysisData.frames[currentFrame]) return;
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      
-      // Draw body landmarks
-      const landmarks = analysisData.frames[currentFrame].landmarks;
-      if (landmarks) {
-        ctx.strokeStyle = '#00ff00';
-        ctx.lineWidth = 2;
-        
-        // Draw connections between landmarks
-        Object.entries(landmarks).forEach(([key, point]) => {
-          ctx.beginPath();
-          ctx.arc(point.x, point.y, 4, 0, 2 * Math.PI);
-          ctx.fillStyle = '#00ff00';
-          ctx.fill();
-        });
-      }
-
-      // Draw analysis arrows and feedback
-      const feedback = analysisData.frames[currentFrame].feedback;
-      if (feedback) {
-        feedback.forEach(item => {
-          if (item.type === 'arrow' && item.start && item.end) {
-            ctx.beginPath();
-            ctx.moveTo(item.start.x, item.start.y);
-            ctx.lineTo(item.end.x, item.end.y);
-            ctx.strokeStyle = item.color || '#ff0000';
-            ctx.stroke();
-          }
-        });
-      }
-    };
-
-    const handleTimeUpdate = () => {
-      const frame = Math.floor(video.currentTime * 30); // Assuming 30fps
-      setCurrentFrame(frame);
-      drawOverlays();
-    };
-
-    const handleError = (e) => {
-      console.error('Video error:', e);
-      setError('Error playing video. Please try again.');
-    };
-
-    video.addEventListener('timeupdate', handleTimeUpdate);
-    video.addEventListener('error', handleError);
-
-    return () => {
-      video.removeEventListener('timeupdate', handleTimeUpdate);
-      video.removeEventListener('error', handleError);
-    };
-  }, [videoRef, canvasRef, analysisData, currentFrame]);
 
   return (
     <div 
@@ -866,20 +798,30 @@ const ExercisePlayback = ({ videoUrl, feedbackData = [], squatCount = 0, squatTi
       )}
       
       {/* Analysis panel */}
-      {analysisData && (
+      {error ? (
         <AnalysisPanel>
-          {error ? (
-            <div style={{ color: 'red' }}>{error}</div>
-          ) : (
-            analysisData.frames[currentFrame]?.feedback?.map((item, index) => (
-              item.type === 'tip' && (
-                <div key={index} style={{ marginBottom: '10px' }}>
-                  <strong>{item.title}</strong>
-                  <p>{item.text}</p>
-                </div>
-              )
-            ))
-          )}
+          <ErrorMessage>{error}</ErrorMessage>
+        </AnalysisPanel>
+      ) : (
+        <AnalysisPanel>
+          <h3>Analysis Results</h3>
+          <StatBox>
+            <StatLabel>Total Squats</StatLabel>
+            <StatValue>{squatCount}</StatValue>
+          </StatBox>
+          
+          <FeedbackSection>
+            <h4>Feedback Tips</h4>
+            {feedbackData && feedbackData.length > 0 ? (
+              feedbackData.map((tip, index) => (
+                <FeedbackTip key={index}>
+                  {tip.message || tip}
+                </FeedbackTip>
+              ))
+            ) : (
+              <FeedbackTip>No feedback available yet.</FeedbackTip>
+            )}
+          </FeedbackSection>
         </AnalysisPanel>
       )}
     </div>
