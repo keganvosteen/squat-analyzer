@@ -14,6 +14,7 @@ from PIL import Image
 import time
 import os
 import math
+import requests
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -74,9 +75,26 @@ class POSE_LANDMARKS:
     LEFT_FOOT_INDEX = 31
     RIGHT_FOOT_INDEX = 32
 
+# Function to download and cache the model
+def download_model(url, model_path):
+    if not os.path.exists(model_path):
+        print(f"Downloading model from {url} to {model_path}")
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        response = requests.get(url)
+        with open(model_path, 'wb') as f:
+            f.write(response.content)
+    return model_path
+
+# Set up model paths
+MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task'
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', 'pose_landmarker_heavy.task')
+
+# Download and get the model path
+model_path = download_model(MODEL_URL, MODEL_PATH)
+
 # Create pose landmarker instance
 options = PoseLandmarkerOptions(
-    base_options=BaseOptions(model_asset_path='https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task'),
+    base_options=BaseOptions(model_asset_path=model_path),
     running_mode=VisionRunningMode.IMAGE,
     min_pose_detection_confidence=0.5,
     min_pose_presence_confidence=0.5,
