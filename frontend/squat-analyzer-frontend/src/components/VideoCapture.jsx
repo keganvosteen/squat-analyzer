@@ -155,10 +155,18 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
 
   // Initialize video stream
   useEffect(() => {
-    initializeCamera();
+    // Check camera status on component mount
+    initializeCamera().then(stream => {
+      if (stream && stream.active) {
+        setStreamReady(true);
+        setIsInitialized(true);
+      }
+    });
+    
     return () => {
       stopRecording();
       cleanupStream();
+      stopTimer();
     };
   }, []);
 
@@ -209,16 +217,26 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         videoRef.current.muted = true; // Prevent feedback
+        
+        // Wait for video to be ready
+        await new Promise((resolve) => {
+          videoRef.current.onloadedmetadata = () => {
+            resolve();
+          };
+          // If metadata is already loaded, resolve immediately
+          if (videoRef.current.readyState >= 2) {
+            resolve();
+          }
+        });
+        
         await videoRef.current.play();
       }
       
       console.log("Camera initialized successfully");
-      setStreamReady(true);
-      return stream;
+      return streamRef.current;
     } catch (error) {
       console.error("Camera initialization error:", error);
       setError(`Camera error: ${error.message || 'Could not access camera'}`);
-      setStreamReady(false);
       return null;
     }
   };
@@ -625,64 +643,84 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const startRecording = async () => {
     console.log("Starting MediaRecorder");
     try {
-      // Ensure we have a fresh stream
-      const stream = await initializeCamera();
-      if (!stream || !stream.active) {
+      // Make sure camera is initialized
+      if (!streamRef.current || !streamRef.current.active) {
+        await initializeCamera();
+      }
+      
+      if (!streamRef.current || !streamRef.current.active) {
         console.error("Could not get an active stream for recording");
         setError("Camera not available. Please check permissions and reload the page.");
-        return; // Exit early without throwing to prevent Uncaught Promise errors
+        return;
       }
-
+      
       // If MediaRecorder is already recording, stop it first
       if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
         console.log("MediaRecorder is already recording, stopping first");
         mediaRecorderRef.current.stop();
+        await new Promise(resolve => setTimeout(resolve, 100)); // Small delay to ensure recorder has stopped
       }
-
+      
+      // Clear previous chunks
+      recordedChunksRef.current = [];
+      
       // Check for supported MIME types
       const mimeType = getSupportedMimeType();
       if (!mimeType) {
         setError("Your browser doesn't support video recording. Please try a different browser.");
         return;
       }
-
+      
       // Create a new MediaRecorder instance
-      const options = { mimeType };
       try {
-        mediaRecorderRef.current = new MediaRecorder(stream, options);
+        mediaRecorderRef.current = new MediaRecorder(streamRef.current, { 
+          mimeType,
+          videoBitsPerSecond: 2500000 // 2.5 Mbps for better quality
+        });
+        
+        // Setup data available handler
+        mediaRecorderRef.current.ondataavailable = (event) => {
+          console.log("Data available event, size:", event.data.size);
+          if (event.data && event.data.size > 0) {
+            recordedChunksRef.current.push(event.data);
+          }
+        };
+        
+        // Setup stop handler
+        mediaRecorderRef.current.onstop = () => {
+          if (recordedChunksRef.current.length === 0) {
+            console.error("No data chunks were recorded");
+            setError("No video data was recorded. Please try again.");
+            return;
+          }
+          
+          const blob = new Blob(recordedChunksRef.current, { type: mimeType });
+          console.log("Recording stopped, created blob: ", blob, "size:", blob.size);
+          
+          if (blob.size > 0) {
+            onRecordingComplete(blob);
+          } else {
+            setError("Recording failed - no data captured");
+          }
+        };
+        
+        // Start recording with timeslice of 200ms to ensure frequent ondataavailable events
+        mediaRecorderRef.current.start(200);
+        console.log("MediaRecorder started successfully");
+        
+        // Start the timer for UI
+        startTimer();
+        setIsRecording(true);
+        
+        // Set a minimum recording time to ensure something gets captured (at least 3 seconds)
+        setTimeout(() => {
+          console.log("Minimum recording time reached");
+        }, 3000);
+        
       } catch (err) {
         console.error("Failed to create MediaRecorder:", err);
         setError(`Recording error: ${err.message}`);
-        return;
       }
-      
-      // Set up event handlers
-      mediaRecorderRef.current.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          recordedChunksRef.current.push(event.data);
-        }
-      };
-
-      mediaRecorderRef.current.onstop = () => {
-        const blob = new Blob(recordedChunksRef.current, { type: mimeType });
-        console.log("Recording stopped, created blob: ", blob);
-        recordedChunksRef.current = [];
-        stopTimer();
-        if (blob.size > 0) {
-          onRecordingComplete(blob);
-        } else {
-          setError("Recording failed - no data captured");
-        }
-      };
-
-      // Clear previous chunks
-      recordedChunksRef.current = [];
-      
-      // Start recording with timeslice of 1000ms (1 second)
-      mediaRecorderRef.current.start(1000);
-      console.log("MediaRecorder started");
-      startTimer();
-      setIsRecording(true);
     } catch (error) {
       console.error("Error starting recording:", error);
       stopTimer();
@@ -711,22 +749,36 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   }, []);
 
   const cleanupStream = () => {
+    // Stop all tracks on the current stream
     if (streamRef.current) {
+      console.log("Cleaning up stream tracks");
       streamRef.current.getTracks().forEach(track => {
         track.stop();
       });
       streamRef.current = null;
     }
+    
+    // Clear video element
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
+    
+    // Cleanup MediaRecorder
     if (mediaRecorderRef.current) {
-      if (mediaRecorderRef.current.state === 'recording') {
-        mediaRecorderRef.current.stop();
+      try {
+        if (mediaRecorderRef.current.state === 'recording') {
+          mediaRecorderRef.current.stop();
+        }
+      } catch (e) {
+        console.error("Error stopping MediaRecorder during cleanup:", e);
       }
       mediaRecorderRef.current = null;
     }
-    chunksRef.current = [];
+    
+    // Clear chunks
+    recordedChunksRef.current = [];
+    setStreamReady(false);
+    setIsInitialized(false);
   };
 
   return (
@@ -774,7 +826,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         {!isRecording ? (
           <RecordButton 
             onClick={startRecording}
-            disabled={!streamReady || isRecording}
+            disabled={!streamReady}
           >
             <Circle size={16} fill="#ff4136" />
             Start Recording
