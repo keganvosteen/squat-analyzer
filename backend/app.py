@@ -18,19 +18,24 @@ import requests
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
-# Configure CORS
-CORS(app, resources={
-    r"/*": {
-        "origins": [
-            "https://squat-analyzer-frontend.onrender.com",
-            "http://localhost:5173"
-        ],
-        "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"],
-        "supports_credentials": True,
-        "expose_headers": ["Content-Type", "Authorization"]
-    }
-})
+# Configure CORS correctly
+CORS(app, 
+     resources={r"/*": {
+         "origins": ["https://squat-analyzer-frontend.onrender.com", "http://localhost:5173", "*"],
+         "supports_credentials": True,
+         "allow_headers": ["Content-Type", "Authorization"],
+         "methods": ["GET", "POST", "OPTIONS"]
+     }}
+)
+
+# Add CORS headers to all responses manually as well
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
+    return response
 
 # Initialize MediaPipe Pose
 BaseOptions = mp.tasks.BaseOptions
@@ -306,100 +311,118 @@ def get_session_data():
     
     return jsonify(session_data)
 
-@app.route('/analyze', methods=['POST'])
+@app.route('/analyze', methods=['POST', 'OPTIONS'])
 def analyze_video():
+    # Handle preflight OPTIONS request
+    if request.method == 'OPTIONS':
+        return '', 204
+        
+    app.logger.info("Analyze endpoint called")
+    
     if 'video' not in request.files:
+        app.logger.error("No video file in request")
         return jsonify({'error': 'No video file provided'}), 400
     
     video_file = request.files['video']
     if not video_file:
+        app.logger.error("Empty video file")
         return jsonify({'error': 'Empty video file'}), 400
     
+    app.logger.info(f"Received video: {video_file.filename}, size: {video_file.content_length}, type: {video_file.content_type}")
+    
     # Save the uploaded video temporarily
-    temp_path = 'temp_video.webm'
+    temp_path = os.path.join(os.path.dirname(__file__), 'temp_video.webm')
     video_file.save(temp_path)
     
     try:
+        app.logger.info(f"Processing video at {temp_path}")
         # Initialize video capture
         cap = cv2.VideoCapture(temp_path)
+        
+        if not cap.isOpened():
+            app.logger.error(f"Could not open video file: {temp_path}")
+            return jsonify({'error': 'Could not open video file'}), 500
         
         # Get video properties
         fps = int(cap.get(cv2.CAP_PROP_FPS))
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
+        app.logger.info(f"Video properties: FPS={fps}, frame_count={frame_count}")
+        
         # Process frames
         results = []
         frame_number = 0
+        processed_frames = 0
         
         while cap.isOpened():
             success, frame = cap.read()
             if not success:
                 break
-                
-            # Convert BGR to RGB
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # Process the frame with MediaPipe
-            pose_results = pose_landmarker.process(frame_rgb)
-            
-            if pose_results.pose_landmarks:
-                landmarks = pose_results.pose_landmarks.landmark
+            # Only process every 5th frame for efficiency
+            if frame_number % 5 == 0:
+                # Convert BGR to RGB
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
-                # Calculate measurements
-                # Right side measurements (you can add left side if needed)
-                knee_angle = calculate_angle(
-                    landmarks[23],  # Right hip
-                    landmarks[25],  # Right knee
-                    landmarks[27]   # Right ankle
-                )
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+                detection_result = pose_landmarker.detect(mp_image)
                 
-                depth_ratio = calculate_depth_ratio(
-                    landmarks[23],  # Right hip
-                    landmarks[25],  # Right knee
-                    landmarks[27]   # Right ankle
-                )
-                
-                shoulder_midfoot_diff = calculate_shoulder_midfoot_diff(
-                    landmarks[11],  # Right shoulder
-                    landmarks[23],  # Right hip
-                    landmarks[25],  # Right knee
-                    landmarks[27]   # Right ankle
-                )
-                
-                # Prepare feedback based on measurements
-                feedback = {
-                    'frame': frame_number,
-                    'timestamp': frame_number / fps,
-                    'landmarks': [
-                        {'x': landmark.x, 'y': landmark.y, 'visibility': landmark.visibility}
-                        for landmark in landmarks
-                    ],
-                    'measurements': {
-                        'kneeAngle': knee_angle,
-                        'depthRatio': depth_ratio,
-                        'shoulderMidfootDiff': shoulder_midfoot_diff
-                    },
-                    'arrows': []
-                }
-                
-                # Add feedback arrows based on analysis
-                if knee_angle < 90:
-                    feedback['arrows'].append({
-                        'start': {'x': landmarks[25].x, 'y': landmarks[25].y},  # Knee
-                        'end': {'x': landmarks[25].x, 'y': landmarks[25].y - 0.1},  # Above knee
-                        'color': 'yellow',
-                        'message': 'Knees too bent'
-                    })
-                
-                if shoulder_midfoot_diff > 10:  # Threshold in pixels
-                    feedback['arrows'].append({
-                        'start': {'x': landmarks[11].x, 'y': landmarks[11].y},  # Shoulder
-                        'end': {'x': landmarks[27].x, 'y': landmarks[11].y},    # Horizontal line to ankle
-                        'color': 'red',
-                        'message': 'Keep shoulders over midfoot'
-                    })
-                
-                results.append(feedback)
+                if detection_result.pose_landmarks:
+                    pose_landmarks = detection_result.pose_landmarks[0]
+                    
+                    # Convert landmarks to list
+                    landmarks = []
+                    for landmark in pose_landmarks:
+                        landmarks.append({
+                            'x': landmark.x,
+                            'y': landmark.y,
+                            'z': landmark.z,
+                            'visibility': landmark.visibility
+                        })
+                    
+                    # Calculate measurements using the first landmark set
+                    # Using right side for measurements
+                    hip = pose_landmarks[POSE_LANDMARKS.RIGHT_HIP]
+                    knee = pose_landmarks[POSE_LANDMARKS.RIGHT_KNEE]
+                    ankle = pose_landmarks[POSE_LANDMARKS.RIGHT_ANKLE]
+                    shoulder = pose_landmarks[POSE_LANDMARKS.RIGHT_SHOULDER]
+                    
+                    knee_angle = calculate_angle(hip, knee, ankle)
+                    depth_ratio = calculate_depth_ratio(hip, knee, ankle)
+                    shoulder_midfoot_diff = calculate_shoulder_midfoot_diff(shoulder, hip, knee, ankle)
+                    
+                    # Prepare feedback
+                    feedback = {
+                        'frame': frame_number,
+                        'timestamp': frame_number / fps,
+                        'landmarks': landmarks,
+                        'measurements': {
+                            'kneeAngle': float(knee_angle),
+                            'depthRatio': float(depth_ratio),
+                            'shoulderMidfootDiff': float(shoulder_midfoot_diff)
+                        },
+                        'arrows': []
+                    }
+                    
+                    # Add feedback arrows based on analysis
+                    if knee_angle < 90:
+                        feedback['arrows'].append({
+                            'start': {'x': knee.x, 'y': knee.y},
+                            'end': {'x': knee.x, 'y': knee.y - 0.1},
+                            'color': 'yellow',
+                            'message': 'Knees too bent'
+                        })
+                    
+                    if shoulder_midfoot_diff > 0.1:
+                        feedback['arrows'].append({
+                            'start': {'x': shoulder.x, 'y': shoulder.y},
+                            'end': {'x': ankle.x, 'y': shoulder.y},
+                            'color': 'red',
+                            'message': 'Keep shoulders over midfoot'
+                        })
+                    
+                    results.append(feedback)
+                    processed_frames += 1
             
             frame_number += 1
         
@@ -409,6 +432,8 @@ def analyze_video():
         if os.path.exists(temp_path):
             os.remove(temp_path)
         
+        app.logger.info(f"Analysis complete. Processed {processed_frames} frames.")
+        
         return jsonify({
             'success': True,
             'frames': results,
@@ -417,6 +442,7 @@ def analyze_video():
         })
         
     except Exception as e:
+        app.logger.error(f"Error processing video: {str(e)}")
         # Clean up on error
         if os.path.exists(temp_path):
             os.remove(temp_path)
