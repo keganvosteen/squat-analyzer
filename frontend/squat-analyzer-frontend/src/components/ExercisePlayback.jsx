@@ -184,6 +184,8 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
     const currentSeconds = timestamp || 0;
     const frames = analysisData.frames;
     
+    console.log(`Drawing overlay for time ${currentSeconds.toFixed(2)}s, ${frames.length} total frames`);
+    
     // Find the frame that's closest to our current time
     let closestFrame = null;
     let smallestDiff = Infinity;
@@ -196,11 +198,16 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
       }
     }
     
-    if (!closestFrame) return;
+    if (!closestFrame) {
+      console.log("No suitable frame found for current timestamp");
+      return;
+    }
+    
+    console.log(`Using frame at ${closestFrame.timestamp.toFixed(2)}s, diff: ${smallestDiff.toFixed(2)}s`);
     
     // Draw landmarks if available
     if (closestFrame.landmarks && Array.isArray(closestFrame.landmarks)) {
-      console.log("Drawing landmarks:", closestFrame.landmarks.length);
+      console.log(`Drawing ${closestFrame.landmarks.length} landmarks`);
       
       // Draw skeleton lines connecting landmarks
       const connections = [
@@ -223,7 +230,7 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
         const start = closestFrame.landmarks[startIdx];
         const end = closestFrame.landmarks[endIdx];
         
-        if (start && end) {
+        if (start && end && typeof start.x === 'number' && typeof end.x === 'number') {
           ctx.beginPath();
           ctx.moveTo(start.x * ctx.canvas.width, start.y * ctx.canvas.height);
           ctx.lineTo(end.x * ctx.canvas.width, end.y * ctx.canvas.height);
@@ -234,13 +241,15 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
       // Draw landmark points
       ctx.fillStyle = 'red';
       closestFrame.landmarks.forEach(landmark => {
-        ctx.beginPath();
-        ctx.arc(
-          landmark.x * ctx.canvas.width, 
-          landmark.y * ctx.canvas.height, 
-          3, 0, 2 * Math.PI
-        );
-        ctx.fill();
+        if (typeof landmark.x === 'number') {
+          ctx.beginPath();
+          ctx.arc(
+            landmark.x * ctx.canvas.width, 
+            landmark.y * ctx.canvas.height, 
+            3, 0, 2 * Math.PI
+          );
+          ctx.fill();
+        }
       });
     }
 
@@ -252,6 +261,10 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
       ctx.font = '16px Arial';
       let yOffset = 30;
       const xOffset = 10;
+      
+      // Draw background for text for better visibility
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+      ctx.fillRect(0, 0, 250, 100);
       
       // Knee Angle
       ctx.fillStyle = 'white';
@@ -277,7 +290,7 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
     // Draw feedback arrows
     if (closestFrame.arrows && Array.isArray(closestFrame.arrows)) {
       closestFrame.arrows.forEach(arrow => {
-        if (arrow.start && arrow.end) {
+        if (arrow.start && arrow.end && typeof arrow.start.x === 'number' && typeof arrow.end.x === 'number') {
           ctx.beginPath();
           ctx.strokeStyle = arrow.color || 'yellow';
           ctx.lineWidth = 3;
@@ -309,24 +322,40 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
           );
           ctx.stroke();
           
-          // Draw message
+          // Draw message with background for visibility
           if (arrow.message) {
             ctx.font = '14px Arial';
+            const textWidth = ctx.measureText(arrow.message).width;
+            
+            // Draw background rectangle for text
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(endX + 10, endY - 15, textWidth + 10, 20);
+            
+            // Draw text
             ctx.fillStyle = 'white';
-            ctx.fillText(arrow.message, endX + 10, endY);
+            ctx.fillText(arrow.message, endX + 15, endY);
           }
         }
       });
     }
+    
+    // Draw frame indicator
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
+    ctx.font = '12px Arial';
+    ctx.fillText(`Frame: ${closestFrame.frame}, Time: ${closestFrame.timestamp.toFixed(2)}s`, 10, ctx.canvas.height - 10);
+    
   }, [hasAnalysisData, analysisData]);
 
   // Handle video time updates
   const handleTimeUpdate = () => {
     if (videoRef.current) {
-      setCurrentTime(videoRef.current.currentTime);
+      const currentTime = videoRef.current.currentTime;
+      setCurrentTime(currentTime);
+      
       const ctx = canvasRef.current?.getContext('2d');
       if (ctx) {
-        drawOverlays(ctx, videoRef.current.currentTime);
+        // Draw overlays appropriate for the current video time
+        drawOverlays(ctx, currentTime);
       }
     }
   };
@@ -363,12 +392,60 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
 
     console.log("Setting up video event listeners");
     
+    // Use rAF for smoother animations
+    let animationFrameId;
+    
+    const updateCanvas = () => {
+      if (video.paused || video.ended) {
+        return;
+      }
+      
+      const ctx = canvasRef.current?.getContext('2d');
+      if (ctx) {
+        drawOverlays(ctx, video.currentTime);
+      }
+      
+      // Continue animation loop
+      animationFrameId = requestAnimationFrame(updateCanvas);
+    };
+    
+    const handlePlay = () => {
+      setIsPlaying(true);
+      // Start animation loop when video plays
+      cancelAnimationFrame(animationFrameId);
+      animationFrameId = requestAnimationFrame(updateCanvas);
+    };
+    
+    const handlePause = () => {
+      setIsPlaying(false);
+      // Stop animation loop when video pauses
+      cancelAnimationFrame(animationFrameId);
+      
+      // Draw one last frame at the current position
+      const ctx = canvasRef.current?.getContext('2d');
+      if (ctx) {
+        drawOverlays(ctx, video.currentTime);
+      }
+    };
+    
+    // Handle regular time updates for UI updates (not for drawing)
+    const handleTimeUpdate = () => {
+      setCurrentTime(video.currentTime);
+    };
+    
     video.addEventListener('timeupdate', handleTimeUpdate);
+    video.addEventListener('play', handlePlay);
+    video.addEventListener('pause', handlePause);
+    video.addEventListener('seeking', handlePause); // Update frame when seeking
     video.addEventListener('loadedmetadata', handleLoadedMetadata);
     video.addEventListener('error', handleError);
 
     return () => {
+      cancelAnimationFrame(animationFrameId);
       video.removeEventListener('timeupdate', handleTimeUpdate);
+      video.removeEventListener('play', handlePlay);
+      video.removeEventListener('pause', handlePause);
+      video.removeEventListener('seeking', handlePause);
       video.removeEventListener('loadedmetadata', handleLoadedMetadata);
       video.removeEventListener('error', handleError);
     };
@@ -386,8 +463,6 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
         setError("Could not play video. This may be due to browser permissions or an unsupported format.");
       });
     }
-    
-    setIsPlaying(!isPlaying);
   };
 
   return (
@@ -418,6 +493,28 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
         <Button onClick={togglePlayPause}>
           {isPlaying ? <Pause size={20} /> : <Play size={20} />}
           {isPlaying ? 'Pause' : 'Play'}
+        </Button>
+        
+        <Button
+          onClick={() => {
+            if (videoRef.current) {
+              videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 1);
+            }
+          }}
+        >
+          <SkipBack size={20} />
+          Back 1s
+        </Button>
+        
+        <Button
+          onClick={() => {
+            if (videoRef.current) {
+              videoRef.current.currentTime = Math.min(videoRef.current.duration, videoRef.current.currentTime + 1);
+            }
+          }}
+        >
+          <SkipForward size={20} />
+          Forward 1s
         </Button>
       </Controls>
       
