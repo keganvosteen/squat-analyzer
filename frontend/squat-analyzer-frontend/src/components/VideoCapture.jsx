@@ -68,6 +68,16 @@ const RecordingIndicator = styled.div`
   padding: 5px 10px;
   border-radius: 5px;
   margin: 10px;
+  display: ${props => props.isRecording ? 'flex' : 'none'};
+  align-items: center;
+  gap: 5px;
+  animation: ${props => props.isRecording ? 'blink 1.5s ease-in-out infinite' : 'none'};
+  
+  @keyframes blink {
+    0% { opacity: 1; }
+    50% { opacity: 0.4; }
+    100% { opacity: 1; }
+  }
 `;
 
 const RecordingTimer = styled.div`
@@ -126,6 +136,15 @@ const InstructionsContainer = styled.div`
   padding: 20px;
   background-color: #f0f0f0;
   border-radius: 5px;
+`;
+
+// Add a blinking circle component for the recording indicator
+const RecordingDot = styled.div`
+  width: 12px;
+  height: 12px;
+  background-color: #ff4136;
+  border-radius: 50%;
+  display: inline-block;
 `;
 
 const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
@@ -337,9 +356,12 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           console.log("Created video blob:", blob.type, "size:", Math.round(blob.size / 1024), "KB");
           
           if (blob.size > 0) {
-            // Process the recording
+            // Process the recording - ensure this callback is called
             console.log("Processing recorded video");
-            onRecordingComplete(blob);
+            // Add small timeout to ensure UI updates before heavy processing begins
+            setTimeout(() => {
+              onRecordingComplete(blob);
+            }, 100);
           } else {
             setError("Recording failed - no data captured");
           }
@@ -467,7 +489,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         )}
         
         <RecordingIndicator isRecording={isRecording}>
-          <Circle size={12} fill="#ff4136" />
+          <RecordingDot />
           {isRecording ? 'Recording' : ''}
         </RecordingIndicator>
         

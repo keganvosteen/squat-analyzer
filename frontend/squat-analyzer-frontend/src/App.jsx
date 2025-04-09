@@ -40,10 +40,11 @@ const App = () => {
   const [loading, setLoading] = useState(false);
 
   const handleRecordingComplete = async (videoBlob) => {
-    console.log("Recording complete, preparing for analysis...");
+    console.log("Recording complete, preparing for analysis...", {blobSize: videoBlob.size, blobType: videoBlob.type});
     try {
       setLoading(true);
       setError(null);
+      setShowPlayback(true); // Show playback immediately for better UX
       
       // Save the blob for potential direct playback
       setVideoBlob(videoBlob);
@@ -55,7 +56,7 @@ const App = () => {
       const formData = new FormData();
       formData.append('video', videoBlob, 'squat-recording.webm');
 
-      console.log(`Sending request to ${BACKEND_URL}/analyze`);
+      console.log(`Sending request to ${BACKEND_URL}/analyze with blob size ${Math.round(videoBlob.size / 1024)} KB`);
       
       // Use axios instead of fetch
       const response = await api.post('/analyze', formData, {
@@ -67,7 +68,6 @@ const App = () => {
       
       console.log("Analysis data received:", response.data);
       setAnalysisData(response.data);
-      setShowPlayback(true);
     } catch (error) {
       console.error("Error analyzing video:", error);
       
@@ -87,8 +87,6 @@ const App = () => {
         errorMessage = error.message;
       }
       
-      // Still show the video for playback even if analysis failed
-      setShowPlayback(true);
       setError(errorMessage);
     } finally {
       setLoading(false);
