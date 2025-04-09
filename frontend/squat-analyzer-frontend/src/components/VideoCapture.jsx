@@ -273,25 +273,22 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   };
 
   const startRecording = async () => {
-    console.log("Starting MediaRecorder");
+    console.log("Start recording button clicked");
     try {
-      // Make sure camera is initialized
-      if (!streamRef.current || !streamRef.current.active) {
-        await initializeCamera();
-      }
+      // Reset error state
+      setError(null);
       
+      // Always reinitialize camera to ensure fresh stream
+      await initializeCamera();
+      
+      // Verify stream is active
       if (!streamRef.current || !streamRef.current.active) {
         console.error("Could not get an active stream for recording");
         setError("Camera not available. Please check permissions and reload the page.");
         return;
       }
       
-      // If MediaRecorder is already recording, stop it first
-      if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-        console.log("MediaRecorder is already recording, stopping first");
-        mediaRecorderRef.current.stop();
-        await new Promise(resolve => setTimeout(resolve, 100)); // Small delay to ensure recorder has stopped
-      }
+      console.log("Stream active, initializing recorder");
       
       // Clear previous chunks
       recordedChunksRef.current = [];
@@ -320,25 +317,35 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       // Setup stop handler
       mediaRecorderRef.current.onstop = () => {
-        console.log("MediaRecorder stopped, chunks:", recordedChunksRef.current.length);
+        console.log("MediaRecorder onstop event fired, chunks:", recordedChunksRef.current.length);
         
-        if (recordedChunksRef.current.length === 0) {
-          console.error("No data chunks were recorded");
-          setError("No video data was recorded. Please try again.");
+        try {
+          // Stop UI timer
           stopTimer();
+          
+          // Update recording state
           setIsRecording(false);
-          return;
-        }
-        
-        const blob = new Blob(recordedChunksRef.current, { type: mimeType });
-        console.log("Recording stopped, created blob: ", blob, "size:", blob.size);
-        stopTimer();
-        setIsRecording(false);
-        
-        if (blob.size > 0) {
-          onRecordingComplete(blob);
-        } else {
-          setError("Recording failed - no data captured");
+          
+          if (recordedChunksRef.current.length === 0) {
+            console.error("No data chunks were recorded");
+            setError("No video data was recorded. Please try again.");
+            return;
+          }
+          
+          // Create blob from chunks
+          const blob = new Blob(recordedChunksRef.current, { type: mimeType });
+          console.log("Created video blob:", blob.type, "size:", Math.round(blob.size / 1024), "KB");
+          
+          if (blob.size > 0) {
+            // Process the recording
+            console.log("Processing recorded video");
+            onRecordingComplete(blob);
+          } else {
+            setError("Recording failed - no data captured");
+          }
+        } catch (error) {
+          console.error("Error in onstop handler:", error);
+          setError(`Recording error: ${error.message || 'Unknown error processing recording'}`);
         }
       };
       
@@ -358,8 +365,42 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   };
 
   const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-      mediaRecorderRef.current.stop();
+    console.log("Stop recording button clicked");
+    try {
+      if (mediaRecorderRef.current) {
+        console.log("MediaRecorder current state:", mediaRecorderRef.current.state);
+        if (mediaRecorderRef.current.state === "recording") {
+          console.log("Stopping media recorder");
+          mediaRecorderRef.current.stop();
+          // Force UI update in case the onstop event doesn't fire immediately
+          setTimeout(() => {
+            if (isRecording) {
+              console.log("Forcing recording state update");
+              setIsRecording(false);
+              stopTimer();
+            }
+          }, 500);
+        } else {
+          console.warn("MediaRecorder is not in recording state:", mediaRecorderRef.current.state);
+          // Still update UI state if it's inconsistent
+          if (isRecording) {
+            setIsRecording(false);
+            stopTimer();
+          }
+        }
+      } else {
+        console.error("MediaRecorder is not initialized");
+        // Still update UI state if it's inconsistent
+        if (isRecording) {
+          setIsRecording(false);
+          stopTimer();
+        }
+      }
+    } catch (error) {
+      console.error("Error stopping recording:", error);
+      // Make sure UI is updated regardless of error
+      setIsRecording(false);
+      stopTimer();
     }
   };
 
