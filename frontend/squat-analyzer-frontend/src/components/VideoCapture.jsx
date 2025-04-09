@@ -136,6 +136,26 @@ const InstructionsContainer = styled.div`
   padding: 20px;
   background-color: #f0f0f0;
   border-radius: 5px;
+  text-align: left;
+
+  h3 {
+    margin-bottom: 10px;
+  }
+
+  ol, ul {
+    padding-left: 20px;
+    margin-bottom: 15px;
+  }
+
+  li {
+    margin-bottom: 5px;
+  }
+
+  .tips-section {
+    margin-top: 15px;
+    border-top: 1px solid #ddd;
+    padding-top: 15px;
+  }
 `;
 
 // Add a blinking circle component for the recording indicator
@@ -525,6 +545,16 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           <li>Perform a squat with proper form.</li>
           <li>Record a single squat repetition (down and up).</li>
         </ol>
+        
+        <div className="tips-section">
+          <h3>Recording Limits</h3>
+          <ul>
+            <li><strong>Recommended:</strong> Record 1 squat at a time for the best analysis.</li>
+            <li><strong>Maximum:</strong> 10-15 seconds of video (about 1-2 squats) to avoid Render's free tier timeout.</li>
+            <li><strong>File Size:</strong> Keeping videos under 10MB helps with faster uploads and processing.</li>
+            <li><strong>No Audio:</strong> Audio is disabled to reduce file size and improve processing time.</li>
+          </ul>
+        </div>
       </InstructionsContainer>
     </Container>
   );
