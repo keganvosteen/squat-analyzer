@@ -396,7 +396,7 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-
+    
     console.log("Setting up video event listeners");
     
     // Use rAF for smoother animations
@@ -508,8 +508,8 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
               videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 1);
             }
           }}
-        >
-          <SkipBack size={20} />
+          >
+            <SkipBack size={20} />
           Back 1s
         </Button>
         
@@ -519,8 +519,8 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
               videoRef.current.currentTime = Math.min(videoRef.current.duration, videoRef.current.currentTime + 1);
             }
           }}
-        >
-          <SkipForward size={20} />
+          >
+            <SkipForward size={20} />
           Forward 1s
         </Button>
       </Controls>
@@ -538,7 +538,7 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
                     <div key={key} className="w-1/3 mb-2">
                       <StatLabel>{key}</StatLabel>
                       <StatValue>{typeof value === 'number' ? value.toFixed(1) : value}</StatValue>
-                    </div>
+            </div>
                   ))
                 )}
               </div>
@@ -575,8 +575,8 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
               <li>Backend processing errors</li>
             </ul>
             <p className="mt-2">You can still review your form in the recording above.</p>
-          </div>
-        )}
+            </div>
+          )}
       </AnalysisPanel>
     </Container>
   );
