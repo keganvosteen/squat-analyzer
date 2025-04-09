@@ -17,6 +17,8 @@ import math
 import requests
 import gc
 from werkzeug.utils import secure_filename
+import multiprocessing
+from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
 # Configure CORS correctly
@@ -263,6 +265,16 @@ def analyze_frame(frame, session_id=None):
 def home():
     return "Flask server is running!"
 
+@app.route('/ping', methods=['GET'])
+def ping():
+    """Simple endpoint to keep the server warm"""
+    # Add a timestamp to the response
+    return jsonify({
+        "status": "alive",
+        "timestamp": time.time(),
+        "message": "Server is awake and ready for processing"
+    })
+
 @app.route('/analyze-squat', methods=['POST'])
 def analyze_squat():
     data = request.get_json()
@@ -350,15 +362,10 @@ def analyze_video():
         
         app.logger.info(f"Video properties: FPS={fps}, frame_count={frame_count}")
         
-        # Process frames
-        results = []
-        frame_number = 0
-        processed_frames = 0
-        
         # Calculate frame skip rate based on video length to reduce processing time
         # Process fewer frames for longer videos to stay within timeout limits
         max_frames_to_process = 20  # Reduced from 30 to 20 for faster processing
-        target_processing_time = 25  # Target to complete within 25 seconds (5s buffer for 30s timeout)
+        target_processing_time = 30  # Target to complete within 30 seconds (15s buffer for 45s timeout)
         
         # Calculate optimal frame skip based on video length and target processing time
         estimated_time_per_frame = 0.5  # Estimated processing time per frame in seconds
@@ -371,104 +378,129 @@ def analyze_video():
         app.logger.info(f"Processing every {frame_skip}th frame, targeting {total_frames_possible} frames")
         
         # Pre-calculate target frame indices to process
-        target_frames = set(range(0, frame_count, frame_skip))
+        target_frames = list(range(0, frame_count, frame_skip))[:max_frames_to_process]
         
-        while cap.isOpened() and processed_frames < max_frames_to_process:
+        # Extract frames to process in parallel
+        frames_to_process = []
+        for idx in target_frames:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             success, frame = cap.read()
-            if not success:
-                break
-            
-            # Only process target frames
-            if frame_number in target_frames:
-                # Convert BGR to RGB and resize in one step if needed
+            if success:
+                # Resize frame to reduce memory usage
                 if frame.shape[0] > 720 or frame.shape[1] > 1280:
-                    frame_rgb = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
-                    frame_rgb = cv2.cvtColor(frame_rgb, cv2.COLOR_BGR2RGB)
-                else:
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
-                # Create MediaPipe image and detect pose
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-                detection_result = pose_landmarker.detect(mp_image)
-                
-                if detection_result.pose_landmarks:
-                    pose_landmarks = detection_result.pose_landmarks[0]
-                    
-                    # Convert landmarks to list more efficiently
-                    landmarks = [{
-                        'x': landmark.x,
-                        'y': landmark.y,
-                        'z': landmark.z,
-                        'visibility': landmark.visibility
-                    } for landmark in pose_landmarks]
-                    
-                    # Get key points for measurements
-                    hip = pose_landmarks[POSE_LANDMARKS.RIGHT_HIP]
-                    knee = pose_landmarks[POSE_LANDMARKS.RIGHT_KNEE]
-                    ankle = pose_landmarks[POSE_LANDMARKS.RIGHT_ANKLE]
-                    shoulder = pose_landmarks[POSE_LANDMARKS.RIGHT_SHOULDER]
-                    
-                    # Calculate all measurements at once
-                    knee_angle = calculate_angle(hip, knee, ankle)
-                    depth_ratio = calculate_depth_ratio(hip, knee, ankle)
-                    shoulder_midfoot_diff = calculate_shoulder_midfoot_diff(shoulder, hip, knee, ankle)
-                    
-                    # Initialize arrows list with capacity
-                    arrows = []
-                    
-                    # Add feedback arrows based on analysis
-                    if knee_angle < 90:
-                        arrows.append({
-                            'start': {'x': knee.x, 'y': knee.y},
-                            'end': {'x': knee.x, 'y': knee.y - 0.1},
-                            'color': 'yellow',
-                            'message': 'Knees too bent'
-                        })
-                    
-                    if shoulder_midfoot_diff > 0.1:
-                        arrows.append({
-                            'start': {'x': shoulder.x, 'y': shoulder.y},
-                            'end': {'x': ankle.x, 'y': shoulder.y},
-                            'color': 'red',
-                            'message': 'Keep shoulders over midfoot'
-                        })
-                    
-                    # Append results all at once
-                    results.append({
-                        'frame': frame_number,
-                        'timestamp': frame_number / fps,
-                        'landmarks': landmarks,
-                        'measurements': {
-                            'kneeAngle': float(knee_angle),
-                            'depthRatio': float(depth_ratio),
-                            'shoulderMidfootDiff': float(shoulder_midfoot_diff)
-                        },
-                        'arrows': arrows
-                    })
-                    
-                    processed_frames += 1
-                    
-                # Clean up immediately
-                del frame_rgb
-                del mp_image
-                
-                if processed_frames % 3 == 0:  # More frequent cleanup
-                    gc.collect()
-            
-            frame_number += 1
-            
-            # Check processing time and break if approaching timeout
-            if time.time() - session_start_times.get('default', time.time()) > target_processing_time:
-                app.logger.warning("Approaching timeout limit, stopping processing")
-                break
+                    frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
+                frames_to_process.append((idx, frame))
         
+        # Release the capture as soon as we've extracted frames
         cap.release()
+        
+        app.logger.info(f"Extracted {len(frames_to_process)} frames for processing")
+        
+        # Define function to process a single frame
+        def process_frame(frame_data):
+            frame_idx, frame = frame_data
+            
+            # Convert BGR to RGB
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # Create MediaPipe image and detect pose
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+            
+            # Create a new pose landmarker for thread safety
+            thread_options = PoseLandmarkerOptions(
+                base_options=BaseOptions(model_asset_path=model_path),
+                running_mode=VisionRunningMode.IMAGE,
+                min_pose_detection_confidence=0.5,
+                min_pose_presence_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+            thread_pose_landmarker = PoseLandmarker.create_from_options(thread_options)
+            
+            detection_result = thread_pose_landmarker.detect(mp_image)
+            
+            if not detection_result.pose_landmarks:
+                return None
+                
+            pose_landmarks = detection_result.pose_landmarks[0]
+            
+            # Convert landmarks to list more efficiently
+            landmarks = [{
+                'x': landmark.x,
+                'y': landmark.y,
+                'z': landmark.z,
+                'visibility': landmark.visibility
+            } for landmark in pose_landmarks]
+            
+            # Get key points for measurements
+            hip = pose_landmarks[POSE_LANDMARKS.RIGHT_HIP]
+            knee = pose_landmarks[POSE_LANDMARKS.RIGHT_KNEE]
+            ankle = pose_landmarks[POSE_LANDMARKS.RIGHT_ANKLE]
+            shoulder = pose_landmarks[POSE_LANDMARKS.RIGHT_SHOULDER]
+            
+            # Calculate all measurements at once
+            knee_angle = calculate_angle(hip, knee, ankle)
+            depth_ratio = calculate_depth_ratio(hip, knee, ankle)
+            shoulder_midfoot_diff = calculate_shoulder_midfoot_diff(shoulder, hip, knee, ankle)
+            
+            # Generate feedback arrows
+            arrows = []
+            
+            if knee_angle < 90:
+                arrows.append({
+                    'start': {'x': knee.x, 'y': knee.y},
+                    'end': {'x': knee.x, 'y': knee.y - 0.1},
+                    'color': 'yellow',
+                    'message': 'Knees too bent'
+                })
+            
+            if shoulder_midfoot_diff > 0.1:
+                arrows.append({
+                    'start': {'x': shoulder.x, 'y': shoulder.y},
+                    'end': {'x': ankle.x, 'y': shoulder.y},
+                    'color': 'red',
+                    'message': 'Keep shoulders over midfoot'
+                })
+            
+            # Return processed frame data
+            return {
+                'frame': frame_idx,
+                'timestamp': frame_idx / fps,
+                'landmarks': landmarks,
+                'measurements': {
+                    'kneeAngle': float(knee_angle),
+                    'depthRatio': float(depth_ratio),
+                    'shoulderMidfootDiff': float(shoulder_midfoot_diff)
+                },
+                'arrows': arrows
+            }
+        
+        # Use ThreadPoolExecutor for parallel processing
+        # Determine the number of workers - use half of available CPUs to avoid overloading
+        num_workers = max(1, multiprocessing.cpu_count() // 2)
+        results = []
+        
+        app.logger.info(f"Starting parallel processing with {num_workers} workers")
+        
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            # Submit all frames for processing
+            future_results = list(executor.map(process_frame, frames_to_process))
+            
+            # Filter out None results
+            results = [r for r in future_results if r is not None]
+            
+            app.logger.info(f"Parallel processing complete. Got {len(results)} valid frames.")
         
         # Clean up
         if os.path.exists(temp_path):
             os.remove(temp_path)
         
-        app.logger.info(f"Analysis complete. Processed {processed_frames} frames.")
+        # Force garbage collection
+        gc.collect()
+        
+        app.logger.info(f"Analysis complete. Processed {len(results)} frames.")
+        
+        # Sort results by frame number
+        results.sort(key=lambda x: x['frame'])
         
         return jsonify({
             'success': True,

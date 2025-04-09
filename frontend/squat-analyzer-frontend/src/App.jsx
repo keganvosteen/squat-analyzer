@@ -1,10 +1,11 @@
 // src/App.jsx
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import styled from 'styled-components';
 import axios from 'axios'; // Import axios
 import VideoCapture from './components/VideoCapture';
 import ExercisePlayback from './components/ExercisePlayback';
 import LocalAnalysis from './utils/LocalAnalysis'; // Import local analysis module (we'll create this)
+import ServerWarmup from './utils/ServerWarmup'; // Import server warmup utility
 import './App.css';
 
 // Define the backend URL with a fallback
@@ -13,7 +14,7 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://squat-analyzer-
 // Create an axios instance with shorter timeout for free Render tier
 const api = axios.create({
   baseURL: BACKEND_URL,
-  timeout: 30000, // 30 seconds timeout instead of 60
+  timeout: 45000, // 45 seconds timeout instead of 30
   headers: {
     'Content-Type': 'multipart/form-data',
   }
@@ -31,6 +32,18 @@ const Title = styled.h1`
   margin-bottom: 2rem;
 `;
 
+const LogosContainer = styled.div`
+  display: flex;
+  justify-content: center;
+  gap: 40px;
+  margin-bottom: 2rem;
+`;
+
+const Logo = styled.img`
+  height: 50px;
+  width: auto;
+`;
+
 const App = () => {
   const [videoBlob, setVideoBlob] = useState(null);
   const [analysisData, setAnalysisData] = useState(null);
@@ -40,6 +53,23 @@ const App = () => {
   const [showPlayback, setShowPlayback] = useState(false);
   const [loading, setLoading] = useState(false);
   const [usingLocalAnalysis, setUsingLocalAnalysis] = useState(false);
+  const [serverReady, setServerReady] = useState(false);
+
+  // Start the server warmup service when the app loads
+  useEffect(() => {
+    // Start pinging the server every 8 minutes to keep it warm
+    ServerWarmup.startWarmupService(8 * 60 * 1000);
+    
+    // Try an initial ping to check if server is ready
+    ServerWarmup.pingServer().then(isReady => {
+      setServerReady(isReady);
+    });
+    
+    // Clean up the interval when the component unmounts
+    return () => {
+      ServerWarmup.stopWarmupService();
+    };
+  }, []);
 
   const handleRecordingComplete = async (videoBlob) => {
     console.log("Recording complete, preparing for analysis...", {blobSize: videoBlob.size, blobType: videoBlob.type});
@@ -80,7 +110,7 @@ const App = () => {
         let shouldTryLocalAnalysis = false;
         
         if (apiError.code === 'ECONNABORTED') {
-          errorMessage = "Analysis took too long and timed out. Switching to local analysis mode.";
+          errorMessage = "Analysis took too long and timed out after 45 seconds. Switching to local analysis mode.";
           shouldTryLocalAnalysis = true;
         } else if (apiError.response) {
           // Server responded with an error status
@@ -144,6 +174,17 @@ const App = () => {
   return (
     <div className="min-h-screen bg-gray-100 py-8">
       <div className="container mx-auto px-4">
+        <LogosContainer>
+          <Logo 
+            src="https://www8.gsb.columbia.edu/img/logos/columbia-business-school-logo.png" 
+            alt="Columbia Business School" 
+          />
+          <Logo 
+            src="https://engineering.columbia.edu/sites/default/files/content/image/identities/SEAS-Logo-2color-615px.png" 
+            alt="Columbia Engineering" 
+          />
+        </LogosContainer>
+        
         <h1 className="text-3xl font-bold text-center mb-8">Squat Form Analyzer</h1>
         
         {!showPlayback ? (
@@ -178,7 +219,18 @@ const App = () => {
         {loading && (
           <div className="text-center mt-4 p-4 bg-blue-100 rounded">
             <p className="font-semibold">Analyzing video...</p>
-            <p className="text-sm text-gray-600 mt-2">This can take up to 30 seconds on the free Render tier. Please be patient.</p>
+            <p className="text-sm text-gray-600 mt-2">This can take up to 45 seconds on the free Render tier. Please be patient.</p>
+            {videoBlob && videoBlob.size > 3 * 1024 * 1024 && (
+              <p className="text-sm text-gray-600 mt-1">
+                <span className="font-medium">Video compression active:</span> Large videos are automatically compressed to improve analysis speed.
+              </p>
+            )}
+            {serverReady && (
+              <p className="text-sm text-green-600 mt-1">✓ Server is warmed up and ready</p>
+            )}
+            {!serverReady && (
+              <p className="text-sm text-orange-600 mt-1">⚠️ Server may be starting up (cold start)</p>
+            )}
           </div>
         )}
       </div>
