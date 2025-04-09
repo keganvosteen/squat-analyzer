@@ -15,6 +15,7 @@ import time
 import os
 import math
 import requests
+import gc
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -355,59 +356,85 @@ def analyze_video():
         processed_frames = 0
         
         # Calculate frame skip rate based on video length to reduce processing time
-        # Process 1 frame per second for longer videos
-        max_frames_to_process = 30  # Maximum number of frames to process
+        # Process fewer frames for longer videos to stay within timeout limits
+        max_frames_to_process = 20  # Reduced from 30 to 20 for faster processing
+        target_processing_time = 25  # Target to complete within 25 seconds (5s buffer for 30s timeout)
         
-        if frame_count > max_frames_to_process:
-            frame_skip = max(1, int(frame_count / max_frames_to_process))
-        else:
-            frame_skip = 5  # Default: process every 5th frame
+        # Calculate optimal frame skip based on video length and target processing time
+        estimated_time_per_frame = 0.5  # Estimated processing time per frame in seconds
+        total_frames_possible = target_processing_time / estimated_time_per_frame
+        frame_skip = max(1, int(frame_count / total_frames_possible))
+        
+        # Ensure we don't skip too many frames for short videos
+        frame_skip = min(frame_skip, 10)  # Never skip more than 10 frames
             
-        app.logger.info(f"Processing every {frame_skip}th frame")
+        app.logger.info(f"Processing every {frame_skip}th frame, targeting {total_frames_possible} frames")
+        
+        # Pre-calculate target frame indices to process
+        target_frames = set(range(0, frame_count, frame_skip))
         
         while cap.isOpened() and processed_frames < max_frames_to_process:
             success, frame = cap.read()
             if not success:
                 break
             
-            # Only process frames at the specified interval
-            if frame_number % frame_skip == 0:
-                # Convert BGR to RGB
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
-                # Resize frame to reduce memory usage if needed
+            # Only process target frames
+            if frame_number in target_frames:
+                # Convert BGR to RGB and resize in one step if needed
                 if frame.shape[0] > 720 or frame.shape[1] > 1280:
-                    frame_rgb = cv2.resize(frame_rgb, (0, 0), fx=0.5, fy=0.5)
+                    frame_rgb = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
+                    frame_rgb = cv2.cvtColor(frame_rgb, cv2.COLOR_BGR2RGB)
+                else:
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
+                # Create MediaPipe image and detect pose
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
                 detection_result = pose_landmarker.detect(mp_image)
                 
                 if detection_result.pose_landmarks:
                     pose_landmarks = detection_result.pose_landmarks[0]
                     
-                    # Convert landmarks to list
-                    landmarks = []
-                    for landmark in pose_landmarks:
-                        landmarks.append({
-                            'x': landmark.x,
-                            'y': landmark.y,
-                            'z': landmark.z,
-                            'visibility': landmark.visibility
-                        })
+                    # Convert landmarks to list more efficiently
+                    landmarks = [{
+                        'x': landmark.x,
+                        'y': landmark.y,
+                        'z': landmark.z,
+                        'visibility': landmark.visibility
+                    } for landmark in pose_landmarks]
                     
-                    # Calculate measurements using the first landmark set
-                    # Using right side for measurements
+                    # Get key points for measurements
                     hip = pose_landmarks[POSE_LANDMARKS.RIGHT_HIP]
                     knee = pose_landmarks[POSE_LANDMARKS.RIGHT_KNEE]
                     ankle = pose_landmarks[POSE_LANDMARKS.RIGHT_ANKLE]
                     shoulder = pose_landmarks[POSE_LANDMARKS.RIGHT_SHOULDER]
                     
+                    # Calculate all measurements at once
                     knee_angle = calculate_angle(hip, knee, ankle)
                     depth_ratio = calculate_depth_ratio(hip, knee, ankle)
                     shoulder_midfoot_diff = calculate_shoulder_midfoot_diff(shoulder, hip, knee, ankle)
                     
-                    # Prepare feedback
-                    feedback = {
+                    # Initialize arrows list with capacity
+                    arrows = []
+                    
+                    # Add feedback arrows based on analysis
+                    if knee_angle < 90:
+                        arrows.append({
+                            'start': {'x': knee.x, 'y': knee.y},
+                            'end': {'x': knee.x, 'y': knee.y - 0.1},
+                            'color': 'yellow',
+                            'message': 'Knees too bent'
+                        })
+                    
+                    if shoulder_midfoot_diff > 0.1:
+                        arrows.append({
+                            'start': {'x': shoulder.x, 'y': shoulder.y},
+                            'end': {'x': ankle.x, 'y': shoulder.y},
+                            'color': 'red',
+                            'message': 'Keep shoulders over midfoot'
+                        })
+                    
+                    # Append results all at once
+                    results.append({
                         'frame': frame_number,
                         'timestamp': frame_number / fps,
                         'landmarks': landmarks,
@@ -416,37 +443,24 @@ def analyze_video():
                             'depthRatio': float(depth_ratio),
                             'shoulderMidfootDiff': float(shoulder_midfoot_diff)
                         },
-                        'arrows': []
-                    }
+                        'arrows': arrows
+                    })
                     
-                    # Add feedback arrows based on analysis
-                    if knee_angle < 90:
-                        feedback['arrows'].append({
-                            'start': {'x': knee.x, 'y': knee.y},
-                            'end': {'x': knee.x, 'y': knee.y - 0.1},
-                            'color': 'yellow',
-                            'message': 'Knees too bent'
-                        })
-                    
-                    if shoulder_midfoot_diff > 0.1:
-                        feedback['arrows'].append({
-                            'start': {'x': shoulder.x, 'y': shoulder.y},
-                            'end': {'x': ankle.x, 'y': shoulder.y},
-                            'color': 'red',
-                            'message': 'Keep shoulders over midfoot'
-                        })
-                    
-                    results.append(feedback)
                     processed_frames += 1
                     
-                # Free memory
+                # Clean up immediately
                 del frame_rgb
-                if processed_frames % 5 == 0:
-                    # Force garbage collection every 5 processed frames
-                    import gc
+                del mp_image
+                
+                if processed_frames % 3 == 0:  # More frequent cleanup
                     gc.collect()
             
             frame_number += 1
+            
+            # Check processing time and break if approaching timeout
+            if time.time() - session_start_times.get('default', time.time()) > target_processing_time:
+                app.logger.warning("Approaching timeout limit, stopping processing")
+                break
         
         cap.release()
         

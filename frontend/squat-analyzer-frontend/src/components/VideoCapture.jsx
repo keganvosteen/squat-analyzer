@@ -186,7 +186,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       // Set constraints
       const constraints = {
-        audio: true,
+        audio: false, // Disabled to reduce file size and improve processing time
         video: {
           width: { ideal: 1280, max: 1920 },
           height: { ideal: 720, max: 1080 },
@@ -306,7 +306,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Create a new MediaRecorder instance
       mediaRecorderRef.current = new MediaRecorder(streamRef.current, { 
         mimeType,
-        videoBitsPerSecond: 2500000 // 2.5 Mbps for better quality
+        videoBitsPerSecond: 2000000, // 2 Mbps - optimized for squat analysis
+        audioBitsPerSecond: 0 // No audio
       });
       
       // Setup data available handler
