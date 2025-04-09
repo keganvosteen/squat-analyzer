@@ -579,19 +579,14 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
             </FeedbackSection>
           </>
         ) : (
-          <div className="p-4 bg-gray-100 rounded text-center">
-            <p className="font-semibold">Analysis data not available</p>
-            <p className="mt-2">This may be due to:</p>
-            <ul className="list-disc list-inside mt-2 text-left">
-              <li>Backend server timeout (common on free Render tier)</li>
-              <li>Network connectivity issues</li>
-              <li>Backend processing errors</li>
-            </ul>
-            <div className="mt-3 p-3 bg-blue-50 rounded text-blue-800 text-sm">
-              <p className="font-semibold">Tip: Try recording a shorter video (5-8 seconds)</p>
-              <p>The free tier has limited processing capacity for longer videos.</p>
-            </div>
-            <p className="mt-2">You can still review your form in the recording above.</p>
+          <div className="text-center p-4">
+            <div className="font-semibold mb-2">Analysis data not available</div>
+            <p className="text-sm text-gray-600 mb-3">
+              Analysis couldn't be completed due to a timeout (45 seconds), network issue, or processing error.
+            </p>
+            <p className="text-sm text-gray-600">
+              Tip: Try recording a shorter video (5-10 seconds) for better processing success.
+            </p>
           </div>
         )}
       </AnalysisPanel>

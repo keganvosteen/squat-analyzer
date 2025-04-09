@@ -471,7 +471,19 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             console.log("Processing recorded video");
             // Add small timeout to ensure UI updates before heavy processing begins
             setTimeout(() => {
-              onRecordingComplete(blob);
+              // Compress video if it's larger than 3MB for better backend processing
+              if (blob.size > 3 * 1024 * 1024) {
+                console.log("Large video detected, compressing before sending to backend");
+                compressVideo(blob).then(compressedBlob => {
+                  console.log(`Compressed video from ${Math.round(blob.size/1024)}KB to ${Math.round(compressedBlob.size/1024)}KB`);
+                  onRecordingComplete(compressedBlob);
+                }).catch(error => {
+                  console.error("Video compression failed, using original:", error);
+                  onRecordingComplete(blob);
+                });
+              } else {
+                onRecordingComplete(blob);
+              }
             }, 100);
           } else {
             setError("Recording failed - no data captured");
@@ -602,6 +614,107 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     setRecordingTime(0);
     
     console.log("Media resources cleanup complete");
+  };
+
+  // Add video compression function
+  const compressVideo = async (videoBlob) => {
+    return new Promise((resolve, reject) => {
+      try {
+        console.log("Starting video compression");
+        
+        // Create a video element to process the blob
+        const video = document.createElement('video');
+        video.muted = true;
+        video.autoplay = false;
+        video.preload = "auto";
+        
+        // Create canvas for processing
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        // Create temporary URL for the video blob
+        const videoUrl = URL.createObjectURL(videoBlob);
+        video.src = videoUrl;
+        
+        // Handle video errors
+        video.onerror = (err) => {
+          URL.revokeObjectURL(videoUrl);
+          reject(new Error(`Video loading failed during compression: ${err}`));
+        };
+        
+        // Once metadata is loaded, we can start processing
+        video.onloadedmetadata = () => {
+          // Set target size (640x480 is good for ML processing while reducing size)
+          const targetWidth = 640;
+          const targetHeight = 480;
+          
+          // If the video is already smaller, just return the original
+          if (video.videoWidth <= targetWidth && video.videoHeight <= targetHeight) {
+            URL.revokeObjectURL(videoUrl);
+            console.log("Video already small enough, skipping compression");
+            resolve(videoBlob);
+            return;
+          }
+          
+          // Set canvas dimensions
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+          
+          // Create a MediaRecorder for the canvas
+          const canvasStream = canvas.captureStream(30); // 30fps
+          const recorder = new MediaRecorder(canvasStream, {
+            mimeType: getSupportedMimeType(),
+            videoBitsPerSecond: 1500000 // 1.5 Mbps - good balance for squat analysis
+          });
+          
+          const chunks = [];
+          recorder.ondataavailable = e => {
+            if (e.data.size > 0) {
+              chunks.push(e.data);
+            }
+          };
+          
+          recorder.onstop = () => {
+            const compressedBlob = new Blob(chunks, { type: getSupportedMimeType() });
+            URL.revokeObjectURL(videoUrl);
+            resolve(compressedBlob);
+          };
+          
+          // Start recording from the canvas
+          recorder.start();
+          
+          // Set video to start from the beginning when we start processing
+          video.currentTime = 0;
+          
+          // Play and process the video frames
+          video.onplay = () => {
+            const processFrame = () => {
+              if (video.ended || video.paused) {
+                recorder.stop();
+                return;
+              }
+              
+              // Draw the current frame at the reduced resolution
+              ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+              
+              // Continue with the next frame
+              requestAnimationFrame(processFrame);
+            };
+            
+            // Start processing
+            processFrame();
+          };
+          
+          // Play the video to start processing
+          video.play().catch(playErr => {
+            URL.revokeObjectURL(videoUrl);
+            reject(new Error(`Couldn't play video for compression: ${playErr}`));
+          });
+        };
+      } catch (err) {
+        reject(err);
+      }
+    });
   };
 
   return (
