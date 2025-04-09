@@ -141,10 +141,11 @@ const OverlayCanvas = styled.canvas`
   height: 100%;
 `;
 
-const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings = [], sessionId }) => {
-  console.log('ExercisePlayback Component');
-  console.log('Video URL:', videoUrl);
-  console.log('Analysis data:', analysisData);
+const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }) => {
+  console.log("ExercisePlayback Component");
+  console.log("Video URL:", videoUrl);
+  console.log("Analysis data:", analysisData);
+  console.log("Using local analysis:", usingLocalAnalysis);
   
   const containerRef = useRef(null);
   const videoRef = useRef(null);
@@ -474,7 +475,7 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
 
   return (
     <Container ref={containerRef}>
-      <h2>Exercise Playback</h2>
+      <h2>Exercise Playback {usingLocalAnalysis && <span className="text-sm text-yellow-600">(Local Analysis Mode)</span>}</h2>
       
       {error && (
         <ErrorMessage>
@@ -526,7 +527,14 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
       </Controls>
       
       <AnalysisPanel>
-        <h3>Analysis Results</h3>
+        <h3>
+          Analysis Results
+          {usingLocalAnalysis && (
+            <span className="ml-2 text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
+              Local Mode
+            </span>
+          )}
+        </h3>
         
         {hasAnalysisData ? (
           <>
@@ -538,7 +546,7 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
                     <div key={key} className="w-1/3 mb-2">
                       <StatLabel>{key}</StatLabel>
                       <StatValue>{typeof value === 'number' ? value.toFixed(1) : value}</StatValue>
-            </div>
+                    </div>
                   ))
                 )}
               </div>
@@ -546,6 +554,11 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
             
             <FeedbackSection>
               <h4>Feedback Tips</h4>
+              {usingLocalAnalysis && (
+                <div className="mb-3 text-xs bg-blue-50 text-blue-700 p-2 rounded">
+                  Simplified feedback based on local analysis
+                </div>
+              )}
               {analysisData.frames.some(frame => frame.arrows && frame.arrows.length > 0) ? (
                 <FeedbackList>
                   {Array.from(new Set(
@@ -574,9 +587,13 @@ const ExercisePlayback = ({ videoUrl, analysisData, squatCount = 0, squatTimings
               <li>Network connectivity issues</li>
               <li>Backend processing errors</li>
             </ul>
-            <p className="mt-2">You can still review your form in the recording above.</p>
+            <div className="mt-3 p-3 bg-blue-50 rounded text-blue-800 text-sm">
+              <p className="font-semibold">Tip: Try recording a shorter video (5-8 seconds)</p>
+              <p>The free tier has limited processing capacity for longer videos.</p>
             </div>
-          )}
+            <p className="mt-2">You can still review your form in the recording above.</p>
+          </div>
+        )}
       </AnalysisPanel>
     </Container>
   );

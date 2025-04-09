@@ -4,6 +4,7 @@ import styled from 'styled-components';
 import axios from 'axios'; // Import axios
 import VideoCapture from './components/VideoCapture';
 import ExercisePlayback from './components/ExercisePlayback';
+import LocalAnalysis from './utils/LocalAnalysis'; // Import local analysis module (we'll create this)
 import './App.css';
 
 // Define the backend URL with a fallback
@@ -38,6 +39,7 @@ const App = () => {
   const [videoUrl, setVideoUrl] = useState(null);
   const [showPlayback, setShowPlayback] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [usingLocalAnalysis, setUsingLocalAnalysis] = useState(false);
 
   const handleRecordingComplete = async (videoBlob) => {
     console.log("Recording complete, preparing for analysis...", {blobSize: videoBlob.size, blobType: videoBlob.type});
@@ -45,6 +47,7 @@ const App = () => {
       setLoading(true);
       setError(null);
       setShowPlayback(true); // Show playback immediately for better UX
+      setUsingLocalAnalysis(false);
       
       // Save the blob for potential direct playback
       setVideoBlob(videoBlob);
@@ -58,36 +61,54 @@ const App = () => {
 
       console.log(`Sending request to ${BACKEND_URL}/analyze with blob size ${Math.round(videoBlob.size / 1024)} KB`);
       
-      // Use axios instead of fetch
-      const response = await api.post('/analyze', formData, {
-        onUploadProgress: progressEvent => {
-          const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-          console.log(`Upload progress: ${percentCompleted}%`);
+      try {
+        // Use axios with timeout
+        const response = await api.post('/analyze', formData, {
+          onUploadProgress: progressEvent => {
+            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
+            console.log(`Upload progress: ${percentCompleted}%`);
+          }
+        });
+        
+        console.log("Analysis data received:", response.data);
+        setAnalysisData(response.data);
+      } catch (apiError) {
+        console.error("Backend analysis error:", apiError);
+        
+        // Extract error message
+        let errorMessage = "Unknown error";
+        if (apiError.code === 'ECONNABORTED') {
+          errorMessage = "Analysis took too long and timed out. Switching to local analysis mode.";
+          
+          // Try local analysis as fallback
+          console.log("Attempting local analysis as fallback...");
+          try {
+            const localAnalysisResult = await LocalAnalysis.analyzeVideo(videoBlob, videoUrl);
+            setAnalysisData(localAnalysisResult);
+            setUsingLocalAnalysis(true);
+            setError("Using simplified local analysis due to backend timeout. Some advanced features may not be available.");
+            return;
+          } catch (localError) {
+            console.error("Local analysis also failed:", localError);
+            errorMessage += " Local analysis also failed.";
+          }
+        } else if (apiError.response) {
+          // Server responded with an error status
+          errorMessage = `Server error: ${apiError.response.status} ${apiError.response.statusText}`;
+          console.error("Server error details:", apiError.response.data);
+        } else if (apiError.request) {
+          // Request was made but no response received
+          errorMessage = "No response from server. The backend may be offline or restarting.";
+        } else {
+          // Something else caused the error
+          errorMessage = apiError.message;
         }
-      });
-      
-      console.log("Analysis data received:", response.data);
-      setAnalysisData(response.data);
-    } catch (error) {
-      console.error("Error analyzing video:", error);
-      
-      // Extract the most useful error message
-      let errorMessage = "Unknown error";
-      if (error.code === 'ECONNABORTED') {
-        errorMessage = "Analysis took too long and timed out. This is common on the free Render tier. You can still watch your recording without the analysis overlays.";
-      } else if (error.response) {
-        // Server responded with an error status
-        errorMessage = `Server error: ${error.response.status} ${error.response.statusText}`;
-        console.error("Server error details:", error.response.data);
-      } else if (error.request) {
-        // Request was made but no response received
-        errorMessage = "No response from server. The backend may be offline or restarting.";
-      } else {
-        // Something else caused the error
-        errorMessage = error.message;
+        
+        setError(errorMessage);
       }
-      
-      setError(errorMessage);
+    } catch (error) {
+      console.error("General error in recording handling:", error);
+      setError(`Error: ${error.message || "Unknown error occurred"}`);
     } finally {
       setLoading(false);
     }
@@ -104,6 +125,7 @@ const App = () => {
     setAnalysisData(null);
     setError(null);
     setShowPlayback(false);
+    setUsingLocalAnalysis(false);
   };
 
   return (
@@ -118,12 +140,16 @@ const App = () => {
             <ExercisePlayback
               videoUrl={videoUrl}
               analysisData={analysisData}
+              usingLocalAnalysis={usingLocalAnalysis}
             />
             
             {error && (
               <div className="mt-4 p-4 bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700">
-                <p className="font-bold">Analysis Warning:</p>
+                <p className="font-bold">Analysis Info:</p>
                 <p>{error}</p>
+                {usingLocalAnalysis && (
+                  <p className="mt-2 text-sm">Local analysis provides basic feedback but may be less accurate than cloud analysis.</p>
+                )}
               </div>
             )}
             
