@@ -77,31 +77,44 @@ const App = () => {
         
         // Extract error message
         let errorMessage = "Unknown error";
+        let shouldTryLocalAnalysis = false;
+        
         if (apiError.code === 'ECONNABORTED') {
           errorMessage = "Analysis took too long and timed out. Switching to local analysis mode.";
-          
-          // Try local analysis as fallback
-          console.log("Attempting local analysis as fallback...");
-          try {
-            const localAnalysisResult = await LocalAnalysis.analyzeVideo(videoBlob, videoUrl);
-            setAnalysisData(localAnalysisResult);
-            setUsingLocalAnalysis(true);
-            setError("Using simplified local analysis due to backend timeout. Some advanced features may not be available.");
-            return;
-          } catch (localError) {
-            console.error("Local analysis also failed:", localError);
-            errorMessage += " Local analysis also failed.";
-          }
+          shouldTryLocalAnalysis = true;
         } else if (apiError.response) {
           // Server responded with an error status
           errorMessage = `Server error: ${apiError.response.status} ${apiError.response.statusText}`;
           console.error("Server error details:", apiError.response.data);
+          shouldTryLocalAnalysis = true; // Also try local analysis for server errors
         } else if (apiError.request) {
           // Request was made but no response received
           errorMessage = "No response from server. The backend may be offline or restarting.";
+          shouldTryLocalAnalysis = true; // Also try local analysis when server is unreachable
         } else {
           // Something else caused the error
           errorMessage = apiError.message;
+        }
+        
+        // Try local analysis as fallback
+        if (shouldTryLocalAnalysis) {
+          console.log("Attempting local analysis as fallback...");
+          try {
+            const localAnalysisResult = await LocalAnalysis.analyzeVideo(videoBlob, videoUrl);
+            if (localAnalysisResult && localAnalysisResult.success) {
+              console.log("Local analysis succeeded:", localAnalysisResult);
+              setAnalysisData(localAnalysisResult);
+              setUsingLocalAnalysis(true);
+              setError("Using simplified local analysis due to backend timeout. Some advanced features may not be available.");
+              return;
+            } else {
+              console.error("Local analysis returned invalid data");
+              errorMessage += " Local analysis also failed.";
+            }
+          } catch (localError) {
+            console.error("Local analysis error:", localError);
+            // Continue with server error message, don't expose local error to user
+          }
         }
         
         setError(errorMessage);
