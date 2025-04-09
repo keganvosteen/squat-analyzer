@@ -23,12 +23,39 @@ const Heading = styled.h1`
 const ErrorMessage = styled.div`
   background-color: #ff4444;
   color: white;
-  padding: 10px;
+  padding: 15px;
   border-radius: 5px;
   margin-bottom: 20px;
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 10px;
+  
+  .error-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: bold;
+  }
+  
+  .error-actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 5px;
+  }
+  
+  button {
+    background-color: white;
+    color: #ff4444;
+    border: none;
+    padding: 5px 10px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-weight: bold;
+    
+    &:hover {
+      background-color: #f0f0f0;
+    }
+  }
 `;
 
 const CameraContainer = styled.div`
@@ -210,7 +237,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         throw new Error("Camera access requires a secure context (HTTPS)");
       }
       
-      // Clean up any existing stream
+      // Clean up any existing stream first to prevent conflicts
       cleanupStream();
       
       // Check for camera permissions
@@ -223,22 +250,55 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         console.log("Permission API not supported, continuing with getUserMedia");
       }
       
-      // Set constraints
-      const constraints = {
-        audio: false, // Disabled to reduce file size and improve processing time
-        video: {
-          width: { ideal: 1280, max: 1920 },
-          height: { ideal: 720, max: 1080 },
-          facingMode: 'user'
-        }
-      };
+      // Try multiple constraint configurations if the default fails
+      let stream = null;
+      let error = null;
       
-      // Get user media
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      
-      if (!stream || !stream.active) {
-        throw new Error("Failed to get an active media stream");
+      // First try with standard constraints
+      try {
+        const standardConstraints = {
+          audio: false, // Disabled to reduce file size and improve processing time
+          video: {
+            width: { ideal: 1280, max: 1920 },
+            height: { ideal: 720, max: 1080 },
+            facingMode: 'user'
+          }
+        };
+        
+        console.log("Trying standard constraints:", standardConstraints);
+        stream = await navigator.mediaDevices.getUserMedia(standardConstraints);
+      } catch (err) {
+        console.warn("Standard constraints failed:", err.message);
+        error = err;
       }
+      
+      // If standard constraints failed, try fallback with minimal constraints
+      if (!stream) {
+        try {
+          const fallbackConstraints = {
+            audio: false,
+            video: true // Just request any video
+          };
+          
+          console.log("Trying fallback constraints:", fallbackConstraints);
+          stream = await navigator.mediaDevices.getUserMedia(fallbackConstraints);
+        } catch (err) {
+          console.error("Fallback constraints also failed:", err.message);
+          error = err;
+        }
+      }
+      
+      // If we still don't have a stream, throw the last error
+      if (!stream) {
+        throw error || new Error("Could not access camera with any configuration");
+      }
+      
+      if (!stream.active) {
+        throw new Error("Stream was created but is not active");
+      }
+      
+      console.log("Stream successfully created with tracks:", 
+        stream.getTracks().map(t => `${t.kind}:${t.label} (${t.readyState})`).join(', '));
       
       // Store the stream reference
       streamRef.current = stream;
@@ -248,18 +308,31 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         videoRef.current.srcObject = stream;
         videoRef.current.muted = true; // Prevent feedback
         
-        // Wait for video to be ready
-        await new Promise((resolve) => {
-          videoRef.current.onloadedmetadata = () => {
-            resolve();
-          };
-          // If metadata is already loaded, resolve immediately
-          if (videoRef.current.readyState >= 2) {
-            resolve();
-          }
-        });
+        // Wait for video to be ready with timeout
+        await Promise.race([
+          new Promise((resolve) => {
+            videoRef.current.onloadedmetadata = () => {
+              console.log("Video metadata loaded");
+              resolve();
+            };
+            // If metadata is already loaded, resolve immediately
+            if (videoRef.current.readyState >= 2) {
+              console.log("Video already ready");
+              resolve();
+            }
+          }),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Video metadata loading timeout")), 5000)
+          )
+        ]);
         
-        await videoRef.current.play();
+        try {
+          await videoRef.current.play();
+          console.log("Video playback started");
+        } catch (playErr) {
+          console.error("Error playing video:", playErr);
+          // Continue anyway - the stream is initialized
+        }
       }
       
       console.log("Camera initialized successfully");
@@ -268,7 +341,25 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       return streamRef.current;
     } catch (error) {
       console.error("Camera initialization error:", error);
-      setError(`Camera error: ${error.message || 'Could not access camera'}`);
+      
+      // Provide more helpful error messages based on the error
+      let errorMessage = "Could not access camera";
+      
+      if (error.name === "NotAllowedError" || error.name === "PermissionDeniedError") {
+        errorMessage = "Camera access denied. Please check your browser permissions and try again.";
+      } else if (error.name === "NotFoundError") {
+        errorMessage = "No camera found. Please connect a camera and reload the page.";
+      } else if (error.name === "NotReadableError" || error.name === "TrackStartError") {
+        errorMessage = "Camera is already in use by another application. Please close other applications using your camera.";
+      } else if (error.name === "OverconstrainedError") {
+        errorMessage = "Camera cannot meet the requested quality requirements. Try a different camera.";
+      } else if (error.name === "TypeError") {
+        errorMessage = "Invalid camera constraints. Please reload the page and try again.";
+      } else if (error.message) {
+        errorMessage = `Camera error: ${error.message}`;
+      }
+      
+      setError(errorMessage);
       setStreamReady(false);
       setIsInitialized(false);
       return null;
@@ -447,23 +538,18 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   };
 
   const cleanupStream = () => {
-    // Stop all tracks on the current stream
-    if (streamRef.current) {
-      console.log("Cleaning up stream tracks");
-      streamRef.current.getTracks().forEach(track => {
-        track.stop();
-      });
-      streamRef.current = null;
-    }
+    console.log("Cleaning up media resources");
     
-    // Clear video element
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
+    // Clear timer first
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
     }
     
     // Cleanup MediaRecorder
     if (mediaRecorderRef.current) {
       try {
+        console.log("Cleaning up MediaRecorder in state:", mediaRecorderRef.current.state);
         if (mediaRecorderRef.current.state === 'recording') {
           mediaRecorderRef.current.stop();
         }
@@ -473,10 +559,49 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       mediaRecorderRef.current = null;
     }
     
+    // Stop all tracks on the current stream
+    if (streamRef.current) {
+      try {
+        console.log("Cleaning up stream tracks");
+        const tracks = streamRef.current.getTracks();
+        tracks.forEach(track => {
+          try {
+            console.log(`Stopping track: ${track.kind}:${track.label}`);
+            track.stop();
+          } catch (trackErr) {
+            console.error(`Error stopping track ${track.kind}:${track.label}:`, trackErr);
+          }
+        });
+      } catch (streamErr) {
+        console.error("Error cleaning up stream:", streamErr);
+      } finally {
+        streamRef.current = null;
+      }
+    }
+    
+    // Clear video element srcObject
+    if (videoRef.current) {
+      try {
+        videoRef.current.pause();
+        videoRef.current.srcObject = null;
+        console.log("Cleared video source");
+      } catch (videoErr) {
+        console.error("Error clearing video element:", videoErr);
+      }
+    }
+    
     // Clear chunks
-    recordedChunksRef.current = [];
+    if (recordedChunksRef.current) {
+      recordedChunksRef.current = [];
+    }
+    
+    // Reset UI state
     setStreamReady(false);
     setIsInitialized(false);
+    setIsRecording(false);
+    setRecordingTime(0);
+    
+    console.log("Media resources cleanup complete");
   };
 
   return (
@@ -485,8 +610,22 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       {error && (
         <ErrorMessage>
-          <AlertTriangle size={18} />
-          {error}
+          <div className="error-header">
+            <AlertTriangle size={18} />
+            Camera Error
+          </div>
+          <div>{error}</div>
+          <div className="error-actions">
+            <button onClick={() => initializeCamera()}>
+              <RefreshCw size={14} className="mr-1" /> Retry Camera
+            </button>
+            <button onClick={() => window.location.reload()}>
+              Reload Page
+            </button>
+          </div>
+          <div className="text-sm">
+            Tips: Try closing other applications using your camera, checking your browser permissions, or using a different browser.
+          </div>
         </ErrorMessage>
       )}
       
