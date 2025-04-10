@@ -57,3 +57,21 @@
     height: auto;
   }
 }
+
+/* Add styles for text logo alternatives */
+.text-logos {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+  gap: 1rem;
+}
+
+.text-logo {
+  font-weight: bold;
+  font-size: 14px;
+  color: #003366;
+  padding: 8px 12px;
+  border: 1px solid #003366;
+  border-radius: 4px;
+  text-align: center;
+}

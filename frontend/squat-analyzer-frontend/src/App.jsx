@@ -6,6 +6,7 @@ import VideoCapture from './components/VideoCapture';
 import ExercisePlayback from './components/ExercisePlayback';
 import LocalAnalysis from './utils/LocalAnalysis'; // Import local analysis module (we'll create this)
 import ServerWarmup from './utils/ServerWarmup'; // Import server warmup utility
+// Import logo images from public folder
 import './App.css';
 
 // Define the backend URL with a fallback
@@ -48,9 +49,9 @@ const Logo = styled.img`
   object-fit: contain;
 `;
 
-// Define logo URLs - if using direct URLs, they can be hardcoded here
-const COLUMBIA_BUSINESS_LOGO = 'https://prod-web.business.columbia.edu/profiles/openscholar/modules/contrib/imagecache_actions/imagecache_actions.module.scss/modules/os/theme/Columbia_Business_School_logo.svg';
-const COLUMBIA_ENGINEERING_LOGO = 'https://engineering.columbia.edu/themes/custom/thememoon/assets/images/SEAS-Logo-2color.png';
+// Use local image paths instead of remote URLs
+const COLUMBIA_BUSINESS_LOGO = '/images/columbia-business.png';
+const COLUMBIA_ENGINEERING_LOGO = '/images/columbia_engineering.svg';
 
 const App = () => {
   const [videoBlob, setVideoBlob] = useState(null);
@@ -62,6 +63,7 @@ const App = () => {
   const [loading, setLoading] = useState(false);
   const [usingLocalAnalysis, setUsingLocalAnalysis] = useState(false);
   const [serverReady, setServerReady] = useState(false);
+  const [logoError, setLogoError] = useState(false);
 
   // Start the server warmup service when the app loads
   useEffect(() => {
@@ -78,6 +80,12 @@ const App = () => {
       ServerWarmup.stopWarmupService();
     };
   }, []);
+
+  // Handle logo loading errors
+  const handleLogoError = () => {
+    setLogoError(true);
+    console.warn("Error loading one or more logo images. Using text fallback.");
+  };
 
   const handleRecordingComplete = async (videoBlob) => {
     console.log("Recording complete, preparing for analysis...", {blobSize: videoBlob.size, blobType: videoBlob.type});
@@ -208,48 +216,44 @@ const App = () => {
   return (
     <div className="min-h-screen bg-gray-100 py-8">
       <div className="container mx-auto px-4">
-        <LogosContainer>
-          <Logo 
-            src={COLUMBIA_BUSINESS_LOGO}
-            alt="Columbia Business School" 
-          />
-          <Logo 
-            src={COLUMBIA_ENGINEERING_LOGO}
-            alt="Columbia Engineering" 
-          />
-        </LogosContainer>
-        
-        <h1 className="text-3xl font-bold text-center mb-8">Squat Form Analyzer</h1>
-        
-        {!showPlayback ? (
-          <VideoCapture onRecordingComplete={handleRecordingComplete} />
-        ) : (
-          <div>
+        <Container>
+          <Title>Columbia Squat Analyzer</Title>
+          <LogosContainer>
+            {logoError ? (
+              <div className="text-logos">
+                <span className="text-logo">Columbia Business School</span>
+                <span className="text-logo">Columbia Engineering</span>
+              </div>
+            ) : (
+              <>
+                <Logo 
+                  src={COLUMBIA_BUSINESS_LOGO}
+                  alt="Columbia Business School" 
+                  onError={handleLogoError}
+                />
+                <Logo 
+                  src={COLUMBIA_ENGINEERING_LOGO}
+                  alt="Columbia Engineering" 
+                  onError={handleLogoError}
+                />
+              </>
+            )}
+          </LogosContainer>
+          
+          {!showPlayback ? (
+            <VideoCapture onRecordingComplete={handleRecordingComplete} />
+          ) : (
             <ExercisePlayback
               videoUrl={videoUrl}
               analysisData={analysisData}
+              isAnalyzing={isAnalyzing || loading}
+              error={error}
+              onBackToRecord={handleBackToRecord}
               usingLocalAnalysis={usingLocalAnalysis}
             />
-            
-            {error && (
-              <div className="mt-4 p-4 bg-yellow-100 border-l-4 border-yellow-500 text-yellow-700">
-                <p className="font-bold">Analysis Info:</p>
-                <p>{error}</p>
-                {usingLocalAnalysis && (
-                  <p className="mt-2 text-sm">Local analysis provides basic feedback but may be less accurate than cloud analysis.</p>
-                )}
-                    </div>
-                  )}
-                  
-            <button
-              onClick={handleBackToRecord}
-              className="mt-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
-            >
-              Record New Video
-            </button>
-                    </div>
-                  )}
-                  
+          )}
+        </Container>
+        
         {loading && (
           <div className="text-center mt-4 p-4 bg-blue-100 rounded">
             <p className="font-semibold">Analyzing video...</p>
@@ -267,7 +271,7 @@ const App = () => {
             )}
           </div>
         )}
-        </div>
+      </div>
     </div>
   );
 };
