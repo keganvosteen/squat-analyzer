@@ -4,12 +4,14 @@ import { Camera, RefreshCw, Maximize2, Minimize2, Square, AlertTriangle, Circle 
 import { v4 as uuidv4 } from 'uuid';
 import styled from 'styled-components';
 
-// Import pose detection from TensorFlow.js
+// Import TensorFlow.js and pose detection
+import * as tf from '@tensorflow/tfjs';
 import * as poseDetection from '@tensorflow-models/pose-detection';
 import '@tensorflow/tfjs-backend-webgl';
+import '@tensorflow/tfjs-backend-cpu';
 
 // API URL with fallback for local development
-const API_URL = 'https://squat-analyzer-backend.onrender.com';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://squat-analyzer-backend.onrender.com';
 
 const Container = styled.div`
   position: relative;
@@ -231,12 +233,20 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   // Initialize video stream
   useEffect(() => {
     // Check camera status on component mount
-    initializeCamera().then(stream => {
-      if (stream && stream.active) {
-        setStreamReady(true);
-        setIsInitialized(true);
+    const init = async () => {
+      try {
+        const stream = await initializeCamera();
+        if (stream && stream.active) {
+          setStreamReady(true);
+          setIsInitialized(true);
+        }
+      } catch (error) {
+        console.error("Camera initialization failed:", error);
+        setError("Failed to initialize camera: " + (error.message || "Unknown error"));
       }
-    });
+    };
+    
+    init();
     
     return () => {
       stopRecording();
@@ -256,9 +266,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       setError(null);
       
       // Try standard constraints first
-        const constraints = {
+      const constraints = {
         audio: false,
-          video: { 
+        video: { 
           width: { ideal: 640 },
           height: { ideal: 480 },
           frameRate: { ideal: 30 }
@@ -294,16 +304,21 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           setIsInitialized(true);
           console.log("Camera initialized successfully");
           
-          // Initialize pose detector if camera is ready
-          initializePoseDetector();
+          // Initialize pose detector asynchronously, but don't wait for it
+          // This allows the camera to work even if pose detection fails
+          setTimeout(() => {
+            initializePoseDetector().catch(poseError => {
+              console.warn("Pose detector initialization failed, but camera is still available:", poseError);
+            });
+          }, 1000);
           
-          return true;
+          return stream;
         } else {
           throw new Error("Video element not found");
         }
       } catch (err) {
         console.error("Standard constraints failed:", err.message);
-        error = err;
+        throw err;
       }
       
       // If standard constraints failed, try fallback with minimal constraints
@@ -764,13 +779,38 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   // Function to initialize the pose detector
   const initializePoseDetector = async () => {
     try {
+      // First, explicitly initialize TensorFlow.js
+      console.log("Setting up TensorFlow.js backends...");
+      
+      // Try WebGL first, fallback to CPU if needed
+      const preferredBackends = ['webgl', 'cpu'];
+      let backendInitialized = false;
+      
+      // Try each backend in order
+      for (const backendName of preferredBackends) {
+        try {
+          console.log(`Trying to initialize TensorFlow.js backend: ${backendName}`);
+          await tf.setBackend(backendName);
+          await tf.ready();
+          console.log(`Successfully initialized TensorFlow.js backend: ${backendName}`);
+          backendInitialized = true;
+          break;
+        } catch (backendError) {
+          console.warn(`Failed to initialize backend ${backendName}:`, backendError);
+        }
+      }
+      
+      if (!backendInitialized) {
+        throw new Error("Could not initialize any TensorFlow.js backends");
+      }
+      
       // Use MoveNet as it's lightweight and fast for real-time tracking
       const detectorConfig = {
         modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
         enableSmoothing: true
       };
       
-      console.log("Initializing pose detector...");
+      console.log("Initializing pose detector with backend:", tf.getBackend());
       const detector = await poseDetection.createDetector(
         poseDetection.SupportedModels.MoveNet, 
         detectorConfig
@@ -794,43 +834,93 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
 
   // Function to start pose detection loop
   const startPoseDetection = () => {
-    if (!detectorRef.current || !videoRef.current || !canvasRef.current) return;
+    if (!detectorRef.current || !videoRef.current || !canvasRef.current) {
+      console.warn("Cannot start pose detection: missing references");
+      return;
+    }
+
+    // Make sure TensorFlow backend is ready
+    if (!tf.ENV.flagRegistry.ENGINE_COMPILE_ONLY) {
+      console.log("TensorFlow.js backend ready, starting pose detection loop");
+    } else {
+      console.warn("TensorFlow.js backend may not be fully initialized");
+    }
+
+    // Setup canvas dimensions based on video
+    if (videoRef.current.videoWidth) {
+      canvasRef.current.width = videoRef.current.videoWidth;
+      canvasRef.current.height = videoRef.current.videoHeight;
+    } else {
+      // Set default dimensions if video dimensions aren't available yet
+      canvasRef.current.width = 640;
+      canvasRef.current.height = 480;
+    }
 
     let frameCount = 0;
     let depthHistory = [];
+    let lastDetectionTime = 0;
+    const detectionInterval = 100; // ms between detection attempts (throttle)
 
     const detectPose = async () => {
       if (!detectorRef.current || !videoRef.current || !canvasRef.current || 
-          !videoRef.current.videoWidth || videoRef.current.paused || 
-          videoRef.current.ended) {
+          videoRef.current.paused || videoRef.current.ended) {
         animationRef.current = requestAnimationFrame(detectPose);
         return;
       }
 
-      frameCount++;
-      if (frameCount % 3 === 0) { // Throttle detection to every 3 frames
+      // Update canvas dimensions if they have changed
+      if (videoRef.current.videoWidth && 
+         (canvasRef.current.width !== videoRef.current.videoWidth || 
+          canvasRef.current.height !== videoRef.current.videoHeight)) {
+        canvasRef.current.width = videoRef.current.videoWidth;
+        canvasRef.current.height = videoRef.current.videoHeight;
+      }
+
+      const now = performance.now();
+      const timeSinceLastDetection = now - lastDetectionTime;
+
+      // Throttle detection to reduce CPU usage
+      if (timeSinceLastDetection > detectionInterval) {
+        lastDetectionTime = now;
+        frameCount++;
+        
         try {
-          const poses = await detectorRef.current.estimatePoses(videoRef.current);
+          const poses = await detectorRef.current.estimatePoses(videoRef.current, {
+            flipHorizontal: false
+          });
+          
           if (poses.length > 0) {
             const pose = poses[0];
             const depth = calculateDepth(pose);
+            
+            // Apply smoothing to depth measurements
             depthHistory.push(depth);
             if (depthHistory.length > 5) depthHistory.shift();
             const smoothedDepth = depthHistory.reduce((a, b) => a + b, 0) / depthHistory.length;
+            
             drawPose(pose, smoothedDepth);
           } else {
+            // Clear canvas if no poses detected
             const ctx = canvasRef.current.getContext('2d');
             ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
           }
         } catch (error) {
           console.error("Error in pose detection:", error);
-          setError("Pose detection error. Please refresh or try again.");
+          // Don't set UI error - just log it, since pose detection is optional
+          
+          // Clear canvas on error
+          const ctx = canvasRef.current.getContext('2d');
+          if (ctx) {
+            ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+          }
         }
       }
 
+      // Continue detection loop
       animationRef.current = requestAnimationFrame(detectPose);
     };
 
+    // Start the detection loop
     animationRef.current = requestAnimationFrame(detectPose);
   };
 
@@ -851,77 +941,91 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
 
   // Modify drawPose to accept smoothed depth
   const drawPose = (pose, depth) => {
+    if (!canvasRef.current) return;
+    
     const ctx = canvasRef.current.getContext('2d');
-    const videoWidth = videoRef.current.videoWidth;
-    const videoHeight = videoRef.current.videoHeight;
-
-    if (canvasRef.current.width !== videoWidth || canvasRef.current.height !== videoHeight) {
-      canvasRef.current.width = videoWidth;
-      canvasRef.current.height = videoHeight;
+    if (!ctx) {
+      console.error("Could not get 2D context from canvas");
+      return;
     }
+    
+    const videoWidth = canvasRef.current.width;
+    const videoHeight = canvasRef.current.height;
 
     ctx.clearRect(0, 0, videoWidth, videoHeight);
 
-    if (!pose || !pose.keypoints) return;
+    if (!pose || !pose.keypoints || !pose.keypoints.length) {
+      console.warn("No valid pose keypoints to draw");
+      return;
+    }
     
-    // Draw keypoints
-    ctx.fillStyle = '#00FF00';
-    pose.keypoints.forEach(keypoint => {
-      if (keypoint.score > 0.3) {
-        const x = keypoint.x;
-        const y = keypoint.y;
-        
-        ctx.beginPath();
-        ctx.arc(x, y, 5, 0, 2 * Math.PI);
-        ctx.fill();
-      }
-    });
-    
-    // Define the connections to draw
-    const connections = [
-      // Torso
-      ['left_shoulder', 'right_shoulder'],
-      ['left_shoulder', 'left_hip'],
-      ['right_shoulder', 'right_hip'],
-      ['left_hip', 'right_hip'],
-      // Arms
-      ['left_shoulder', 'left_elbow'],
-      ['left_elbow', 'left_wrist'],
-      ['right_shoulder', 'right_elbow'],
-      ['right_elbow', 'right_wrist'],
-      // Legs
-      ['left_hip', 'left_knee'],
-      ['left_knee', 'left_ankle'],
-      ['right_hip', 'right_knee'],
-      ['right_knee', 'right_ankle'],
-    ];
-    
-    // Create a keypoint map for easier lookup
-    const keypointMap = {};
-    pose.keypoints.forEach(keypoint => {
-      keypointMap[keypoint.name] = keypoint;
-    });
-    
-    // Draw connections
-    ctx.strokeStyle = '#00FF00';
-    ctx.lineWidth = 2;
-    
-    connections.forEach(([start, end]) => {
-      const startPoint = keypointMap[start];
-      const endPoint = keypointMap[end];
+    try {
+      // Draw keypoints as red dots
+      ctx.fillStyle = '#FF0000';
+      pose.keypoints.forEach(keypoint => {
+        if (keypoint.score > 0.3) {
+          const x = keypoint.x;
+          const y = keypoint.y;
+          
+          ctx.beginPath();
+          ctx.arc(x, y, 5, 0, 2 * Math.PI);
+          ctx.fill();
+        }
+      });
       
-      if (startPoint && endPoint && startPoint.score > 0.3 && endPoint.score > 0.3) {
-        ctx.beginPath();
-        ctx.moveTo(startPoint.x, startPoint.y);
-        ctx.lineTo(endPoint.x, endPoint.y);
-        ctx.stroke();
+      // Define the connections to draw
+      const connections = [
+        // Torso
+        ['left_shoulder', 'right_shoulder'],
+        ['left_shoulder', 'left_hip'],
+        ['right_shoulder', 'right_hip'],
+        ['left_hip', 'right_hip'],
+        // Arms
+        ['left_shoulder', 'left_elbow'],
+        ['left_elbow', 'left_wrist'],
+        ['right_shoulder', 'right_elbow'],
+        ['right_elbow', 'right_wrist'],
+        // Legs
+        ['left_hip', 'left_knee'],
+        ['left_knee', 'left_ankle'],
+        ['right_hip', 'right_knee'],
+        ['right_knee', 'right_ankle'],
+      ];
+      
+      // Create a keypoint map for easier lookup
+      const keypointMap = {};
+      pose.keypoints.forEach(keypoint => {
+        keypointMap[keypoint.name] = keypoint;
+      });
+      
+      // Draw connections as white lines
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 2;
+      
+      connections.forEach(([start, end]) => {
+        const startPoint = keypointMap[start];
+        const endPoint = keypointMap[end];
+        
+        if (startPoint && endPoint && startPoint.score > 0.3 && endPoint.score > 0.3) {
+          ctx.beginPath();
+          ctx.moveTo(startPoint.x, startPoint.y);
+          ctx.lineTo(endPoint.x, endPoint.y);
+          ctx.stroke();
+        }
+      });
+      
+      // Draw squat depth indicator if knees and hips are visible
+      const kneePoint = keypointMap['left_knee'] || keypointMap['right_knee'];
+      const hipPoint = keypointMap['left_hip'] || keypointMap['right_hip'];
+      
+      if (kneePoint && hipPoint && kneePoint.score > 0.3 && hipPoint.score > 0.3) {
+        ctx.fillStyle = depth > 0.15 ? '#00FF00' : '#FF6347';
+        ctx.font = '18px Arial';
+        ctx.fillText(`Depth: ${Math.round(depth * 100)}%`, 10, 30);
       }
-    });
-    
-    // Draw squat depth indicator if knees and hips are visible
-    ctx.fillStyle = depth > 0.15 ? '#00FF00' : '#FF0000';
-    ctx.font = '16px Arial';
-    ctx.fillText(`Squat Depth: ${Math.round(depth * 100)}%`, 10, 30);
+    } catch (error) {
+      console.error("Error drawing pose:", error);
+    }
   };
 
   return (
