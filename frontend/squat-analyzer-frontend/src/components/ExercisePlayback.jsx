@@ -27,6 +27,14 @@ const Video = styled.video`
   width: 100%;
   height: auto;
   display: block;
+  /* Fix for mobile rotation issues */
+  object-fit: contain;
+  transform: none; /* Ensure no default rotations applied */
+  
+  @media (max-width: 767px) {
+    /* On mobile devices, adjust for potential orientation issues */
+    max-height: 70vh;
+  }
 `;
 
 const Canvas = styled.canvas`
@@ -35,6 +43,7 @@ const Canvas = styled.canvas`
   left: 0;
   width: 100%;
   height: 100%;
+  pointer-events: none; /* Make sure canvas doesn't block video controls */
 `;
 
 const Controls = styled.div`
@@ -141,6 +150,20 @@ const OverlayCanvas = styled.canvas`
   height: 100%;
 `;
 
+const DebugInfo = styled.pre`
+  margin-top: 1rem;
+  padding: 10px;
+  background-color: #f5f5f5;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 12px;
+  max-height: 150px;
+  overflow-y: auto;
+  width: 100%;
+  white-space: pre-wrap;
+  display: ${props => props.show ? 'block' : 'none'};
+`;
+
 const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }) => {
   console.log("ExercisePlayback Component");
   console.log("Video URL:", videoUrl);
@@ -160,6 +183,18 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
   const [hoverPosition, setHoverPosition] = useState(null);
   const [isDraggingTimeline, setIsDraggingTimeline] = useState(false);
   const [error, setError] = useState(null);
+  const [debugInfo, setDebugInfo] = useState({});
+  const [showDebug, setShowDebug] = useState(false);
+  const [videoOrientation, setVideoOrientation] = useState(null);
+  
+  // Track canvas dimensions for debugging
+  const [canvasDimensions, setCanvasDimensions] = useState({ width: 0, height: 0 });
+  const [videoDimensions, setVideoDimensions] = useState({ width: 0, height: 0 });
+  
+  // Toggle debug display with double-click
+  const toggleDebug = () => {
+    setShowDebug(prev => !prev);
+  };
   
   // Check if we have valid analysis data
   const hasAnalysisData = analysisData && 
@@ -186,12 +221,107 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
     }
   }, [videoUrl]);
 
-  // Draw overlays on the canvas
+  // Handle video metadata loading
+  const handleLoadedMetadata = () => {
+    if (videoRef.current) {
+      const video = videoRef.current;
+      setDuration(video.duration);
+
+      const videoWidth = video.videoWidth;
+      const videoHeight = video.videoHeight;
+      
+      // Use our enhanced rotation detection
+      const orientation = detectVideoRotation(video);
+      setVideoOrientation(orientation);
+      
+      console.log(`Video loaded: ${videoWidth}x${videoHeight}, duration: ${video.duration}s, orientation: ${orientation}`);
+      setVideoDimensions({ width: videoWidth, height: videoHeight });
+      
+      // Update debugging info
+      setDebugInfo(prev => ({
+        ...prev,
+        videoMetadata: {
+          width: videoWidth,
+          height: videoHeight,
+          duration: video.duration,
+          orientation: orientation,
+          aspectRatio: (videoWidth / videoHeight).toFixed(2)
+        }
+      }));
+      
+      // Initialize canvas size to match video dimensions exactly
+      if (canvasRef.current) {
+        const canvas = canvasRef.current;
+        canvas.width = videoWidth;
+        canvas.height = videoHeight;
+        setCanvasDimensions({ width: canvas.width, height: canvas.height });
+        
+        // Initial render of overlays
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          // Clear any previous drawings
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          drawOverlays(ctx, 0);
+        }
+      }
+    }
+  };
+
+  // Adjust to properly handle landmark coordinates on potentially rotated video
+  const transformCoordinates = useCallback((x, y, width, height, isPortrait = false) => {
+    // For mobile recordings that might be rotated
+    if (isPortrait) {
+      // If the video is portrait and seems to be rotated left 90 degrees
+      // This adjusts for the 90 degree counterclockwise rotation
+      return { 
+        x: 1.0 - y, // Flip the y coordinate to become the new x
+        y: x        // Use the x coordinate as the new y
+      };
+    }
+    
+    // No transformations needed for standard landscape orientation
+    return { x, y };
+  }, []);
+  
+  // Detect mobile recordings that are rotated
+  const detectVideoRotation = useCallback((video) => {
+    if (!video) return 'landscape';
+    
+    // Simple detection based on dimensions
+    const isPortrait = video.videoHeight > video.videoWidth;
+    
+    // Additional checks to detect rotation
+    // Sometimes videos are recorded in portrait but stored as landscape with rotation metadata
+    if (isPortrait) {
+      return 'portrait';
+    }
+    
+    // Check if video might be mobile-recorded (typically 9:16 ratio when properly oriented)
+    const aspectRatio = video.videoWidth / video.videoHeight;
+    if (aspectRatio > 1.7) { // Wide aspect ratio common for mobile videos shot in landscape
+      // This is likely a mobile recording with natural landscape orientation
+      return 'landscape-mobile';
+    }
+    
+    return 'landscape';
+  }, []);
+
+  // Draw overlays on the canvas with better coordinate handling
   const drawOverlays = useCallback((ctx, timestamp) => {
     if (!ctx) return;
     
     // Clear canvas
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    
+    // Update debug info
+    setDebugInfo(prev => ({
+      ...prev,
+      currentFrame: {
+        timestamp,
+        canvasWidth: ctx.canvas.width,
+        canvasHeight: ctx.canvas.height
+      }
+    }));
     
     if (!hasAnalysisData) {
       // Draw "Analysis not available" message
@@ -223,7 +353,19 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
       return;
     }
     
-    console.log(`Using frame at ${closestFrame.timestamp.toFixed(2)}s, diff: ${smallestDiff.toFixed(2)}s`);
+    const isPortrait = videoOrientation === 'portrait';
+    console.log(`Drawing frame at ${closestFrame.timestamp.toFixed(2)}s, diff: ${smallestDiff.toFixed(2)}s, orientation: ${videoOrientation}`);
+    
+    // Update debug with frame info
+    setDebugInfo(prev => ({
+      ...prev,
+      closestFrame: {
+        timestamp: closestFrame.timestamp,
+        diff: smallestDiff,
+        frameIndex: closestFrame.frame,
+        hasLandmarks: closestFrame.landmarks?.length || 0
+      }
+    }));
     
     // Draw landmarks if available
     if (closestFrame.landmarks && Array.isArray(closestFrame.landmarks)) {
@@ -251,24 +393,52 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
         const end = closestFrame.landmarks[endIdx];
         
         if (start && end && typeof start.x === 'number' && typeof end.x === 'number') {
+          // Transform coordinates for proper rendering based on video orientation
+          const startCoord = transformCoordinates(
+            start.x, start.y, 
+            ctx.canvas.width, ctx.canvas.height, 
+            isPortrait
+          );
+          
+          const endCoord = transformCoordinates(
+            end.x, end.y, 
+            ctx.canvas.width, ctx.canvas.height, 
+            isPortrait
+          );
+          
           ctx.beginPath();
-          ctx.moveTo(start.x * ctx.canvas.width, start.y * ctx.canvas.height);
-          ctx.lineTo(end.x * ctx.canvas.width, end.y * ctx.canvas.height);
+          ctx.moveTo(startCoord.x * ctx.canvas.width, startCoord.y * ctx.canvas.height);
+          ctx.lineTo(endCoord.x * ctx.canvas.width, endCoord.y * ctx.canvas.height);
           ctx.stroke();
         }
       });
       
       // Draw landmark points
       ctx.fillStyle = 'red';
-      closestFrame.landmarks.forEach(landmark => {
+      closestFrame.landmarks.forEach((landmark, idx) => {
         if (typeof landmark.x === 'number') {
+          // Transform coordinates based on video orientation
+          const coord = transformCoordinates(
+            landmark.x, landmark.y, 
+            ctx.canvas.width, ctx.canvas.height, 
+            isPortrait
+          );
+          
           ctx.beginPath();
           ctx.arc(
-            landmark.x * ctx.canvas.width, 
-            landmark.y * ctx.canvas.height, 
-            3, 0, 2 * Math.PI
+            coord.x * ctx.canvas.width, 
+            coord.y * ctx.canvas.height, 
+            4, 0, 2 * Math.PI
           );
           ctx.fill();
+          
+          // Add index number for debugging
+          if (showDebug) {
+            ctx.fillStyle = 'yellow';
+            ctx.font = '10px Arial';
+            ctx.fillText(`${idx}`, coord.x * ctx.canvas.width + 5, coord.y * ctx.canvas.height + 5);
+            ctx.fillStyle = 'red';
+          }
         }
       });
     }
@@ -364,7 +534,7 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
     ctx.font = '12px Arial';
     ctx.fillText(`Frame: ${closestFrame.frame}, Time: ${closestFrame.timestamp.toFixed(2)}s`, 10, ctx.canvas.height - 10);
     
-  }, [hasAnalysisData, analysisData]);
+  }, [hasAnalysisData, analysisData, videoOrientation, showDebug, transformCoordinates]);
 
   // Handle video time updates
   const handleTimeUpdate = () => {
@@ -380,30 +550,16 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
     }
   };
 
-  // Handle video metadata loading
-  const handleLoadedMetadata = () => {
-    if (videoRef.current) {
-      setDuration(videoRef.current.duration);
-      console.log(`Video loaded: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}, duration: ${videoRef.current.duration}s`);
-      
-      // Initialize canvas size
-      if (canvasRef.current) {
-        const canvas = canvasRef.current;
-        canvas.width = videoRef.current.videoWidth;
-        canvas.height = videoRef.current.videoHeight;
-        
-        // Initial render of overlays
-        const ctx = canvas.getContext('2d');
-        drawOverlays(ctx, 0);
-      }
-    }
-  };
-
   // Handle video errors
   const handleError = (e) => {
     console.error('Video error:', e);
     setError('Error playing video. Please try recording again.');
   };
+
+  // Check if the video orientation is portrait (for coordinate transform)
+  const isPortraitVideo = useCallback(() => {
+    return videoOrientation === 'portrait';
+  }, [videoOrientation]);
 
   // Set up video event listeners
   useEffect(() => {
@@ -469,7 +625,7 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
       video.removeEventListener('loadedmetadata', handleLoadedMetadata);
       video.removeEventListener('error', handleError);
     };
-  }, [videoRef.current, drawOverlays]);
+  }, [videoRef.current, drawOverlays, handleLoadedMetadata]);
 
   // Toggle play/pause
   const togglePlayPause = () => {
@@ -496,18 +652,35 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
         </ErrorMessage>
       )}
       
-      <VideoContainer>
+      <VideoContainer onDoubleClick={toggleDebug}>
         <Video
           ref={videoRef}
           src={videoUrl}
           controls={true}
           onError={handleError}
+          playsInline
         >
           <source src={videoUrl} type="video/webm" />
           Your browser does not support the video tag.
         </Video>
         <Canvas ref={canvasRef} />
       </VideoContainer>
+      
+      {/* Add video orientation badge for debugging */}
+      {showDebug && (
+        <div style={{
+          position: 'absolute',
+          top: '5px',
+          right: '5px',
+          background: 'rgba(0,0,0,0.5)',
+          color: 'white',
+          padding: '2px 6px',
+          borderRadius: '4px',
+          fontSize: '12px'
+        }}>
+          {videoOrientation}
+        </div>
+      )}
       
       <Controls>
         <Button onClick={togglePlayPause}>
@@ -536,7 +709,17 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
             <SkipForward size={20} />
           Forward 1s
         </Button>
+        
+        <Button onClick={() => setShowDebug(!showDebug)}>
+          <Info size={20} />
+          {showDebug ? 'Hide Debug' : 'Show Debug'}
+        </Button>
       </Controls>
+      
+      {/* Debug information panel */}
+      <DebugInfo show={showDebug}>
+        {JSON.stringify(debugInfo, null, 2)}
+      </DebugInfo>
       
       <AnalysisPanel>
         <h3>

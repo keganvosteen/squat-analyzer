@@ -229,12 +229,14 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const [streamReady, setStreamReady] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [isPoseTracking, setIsPoseTracking] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
   
   // Initialize video stream
   useEffect(() => {
     // Check camera status on component mount
     const init = async () => {
       try {
+        setIsInitializing(true);
         const stream = await initializeCamera();
         if (stream && stream.active) {
           setStreamReady(true);
@@ -243,6 +245,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       } catch (error) {
         console.error("Camera initialization failed:", error);
         setError("Failed to initialize camera: " + (error.message || "Unknown error"));
+      } finally {
+        setIsInitializing(false);
       }
     };
     
@@ -259,6 +263,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     console.log("Initializing camera...");
     
     try {
+      // Set initializing state
+      setIsInitializing(true);
+      
       // Clean up any previous resources
       cleanupStream();
       
@@ -277,9 +284,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       console.log("Trying standard constraints:", constraints);
       
+      let stream = null;
       try {
         // Request user media with standard constraints
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
         streamRef.current = stream;
         
         console.log("Stream successfully created with tracks:", 
@@ -312,13 +320,14 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             });
           }, 1000);
           
+          setIsInitializing(false); // Set initializing to false when successful
           return stream;
         } else {
           throw new Error("Video element not found");
         }
       } catch (err) {
         console.error("Standard constraints failed:", err.message);
-        throw err;
+        // Fall through to fallback
       }
       
       // If standard constraints failed, try fallback with minimal constraints
@@ -333,13 +342,13 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           stream = await navigator.mediaDevices.getUserMedia(fallbackConstraints);
         } catch (err) {
           console.error("Fallback constraints also failed:", err.message);
-          error = err;
+          throw err;
         }
       }
       
-      // If we still don't have a stream, throw the last error
+      // If we still don't have a stream, throw an error
       if (!stream) {
-        throw error || new Error("Could not access camera with any configuration");
+        throw new Error("Could not access camera with any configuration");
       }
       
       if (!stream.active) {
@@ -387,6 +396,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       console.log("Camera initialized successfully");
       setStreamReady(true);
       setIsInitialized(true);
+      setIsInitializing(false); // Set to false when done successfully
       return streamRef.current;
     } catch (error) {
       console.error("Camera initialization error:", error);
@@ -411,6 +421,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       setError(errorMessage);
       setStreamReady(false);
       setIsInitialized(false);
+      setIsInitializing(false); // Always set to false when done, even on error
       return null;
     }
   };
@@ -671,6 +682,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     setIsInitialized(false);
     setIsRecording(false);
     setRecordingTime(0);
+    setIsInitializing(false); // Ensure we're not in initializing state
     
     console.log("Media resources cleanup complete");
   };
@@ -1062,7 +1074,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         />
         <PoseCanvas ref={canvasRef} />
         
-        {!streamReady && !isRecording && (
+        {!streamReady && !isRecording && !isInitializing && (
           <CameraPermissionMessage>
             <Camera size={32} />
             <p>Camera access is required</p>
