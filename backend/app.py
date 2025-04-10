@@ -475,13 +475,38 @@ def analyze_video():
                 
             pose_landmarks = detection_result.pose_landmarks[0]
             
-            # Convert landmarks to list more efficiently
-            landmarks = [{
-                'x': landmark.x,
-                'y': landmark.y,
-                'z': landmark.z,
-                'visibility': landmark.visibility
-            } for landmark in pose_landmarks]
+            # Define the relevant landmarks for squat analysis
+            # Only include shoulders, arms, torso, hips, legs - exclude facial features
+            relevant_landmark_indices = [
+                POSE_LANDMARKS.LEFT_SHOULDER, POSE_LANDMARKS.RIGHT_SHOULDER,
+                POSE_LANDMARKS.LEFT_ELBOW, POSE_LANDMARKS.RIGHT_ELBOW,
+                POSE_LANDMARKS.LEFT_WRIST, POSE_LANDMARKS.RIGHT_WRIST,
+                POSE_LANDMARKS.LEFT_HIP, POSE_LANDMARKS.RIGHT_HIP,
+                POSE_LANDMARKS.LEFT_KNEE, POSE_LANDMARKS.RIGHT_KNEE,
+                POSE_LANDMARKS.LEFT_ANKLE, POSE_LANDMARKS.RIGHT_ANKLE,
+                POSE_LANDMARKS.LEFT_HEEL, POSE_LANDMARKS.RIGHT_HEEL,
+                POSE_LANDMARKS.LEFT_FOOT_INDEX, POSE_LANDMARKS.RIGHT_FOOT_INDEX
+            ]
+            
+            # Convert only relevant landmarks to list
+            landmarks = []
+            for i, landmark in enumerate(pose_landmarks):
+                # Skip facial landmarks (0-10) to streamline processing
+                if i in relevant_landmark_indices:
+                    landmarks.append({
+                        'x': landmark.x,
+                        'y': landmark.y,
+                        'z': landmark.z,
+                        'visibility': landmark.visibility
+                    })
+                # Include null placeholders for skipped landmarks to maintain array index structure
+                else:
+                    landmarks.append({
+                        'x': 0,
+                        'y': 0,
+                        'z': 0,
+                        'visibility': 0
+                    })
             
             # Get key points for measurements
             hip = pose_landmarks[POSE_LANDMARKS.RIGHT_HIP]

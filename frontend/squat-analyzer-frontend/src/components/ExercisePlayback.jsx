@@ -370,16 +370,15 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
       console.log(`Drawing ${closestFrame.landmarks.length} landmarks`);
       
       // Draw skeleton lines connecting landmarks
+      // Only connect body parts relevant for squat analysis (exclude facial features)
       const connections = [
-        // Torso
+        // Torso - essential for tracking body alignment
         [11, 12], [11, 23], [12, 24], [23, 24],
-        // Right arm
+        // Arms - helpful for balance assessment
         [11, 13], [13, 15],
-        // Left arm
         [12, 14], [14, 16],
-        // Right leg
+        // Legs - critical for squat form analysis
         [23, 25], [25, 27], [27, 31],
-        // Left leg
         [24, 26], [26, 28], [28, 32]
       ];
       
@@ -390,7 +389,8 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
         const start = closestFrame.landmarks[startIdx];
         const end = closestFrame.landmarks[endIdx];
         
-        if (start && end && typeof start.x === 'number' && typeof end.x === 'number') {
+        if (start && end && typeof start.x === 'number' && typeof end.x === 'number' && 
+            start.visibility > 0.5 && end.visibility > 0.5) {
           // Transform coordinates for proper rendering based on video orientation
           const startCoord = transformCoordinates(
             start.x, start.y, 
@@ -411,10 +411,17 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
         }
       });
       
-      // Draw landmark points
+      // Define relevant landmark indices for squat analysis (exclude facial features)
+      const relevantLandmarks = [
+        11, 12, 13, 14, 15, 16, // shoulders and arms
+        23, 24, 25, 26, 27, 28, 31, 32 // hips, knees, ankles, feet
+      ];
+      
+      // Draw only relevant landmark points
       ctx.fillStyle = 'red';
       closestFrame.landmarks.forEach((landmark, idx) => {
-        if (typeof landmark.x === 'number') {
+        // Only render landmarks that are relevant for squat analysis
+        if (relevantLandmarks.includes(idx) && typeof landmark.x === 'number' && landmark.visibility > 0.5) {
           // Transform coordinates based on video orientation
           const coord = transformCoordinates(
             landmark.x, landmark.y, 
