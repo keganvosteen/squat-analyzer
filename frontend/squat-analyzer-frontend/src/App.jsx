@@ -238,18 +238,18 @@ const App = () => {
                 {usingLocalAnalysis && (
                   <p className="mt-2 text-sm">Local analysis provides basic feedback but may be less accurate than cloud analysis.</p>
                 )}
-              </div>
-            )}
-            
+                    </div>
+                  )}
+                  
             <button
               onClick={handleBackToRecord}
               className="mt-4 px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
             >
               Record New Video
             </button>
-          </div>
-        )}
-
+                    </div>
+                  )}
+                  
         {loading && (
           <div className="text-center mt-4 p-4 bg-blue-100 rounded">
             <p className="font-semibold">Analyzing video...</p>
@@ -267,7 +267,7 @@ const App = () => {
             )}
           </div>
         )}
-      </div>
+        </div>
     </div>
   );
 };

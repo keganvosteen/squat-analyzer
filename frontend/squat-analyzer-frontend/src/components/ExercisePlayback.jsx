@@ -558,7 +558,7 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
                     <div key={key} className="w-1/3 mb-2">
                       <StatLabel>{key}</StatLabel>
                       <StatValue>{typeof value === 'number' ? value.toFixed(1) : value}</StatValue>
-                    </div>
+            </div>
                   ))
                 )}
               </div>
@@ -599,8 +599,8 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
             <p className="text-sm text-gray-600">
               Tip: Try recording a shorter video (5-10 seconds) for better processing success.
             </p>
-          </div>
-        )}
+            </div>
+          )}
       </AnalysisPanel>
     </Container>
   );
