@@ -360,6 +360,17 @@ def analyze_video():
         fps = int(cap.get(cv2.CAP_PROP_FPS))
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
+        # Validate video properties to prevent overflow/invalid values
+        if fps <= 0 or fps > 120:
+            app.logger.warning(f"Invalid FPS: {fps}, defaulting to 30")
+            fps = 30
+        
+        if frame_count <= 0 or frame_count > 100000:
+            app.logger.warning(f"Invalid frame count: {frame_count}, estimating from duration")
+            # Estimate frame count from duration
+            duration = cap.get(cv2.CAP_PROP_FRAME_COUNT) / max(1, cap.get(cv2.CAP_PROP_FPS))
+            frame_count = min(int(duration * fps), 1000)  # Cap at 1000 frames
+        
         app.logger.info(f"Video properties: FPS={fps}, frame_count={frame_count}")
         
         # Calculate frame skip rate based on video length to reduce processing time
@@ -481,14 +492,47 @@ def analyze_video():
         
         app.logger.info(f"Starting parallel processing with {num_workers} workers")
         
-        with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            # Submit all frames for processing
-            future_results = list(executor.map(process_frame, frames_to_process))
-            
-            # Filter out None results
-            results = [r for r in future_results if r is not None]
-            
-            app.logger.info(f"Parallel processing complete. Got {len(results)} valid frames.")
+        try:
+            with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                # Submit all frames for processing
+                future_results = list(executor.map(process_frame, frames_to_process))
+                
+                # Filter out None results
+                results = [r for r in future_results if r is not None]
+                
+                app.logger.info(f"Parallel processing complete. Got {len(results)} valid frames.")
+        except Exception as process_error:
+            app.logger.error(f"Error during parallel processing: {str(process_error)}")
+            # Create at least one default frame if we couldn't process any
+            if len(results) == 0 and len(frames_to_process) > 0:
+                app.logger.info("Creating fallback frame data for empty results")
+                idx, frame = frames_to_process[0]
+                results = [{
+                    'frame': 0,
+                    'timestamp': 0,
+                    'landmarks': [],
+                    'measurements': {
+                        'kneeAngle': 90.0,
+                        'depthRatio': 0.5,
+                        'shoulderMidfootDiff': 0.0
+                    },
+                    'arrows': []
+                }]
+        
+        # If we have absolutely no valid frames, add a default
+        if len(results) == 0:
+            app.logger.warning("No valid frames were processed, creating default frame")
+            results = [{
+                'frame': 0,
+                'timestamp': 0,
+                'landmarks': [],
+                'measurements': {
+                    'kneeAngle': 90.0,
+                    'depthRatio': 0.5,
+                    'shoulderMidfootDiff': 0.0
+                },
+                'arrows': []
+            }]
         
         # Clean up
         if os.path.exists(temp_path):

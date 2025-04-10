@@ -105,7 +105,24 @@ const App = () => {
         });
         
         console.log("Analysis data received:", response.data);
-        setAnalysisData(response.data);
+        
+        // Validate analysis data
+        if (response.data && 
+            response.data.success && 
+            Array.isArray(response.data.frames) && 
+            response.data.frames.length > 0) {
+          // Valid analysis data
+          setAnalysisData(response.data);
+        } else {
+          console.warn("Received invalid analysis data from backend", response.data);
+          
+          // Try local analysis as fallback
+          console.log("Falling back to local analysis due to invalid backend response");
+          const localAnalysisResult = await LocalAnalysis.analyzeVideo(videoBlob, videoUrl);
+          setAnalysisData(localAnalysisResult);
+          setUsingLocalAnalysis(true);
+          setError("Backend analysis returned invalid data. Using simplified local analysis instead.");
+        }
       } catch (apiError) {
         console.error("Backend analysis error:", apiError);
         

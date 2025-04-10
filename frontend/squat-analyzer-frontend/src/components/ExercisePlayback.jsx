@@ -167,6 +167,18 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
                         Array.isArray(analysisData.frames) && 
                         analysisData.frames.length > 0;
 
+  // Log any issues with analysis data
+  useEffect(() => {
+    if (analysisData && (!analysisData.frames || analysisData.frames.length === 0)) {
+      console.warn("Analysis data has no valid frames", analysisData);
+      setError("Analysis completed but no valid frames were found. Try recording a clearer video.");
+    }
+    
+    if (analysisData && (analysisData.frame_count < 0 || !isFinite(analysisData.frame_count))) {
+      console.warn("Analysis data has invalid frame count:", analysisData.frame_count);
+    }
+  }, [analysisData]);
+
   // Reset error when video URL changes
   useEffect(() => {
     if (videoUrl) {
