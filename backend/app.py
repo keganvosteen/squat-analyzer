@@ -123,13 +123,19 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def calculate_angle(a, b, c):
-    """Calculate the angle between three points."""
+    """Calculate the angle between three points with stability checks."""
     ba = np.array([a.x - b.x, a.y - b.y])
     bc = np.array([c.x - b.x, c.y - b.y])
-    
-    cosine_angle = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc))
+
+    norm_ba = np.linalg.norm(ba)
+    norm_bc = np.linalg.norm(bc)
+
+    if norm_ba == 0 or norm_bc == 0:
+        return 0
+
+    cosine_angle = np.clip(np.dot(ba, bc) / (norm_ba * norm_bc), -1.0, 1.0)
     angle = np.arccos(cosine_angle)
-    
+
     return np.degrees(angle)
 
 def calculate_depth_ratio(hip, knee, ankle):
@@ -255,7 +261,18 @@ def analyze_frame(frame, session_id=None):
             }
         })
     
-    feedback["feedback"] = feedback_list
+    # Initialize feedback batching outside the function
+    feedback_batch = []
+
+    # Inside analyze_frame function, replace feedback generation logic
+    feedback_batch.append(feedback_list)
+
+    if len(feedback_batch) >= 5:
+        feedback["feedback"] = feedback_batch.copy()
+        feedback_batch.clear()
+    else:
+        feedback["feedback"] = []
+
     feedback["squatState"] = previous_states[session_id]
     
     return feedback
@@ -485,54 +502,14 @@ def analyze_video():
                 'arrows': arrows
             }
         
-        # Use ThreadPoolExecutor for parallel processing
-        # Determine the number of workers - use half of available CPUs to avoid overloading
-        num_workers = max(1, multiprocessing.cpu_count() // 2)
-        results = []
+        # Enhance concurrency handling
+        executor = ThreadPoolExecutor(max_workers=multiprocessing.cpu_count())
+
+        futures = [executor.submit(process_frame, frame) for frame in frames_to_process]
+        results = [future.result() for future in futures]
         
-        app.logger.info(f"Starting parallel processing with {num_workers} workers")
-        
-        try:
-            with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                # Submit all frames for processing
-                future_results = list(executor.map(process_frame, frames_to_process))
-                
-                # Filter out None results
-                results = [r for r in future_results if r is not None]
-                
-                app.logger.info(f"Parallel processing complete. Got {len(results)} valid frames.")
-        except Exception as process_error:
-            app.logger.error(f"Error during parallel processing: {str(process_error)}")
-            # Create at least one default frame if we couldn't process any
-            if len(results) == 0 and len(frames_to_process) > 0:
-                app.logger.info("Creating fallback frame data for empty results")
-                idx, frame = frames_to_process[0]
-                results = [{
-                    'frame': 0,
-                    'timestamp': 0,
-                    'landmarks': [],
-                    'measurements': {
-                        'kneeAngle': 90.0,
-                        'depthRatio': 0.5,
-                        'shoulderMidfootDiff': 0.0
-                    },
-                    'arrows': []
-                }]
-        
-        # If we have absolutely no valid frames, add a default
-        if len(results) == 0:
-            app.logger.warning("No valid frames were processed, creating default frame")
-            results = [{
-                'frame': 0,
-                'timestamp': 0,
-                'landmarks': [],
-                'measurements': {
-                    'kneeAngle': 90.0,
-                    'depthRatio': 0.5,
-                    'shoulderMidfootDiff': 0.0
-                },
-                'arrows': []
-            }]
+        # Filter out None results before sorting
+        results = [result for result in results if result is not None]
         
         # Clean up
         if os.path.exists(temp_path):

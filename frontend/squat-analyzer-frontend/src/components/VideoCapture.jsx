@@ -227,7 +227,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const [streamReady, setStreamReady] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const [isPoseTracking, setIsPoseTracking] = useState(false);
-
+  
   // Initialize video stream
   useEffect(() => {
     // Check camera status on component mount
@@ -256,9 +256,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       setError(null);
       
       // Try standard constraints first
-      const constraints = {
+        const constraints = {
         audio: false,
-        video: {
+          video: { 
           width: { ideal: 640 },
           height: { ideal: 480 },
           frameRate: { ideal: 30 }
@@ -455,7 +455,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       console.log("Stream active, initializing recorder");
       
       // Clear previous chunks
-      recordedChunksRef.current = [];
+        recordedChunksRef.current = [];
       
       // Check for supported MIME types
       const mimeType = getSupportedMimeType();
@@ -735,9 +735,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             const processFrame = () => {
               if (video.ended || video.paused) {
                 recorder.stop();
-                return;
-              }
-              
+      return;
+    }
+    
               // Draw the current frame at the reduced resolution
               ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
               
@@ -795,7 +795,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   // Function to start pose detection loop
   const startPoseDetection = () => {
     if (!detectorRef.current || !videoRef.current || !canvasRef.current) return;
-    
+
+    let frameCount = 0;
+    let depthHistory = [];
+
     const detectPose = async () => {
       if (!detectorRef.current || !videoRef.current || !canvasRef.current || 
           !videoRef.current.videoWidth || videoRef.current.paused || 
@@ -803,44 +806,62 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         animationRef.current = requestAnimationFrame(detectPose);
         return;
       }
-      
-      try {
-        // Detect poses
-        const poses = await detectorRef.current.estimatePoses(videoRef.current);
-        
-        // Draw the poses on the canvas
-        if (poses.length > 0) {
-          drawPose(poses[0]);
-        } else {
-          // Clear canvas if no poses detected
-          const ctx = canvasRef.current.getContext('2d');
-          ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+
+      frameCount++;
+      if (frameCount % 3 === 0) { // Throttle detection to every 3 frames
+        try {
+          const poses = await detectorRef.current.estimatePoses(videoRef.current);
+          if (poses.length > 0) {
+            const pose = poses[0];
+            const depth = calculateDepth(pose);
+            depthHistory.push(depth);
+            if (depthHistory.length > 5) depthHistory.shift();
+            const smoothedDepth = depthHistory.reduce((a, b) => a + b, 0) / depthHistory.length;
+            drawPose(pose, smoothedDepth);
+          } else {
+            const ctx = canvasRef.current.getContext('2d');
+            ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+          }
+        } catch (error) {
+          console.error("Error in pose detection:", error);
+          setError("Pose detection error. Please refresh or try again.");
         }
-      } catch (error) {
-        console.error("Error in pose detection:", error);
       }
-      
-      // Continue the detection loop
+
       animationRef.current = requestAnimationFrame(detectPose);
     };
-    
-    // Start the detection loop
+
     animationRef.current = requestAnimationFrame(detectPose);
   };
 
-  // Function to draw the detected pose on the canvas
-  const drawPose = (pose) => {
+  // Helper function to calculate squat depth
+  const calculateDepth = (pose) => {
+    const keypointMap = {};
+    pose.keypoints.forEach(keypoint => {
+      keypointMap[keypoint.name] = keypoint;
+    });
+
+    if (keypointMap['left_knee'] && keypointMap['left_hip'] && keypointMap['left_knee'].score > 0.3 && keypointMap['left_hip'].score > 0.3) {
+      const kneeY = keypointMap['left_knee'].y;
+      const hipY = keypointMap['left_hip'].y;
+      return (kneeY - hipY) / videoRef.current.videoHeight;
+    }
+    return 0;
+  };
+
+  // Modify drawPose to accept smoothed depth
+  const drawPose = (pose, depth) => {
     const ctx = canvasRef.current.getContext('2d');
     const videoWidth = videoRef.current.videoWidth;
     const videoHeight = videoRef.current.videoHeight;
-    
-    // Ensure the canvas dimensions match the video
-    canvasRef.current.width = videoWidth;
-    canvasRef.current.height = videoHeight;
-    
-    // Clear the canvas
+
+    if (canvasRef.current.width !== videoWidth || canvasRef.current.height !== videoHeight) {
+      canvasRef.current.width = videoWidth;
+      canvasRef.current.height = videoHeight;
+    }
+
     ctx.clearRect(0, 0, videoWidth, videoHeight);
-    
+
     if (!pose || !pose.keypoints) return;
     
     // Draw keypoints
@@ -898,19 +919,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     });
     
     // Draw squat depth indicator if knees and hips are visible
-    if (keypointMap['left_knee'] && keypointMap['left_hip'] && keypointMap['left_knee'].score > 0.3 && keypointMap['left_hip'].score > 0.3) {
-      const knee = keypointMap['left_knee'];
-      const hip = keypointMap['left_hip'];
-      const kneeY = knee.y;
-      const hipY = hip.y;
-      
-      const depth = (kneeY - hipY) / videoHeight; // Normalize to 0-1 range
-      
-      // Draw depth indicator
-      ctx.fillStyle = depth > 0.15 ? '#00FF00' : '#FF0000';
-      ctx.font = '16px Arial';
-      ctx.fillText(`Squat Depth: ${Math.round(depth * 100)}%`, 10, 30);
-    }
+    ctx.fillStyle = depth > 0.15 ? '#00FF00' : '#FF0000';
+    ctx.font = '16px Arial';
+    ctx.fillText(`Squat Depth: ${Math.round(depth * 100)}%`, 10, 30);
   };
 
   return (
@@ -940,10 +951,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       <CameraContainer>
         <Video 
-          ref={videoRef}
-          autoPlay 
-          playsInline
-          muted
+        ref={videoRef} 
+        autoPlay 
+        playsInline 
+        muted
         />
         <PoseCanvas ref={canvasRef} />
         
@@ -962,9 +973,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           {isRecording ? 'Recording' : ''}
         </RecordingIndicator>
         
-        {isRecording && (
+      {isRecording && (
           <RecordingTimer>
-            {formatTime(recordingTime)}
+          {formatTime(recordingTime)}
           </RecordingTimer>
         )}
       </CameraContainer>
@@ -1003,7 +1014,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             <li><strong>File Size:</strong> Keeping videos under 10MB helps with faster uploads and processing.</li>
             <li><strong>No Audio:</strong> Audio is disabled to reduce file size and improve processing time.</li>
           </ul>
-        </div>
+      </div>
       </InstructionsContainer>
     </Container>
   );
