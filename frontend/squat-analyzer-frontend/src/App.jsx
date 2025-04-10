@@ -45,7 +45,12 @@ const LogosContainer = styled.div`
 const Logo = styled.img`
   height: 50px;
   width: auto;
+  object-fit: contain;
 `;
+
+// Define logo URLs - if using direct URLs, they can be hardcoded here
+const COLUMBIA_BUSINESS_LOGO = 'https://prod-web.business.columbia.edu/profiles/openscholar/modules/contrib/imagecache_actions/imagecache_actions.module.scss/modules/os/theme/Columbia_Business_School_logo.svg';
+const COLUMBIA_ENGINEERING_LOGO = 'https://engineering.columbia.edu/themes/custom/thememoon/assets/images/SEAS-Logo-2color.png';
 
 const App = () => {
   const [videoBlob, setVideoBlob] = useState(null);
@@ -205,11 +210,11 @@ const App = () => {
       <div className="container mx-auto px-4">
         <LogosContainer>
           <Logo 
-            src="https://www8.gsb.columbia.edu/img/logos/columbia-business-school-logo.png" 
+            src={COLUMBIA_BUSINESS_LOGO}
             alt="Columbia Business School" 
           />
           <Logo 
-            src="https://engineering.columbia.edu/sites/default/files/content/image/identities/SEAS-Logo-2color-615px.png" 
+            src={COLUMBIA_ENGINEERING_LOGO}
             alt="Columbia Engineering" 
           />
         </LogosContainer>

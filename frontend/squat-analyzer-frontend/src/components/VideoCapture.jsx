@@ -4,6 +4,10 @@ import { Camera, RefreshCw, Maximize2, Minimize2, Square, AlertTriangle, Circle 
 import { v4 as uuidv4 } from 'uuid';
 import styled from 'styled-components';
 
+// Import pose detection from TensorFlow.js
+import * as poseDetection from '@tensorflow-models/pose-detection';
+import '@tensorflow/tfjs-backend-webgl';
+
 // API URL with fallback for local development
 const API_URL = 'https://squat-analyzer-backend.onrender.com';
 
@@ -61,14 +65,25 @@ const ErrorMessage = styled.div`
 const CameraContainer = styled.div`
   position: relative;
   width: 100%;
-  max-width: 800px;
-  margin-bottom: 20px;
+  max-width: 640px;
+  margin: 0 auto;
+  background-color: #000;
+  border-radius: 8px;
+  overflow: hidden;
 `;
 
 const Video = styled.video`
   width: 100%;
   height: auto;
-  margin-bottom: 20px;
+  display: block;
+`;
+
+const PoseCanvas = styled.canvas`
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
 `;
 
 const CameraPermissionMessage = styled.div`
@@ -202,13 +217,16 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
   const sessionIdRef = useRef(uuidv4());
+  const timerRef = useRef(null);
+  const detectorRef = useRef(null);
+  const animationRef = useRef(null);
   
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [error, setError] = useState(null);
-  const timerRef = useRef(null);
   const [streamReady, setStreamReady] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [isPoseTracking, setIsPoseTracking] = useState(false);
 
   // Initialize video stream
   useEffect(() => {
@@ -228,47 +246,63 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   }, []);
 
   const initializeCamera = async () => {
+    console.log("Initializing camera...");
+    
     try {
-      setError(null);
-      console.log("Initializing camera...");
-      
-      // Check if we're in a secure context (needed for camera access)
-      if (!window.isSecureContext) {
-        throw new Error("Camera access requires a secure context (HTTPS)");
-      }
-      
-      // Clean up any existing stream first to prevent conflicts
+      // Clean up any previous resources
       cleanupStream();
       
-      // Check for camera permissions
-      try {
-        const permissionStatus = await navigator.permissions.query({ name: 'camera' });
-        if (permissionStatus.state === 'denied') {
-          throw new Error("Camera access permission denied by browser");
+      // Reset error state
+      setError(null);
+      
+      // Try standard constraints first
+      const constraints = {
+        audio: false,
+        video: {
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: 30 }
         }
-      } catch (permErr) {
-        console.log("Permission API not supported, continuing with getUserMedia");
-      }
+      };
       
-      // Try multiple constraint configurations if the default fails
-      let stream = null;
-      let error = null;
+      console.log("Trying standard constraints:", constraints);
       
-      // First try with standard constraints
       try {
-        const standardConstraints = {
-          audio: false, // Disabled to reduce file size and improve processing time
-          video: {
-            width: { ideal: 1280, max: 1920 },
-            height: { ideal: 720, max: 1080 },
-            facingMode: 'user'
-          }
-        };
+        // Request user media with standard constraints
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        streamRef.current = stream;
         
-        console.log("Trying standard constraints:", standardConstraints);
-        stream = await navigator.mediaDevices.getUserMedia(standardConstraints);
+        console.log("Stream successfully created with tracks:", 
+          stream.getVideoTracks().map(track => `${track.kind}:${track.label}`).join(', ') + (stream.active ? ' (live)' : ' (inactive)'));
+        
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          
+          // Wait for video metadata to load
+          await new Promise((resolve) => {
+            videoRef.current.onloadedmetadata = () => {
+              console.log("Video metadata loaded");
+              resolve();
+            };
+          });
+          
+          // Start video playback (required for pose detection)
+          await videoRef.current.play();
+          console.log("Video playback started");
+          
+          setStreamReady(true);
+          setIsInitialized(true);
+          console.log("Camera initialized successfully");
+          
+          // Initialize pose detector if camera is ready
+          initializePoseDetector();
+          
+          return true;
+        } else {
+          throw new Error("Video element not found");
+        }
       } catch (err) {
-        console.warn("Standard constraints failed:", err.message);
+        console.error("Standard constraints failed:", err.message);
         error = err;
       }
       
@@ -552,6 +586,16 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const cleanupStream = () => {
     console.log("Cleaning up media resources");
     
+    // Stop pose detection loop
+    if (animationRef.current) {
+      cancelAnimationFrame(animationRef.current);
+      animationRef.current = null;
+    }
+    
+    // Reset pose tracking state
+    setIsPoseTracking(false);
+    detectorRef.current = null;
+    
     // Clear timer first
     if (timerRef.current) {
       clearInterval(timerRef.current);
@@ -717,6 +761,158 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     });
   };
 
+  // Function to initialize the pose detector
+  const initializePoseDetector = async () => {
+    try {
+      // Use MoveNet as it's lightweight and fast for real-time tracking
+      const detectorConfig = {
+        modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+        enableSmoothing: true
+      };
+      
+      console.log("Initializing pose detector...");
+      const detector = await poseDetection.createDetector(
+        poseDetection.SupportedModels.MoveNet, 
+        detectorConfig
+      );
+      
+      detectorRef.current = detector;
+      setIsPoseTracking(true);
+      console.log("Pose detector initialized successfully");
+      
+      // Start the pose detection loop
+      startPoseDetection();
+      
+      return true;
+    } catch (error) {
+      console.error("Error initializing pose detector:", error);
+      setIsPoseTracking(false);
+      // Don't show an error to the user - pose tracking is optional
+      return false;
+    }
+  };
+
+  // Function to start pose detection loop
+  const startPoseDetection = () => {
+    if (!detectorRef.current || !videoRef.current || !canvasRef.current) return;
+    
+    const detectPose = async () => {
+      if (!detectorRef.current || !videoRef.current || !canvasRef.current || 
+          !videoRef.current.videoWidth || videoRef.current.paused || 
+          videoRef.current.ended) {
+        animationRef.current = requestAnimationFrame(detectPose);
+        return;
+      }
+      
+      try {
+        // Detect poses
+        const poses = await detectorRef.current.estimatePoses(videoRef.current);
+        
+        // Draw the poses on the canvas
+        if (poses.length > 0) {
+          drawPose(poses[0]);
+        } else {
+          // Clear canvas if no poses detected
+          const ctx = canvasRef.current.getContext('2d');
+          ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
+        }
+      } catch (error) {
+        console.error("Error in pose detection:", error);
+      }
+      
+      // Continue the detection loop
+      animationRef.current = requestAnimationFrame(detectPose);
+    };
+    
+    // Start the detection loop
+    animationRef.current = requestAnimationFrame(detectPose);
+  };
+
+  // Function to draw the detected pose on the canvas
+  const drawPose = (pose) => {
+    const ctx = canvasRef.current.getContext('2d');
+    const videoWidth = videoRef.current.videoWidth;
+    const videoHeight = videoRef.current.videoHeight;
+    
+    // Ensure the canvas dimensions match the video
+    canvasRef.current.width = videoWidth;
+    canvasRef.current.height = videoHeight;
+    
+    // Clear the canvas
+    ctx.clearRect(0, 0, videoWidth, videoHeight);
+    
+    if (!pose || !pose.keypoints) return;
+    
+    // Draw keypoints
+    ctx.fillStyle = '#00FF00';
+    pose.keypoints.forEach(keypoint => {
+      if (keypoint.score > 0.3) {
+        const x = keypoint.x;
+        const y = keypoint.y;
+        
+        ctx.beginPath();
+        ctx.arc(x, y, 5, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+    });
+    
+    // Define the connections to draw
+    const connections = [
+      // Torso
+      ['left_shoulder', 'right_shoulder'],
+      ['left_shoulder', 'left_hip'],
+      ['right_shoulder', 'right_hip'],
+      ['left_hip', 'right_hip'],
+      // Arms
+      ['left_shoulder', 'left_elbow'],
+      ['left_elbow', 'left_wrist'],
+      ['right_shoulder', 'right_elbow'],
+      ['right_elbow', 'right_wrist'],
+      // Legs
+      ['left_hip', 'left_knee'],
+      ['left_knee', 'left_ankle'],
+      ['right_hip', 'right_knee'],
+      ['right_knee', 'right_ankle'],
+    ];
+    
+    // Create a keypoint map for easier lookup
+    const keypointMap = {};
+    pose.keypoints.forEach(keypoint => {
+      keypointMap[keypoint.name] = keypoint;
+    });
+    
+    // Draw connections
+    ctx.strokeStyle = '#00FF00';
+    ctx.lineWidth = 2;
+    
+    connections.forEach(([start, end]) => {
+      const startPoint = keypointMap[start];
+      const endPoint = keypointMap[end];
+      
+      if (startPoint && endPoint && startPoint.score > 0.3 && endPoint.score > 0.3) {
+        ctx.beginPath();
+        ctx.moveTo(startPoint.x, startPoint.y);
+        ctx.lineTo(endPoint.x, endPoint.y);
+        ctx.stroke();
+      }
+    });
+    
+    // Draw squat depth indicator if knees and hips are visible
+    if (keypointMap['left_knee'] && keypointMap['left_hip'] && keypointMap['left_knee'].score > 0.3 && keypointMap['left_hip'].score > 0.3) {
+      const knee = keypointMap['left_knee'];
+      const hip = keypointMap['left_hip'];
+      const kneeY = knee.y;
+      const hipY = hip.y;
+      
+      const depth = (kneeY - hipY) / videoHeight; // Normalize to 0-1 range
+      
+      // Draw depth indicator
+      ctx.fillStyle = depth > 0.15 ? '#00FF00' : '#FF0000';
+      ctx.font = '16px Arial';
+      ctx.fillText(`Squat Depth: ${Math.round(depth * 100)}%`, 10, 30);
+    }
+  };
+
   return (
     <Container>
       <Heading>Record Your Squat</Heading>
@@ -749,6 +945,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           playsInline
           muted
         />
+        <PoseCanvas ref={canvasRef} />
         
         {!streamReady && !isRecording && (
           <CameraPermissionMessage>
