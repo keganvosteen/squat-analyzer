@@ -20,6 +20,9 @@ const api = axios.create({
   }
 });
 
+// Make sure Axios is using our extended timeout globally
+axios.defaults.timeout = 45000;
+
 const Container = styled.div`
   max-width: 1200px;
   margin: 0 auto;
@@ -94,6 +97,7 @@ const App = () => {
       try {
         // Use axios with timeout
         const response = await api.post('/analyze', formData, {
+          timeout: 45000, // Explicitly set timeout for this request
           onUploadProgress: progressEvent => {
             const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
             console.log(`Upload progress: ${percentCompleted}%`);
@@ -110,7 +114,15 @@ const App = () => {
         let shouldTryLocalAnalysis = false;
         
         if (apiError.code === 'ECONNABORTED') {
-          errorMessage = "Analysis took too long and timed out after 45 seconds. Switching to local analysis mode.";
+          // Check if we're hitting the 30s default timeout despite our 45s setting
+          const isDefaultTimeout = apiError.message.includes('timeout of 30000ms exceeded');
+          
+          if (isDefaultTimeout) {
+            console.warn("Warning: Default 30s timeout was used instead of configured 45s timeout!");
+            errorMessage = "Analysis took too long and timed out after 30 seconds (instead of expected 45s). Switching to local analysis mode.";
+          } else {
+            errorMessage = "Analysis took too long and timed out after 45 seconds. Switching to local analysis mode.";
+          }
           shouldTryLocalAnalysis = true;
         } else if (apiError.response) {
           // Server responded with an error status
