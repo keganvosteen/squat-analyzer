@@ -16,34 +16,32 @@ const Container = styled.div`
 
 const VideoContainer = styled.div`
   position: relative;
-  width: 100%;
-  max-width: 800px;
-  background: #000;
-  border-radius: 8px;
+  max-width: 100%;
+  max-height: 70vh;
+  margin: 0 auto;
   overflow: hidden;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 `;
 
-const Video = styled.video`
+const StyledVideo = styled.video`
   width: 100%;
   height: auto;
   display: block;
-  /* Fix for mobile rotation issues */
-  object-fit: contain;
-  transform: none; /* Ensure no default rotations applied */
+  border-radius: 8px;
   
-  @media (max-width: 767px) {
-    /* On mobile devices, adjust for potential orientation issues */
-    max-height: 70vh;
-  }
+  /* Fix for mobile video rotation issues */
+  object-fit: contain;
+  max-height: 70vh;
 `;
 
-const Canvas = styled.canvas`
+const CanvasOverlay = styled.canvas`
   position: absolute;
   top: 0;
   left: 0;
   width: 100%;
   height: 100%;
-  pointer-events: none; /* Make sure canvas doesn't block video controls */
+  pointer-events: none;
 `;
 
 const Controls = styled.div`
@@ -653,7 +651,7 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
       )}
       
       <VideoContainer onDoubleClick={toggleDebug}>
-        <Video
+        <StyledVideo
           ref={videoRef}
           src={videoUrl}
           controls={true}
@@ -662,8 +660,8 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
         >
           <source src={videoUrl} type="video/webm" />
           Your browser does not support the video tag.
-        </Video>
-        <Canvas ref={canvasRef} />
+        </StyledVideo>
+        <CanvasOverlay ref={canvasRef} />
       </VideoContainer>
       
       {/* Add video orientation badge for debugging */}

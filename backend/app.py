@@ -376,19 +376,36 @@ def analyze_video():
         # Get video properties
         fps = int(cap.get(cv2.CAP_PROP_FPS))
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # Detect if video is rotated (mobile portrait mode)
+        is_portrait_video = height > width
+        app.logger.info(f"Video dimensions: {width}x{height}, orientation: {'portrait' if is_portrait_video else 'landscape'}")
         
         # Validate video properties to prevent overflow/invalid values
-        if fps <= 0 or fps > 120:
+        if fps <= 0 or fps > 120 or fps == 1000:  # 1000 is an invalid value often seen
             app.logger.warning(f"Invalid FPS: {fps}, defaulting to 30")
             fps = 30
         
-        if frame_count <= 0 or frame_count > 100000:
-            app.logger.warning(f"Invalid frame count: {frame_count}, estimating from duration")
-            # Estimate frame count from duration
-            duration = cap.get(cv2.CAP_PROP_FRAME_COUNT) / max(1, cap.get(cv2.CAP_PROP_FPS))
-            frame_count = min(int(duration * fps), 1000)  # Cap at 1000 frames
+        # Handle invalid or extremely large/negative frame count
+        if frame_count <= 0 or frame_count > 100000 or frame_count < -1000:
+            # Get video duration directly
+            cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 1)  # Seek to end
+            duration = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000  # Get duration in seconds
+            cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0)  # Reset to beginning
+            
+            if duration <= 0 or duration > 300:  # If duration is also invalid
+                app.logger.warning(f"Invalid duration: {duration}, estimating as 10 seconds")
+                duration = 10  # Assume 10 second video
+            
+            app.logger.warning(f"Invalid frame count: {frame_count}, estimating from duration: {duration}s")
+            frame_count = int(duration * fps)
         
-        app.logger.info(f"Video properties: FPS={fps}, frame_count={frame_count}")
+        # Ensure frame_count is reasonable 
+        frame_count = max(10, min(frame_count, 1000))  # Between 10 and 1000 frames
+        
+        app.logger.info(f"Video properties: FPS={fps}, frame_count={frame_count}, duration={frame_count/fps:.2f}s")
         
         # Calculate frame skip rate based on video length to reduce processing time
         # Process fewer frames for longer videos to stay within timeout limits
@@ -414,6 +431,13 @@ def analyze_video():
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
             success, frame = cap.read()
             if success:
+                # Handle rotated video from mobile devices
+                if is_portrait_video:
+                    # Rotate 90 degrees counterclockwise if video is in portrait mode
+                    # This is common for mobile recordings
+                    frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                    app.logger.info(f"Rotated frame from {height}x{width} to {frame.shape[1]}x{frame.shape[0]}")
+                
                 # Resize frame to reduce memory usage
                 if frame.shape[0] > 720 or frame.shape[1] > 1280:
                     frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)

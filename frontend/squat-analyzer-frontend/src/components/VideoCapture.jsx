@@ -211,6 +211,35 @@ const RecordingDot = styled.div`
   display: inline-block;
 `;
 
+const VideoPreview = styled.video`
+  width: 100%;
+  height: auto;
+  border-radius: 8px;
+  display: block;
+  object-fit: contain;
+  max-height: 70vh;
+  background-color: #000;
+`;
+
+const VideoRecorder = styled.div`
+  position: relative;
+  max-width: 100%;
+  max-height: 70vh;
+  margin: 0 auto;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
+`;
+
+const CanvasOverlay = styled.canvas`
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+`;
+
 const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -230,220 +259,362 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const [isInitialized, setIsInitialized] = useState(false);
   const [isPoseTracking, setIsPoseTracking] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
+  const [recordedBlob, setRecordedBlob] = useState(null);
+  const [playbackRef, setPlaybackRef] = useState(null);
+  const [enableLivePose, setEnableLivePose] = useState(true);
+  const [poseDetectionId, setPoseDetectionId] = useState(null);
+  const [isFrontFacing, setIsFrontFacing] = useState(true);
+  const [isCameraReady, setIsCameraReady] = useState(false);
   
   // Initialize video stream
   useEffect(() => {
-    // Check camera status on component mount
-    const init = async () => {
+    let mediaStream = null;
+
+    const initCamera = async () => {
       try {
-        setIsInitializing(true);
-        const stream = await initializeCamera();
-        if (stream && stream.active) {
-          setStreamReady(true);
-          setIsInitialized(true);
+        setIsLoading(true);
+        setError(null);
+
+        if (isRecording || recordedBlob) {
+          return;
         }
-      } catch (error) {
-        console.error("Camera initialization failed:", error);
-        setError("Failed to initialize camera: " + (error.message || "Unknown error"));
-      } finally {
+
+        // Get device orientation
+        const orientation = getDeviceOrientation();
+        console.log(`Current device orientation: ${orientation}`);
+
+        // Configure constraints based on orientation
+        const constraints = {
+          audio: false,
+          video: {
+            width: { ideal: orientation === 'landscape' ? 1280 : 720 },
+            height: { ideal: orientation === 'landscape' ? 720 : 1280 },
+            facingMode: 'user'
+          }
+        };
+
+        // Request camera access with appropriate constraints
+        mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+        streamRef.current = mediaStream;
+        
+        if (videoRef.current) {
+          videoRef.current.srcObject = mediaStream;
+          
+          // Set up canvas for pose detection overlay once video is ready
+          videoRef.current.onloadedmetadata = () => {
+            if (canvasRef.current && videoRef.current) {
+              canvasRef.current.width = videoRef.current.clientWidth;
+              canvasRef.current.height = videoRef.current.clientHeight;
+              setStreamReady(true);
+              setIsInitialized(true);
+              setIsInitializing(false);
+              
+              // Start pose detection if enabled
+              if (enableLivePose) {
+                startPoseDetection();
+              }
+            }
+            setIsLoading(false);
+          };
+        }
+      } catch (err) {
+        console.error("Error accessing camera:", err);
+        setError(`Camera access error: ${err.message}. Please ensure you've granted camera permissions.`);
+        setIsLoading(false);
         setIsInitializing(false);
       }
     };
-    
-    init();
-    
-    return () => {
-      stopRecording();
-      cleanupStream();
-      stopTimer();
-    };
-  }, []);
 
-  const initializeCamera = async () => {
-    console.log("Initializing camera...");
+    initCamera();
+
+    // Add orientation change listener
+    const handleOrientationChange = () => {
+      console.log("Orientation changed, reinitializing camera");
+      // Clean up existing stream
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+      // Reinitialize camera with new orientation
+      initCamera();
+    };
+
+    // Listen for orientation changes
+    if (window.screen && window.screen.orientation) {
+      window.screen.orientation.addEventListener('change', handleOrientationChange);
+    } else {
+      window.addEventListener('orientationchange', handleOrientationChange);
+    }
+
+    // Clean up function
+    return () => {
+      if (mediaStream) {
+        mediaStream.getTracks().forEach(track => track.stop());
+      }
+      
+      // Remove orientation change listeners
+      if (window.screen && window.screen.orientation) {
+        window.screen.orientation.removeEventListener('change', handleOrientationChange);
+      } else {
+        window.removeEventListener('orientationchange', handleOrientationChange);
+      }
+      
+      // Clean up pose detection resources
+      if (detectorRef.current) {
+        stopPoseDetection();
+      }
+    };
+  }, [isRecording, recordedBlob, enableLivePose]);
+
+  // Function to determine device orientation
+  const getDeviceOrientation = () => {
+    // Check screen orientation API first (most reliable)
+    if (window.screen && window.screen.orientation) {
+      const type = window.screen.orientation.type;
+      console.log(`Screen orientation type: ${type}`);
+      
+      if (type.includes('landscape')) {
+        return 'landscape';
+      } else if (type.includes('portrait')) {
+        return 'portrait';
+      }
+    }
     
-    try {
-      // Set initializing state
-      setIsInitializing(true);
-      
-      // Clean up any previous resources
-      cleanupStream();
-      
-      // Reset error state
-      setError(null);
-      
-      // Try standard constraints first
-      const constraints = {
-        audio: false,
-        video: { 
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-          frameRate: { ideal: 30 }
-        }
-      };
-      
-      console.log("Trying standard constraints:", constraints);
-      
-      let stream = null;
+    // Fallback to window dimensions
+    const isLandscape = window.innerWidth > window.innerHeight;
+    console.log(`Fallback orientation check: ${isLandscape ? 'landscape' : 'portrait'} (window dimensions: ${window.innerWidth}x${window.innerHeight})`);
+    
+    return isLandscape ? 'landscape' : 'portrait';
+  };
+
+  const startPoseDetection = async () => {
+    if (!detectorRef.current) {
       try {
-        // Request user media with standard constraints
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-        streamRef.current = stream;
+        // Load the MoveNet model
+        const model = poseDetection.SupportedModels.MoveNet;
+        const detectorConfig = {
+          modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+          enableSmoothing: true
+        };
+        detectorRef.current = await poseDetection.createDetector(model, detectorConfig);
+        console.log("Pose detector initialized");
+      } catch (err) {
+        console.error("Error initializing pose detector:", err);
+        return;
+      }
+    }
+
+    if (poseDetectionId.current) return; // Already running
+
+    // Store canvas context for drawing
+    const ctx = canvasRef.current.getContext('2d');
+    
+    // Helper function to map normalized coordinates to canvas
+    const mapToCanvas = (x, y, videoWidth, videoHeight, canvasWidth, canvasHeight) => {
+      // Check if video is in portrait orientation
+      const isPortrait = videoHeight > videoWidth;
+      const videoAspect = videoWidth / videoHeight;
+      const canvasAspect = canvasWidth / canvasHeight;
+      
+      let displayWidth, displayHeight, offsetX, offsetY;
+      
+      if ((isPortrait && canvasAspect < videoAspect) || 
+          (!isPortrait && canvasAspect > videoAspect)) {
+        // Width constrained
+        displayWidth = canvasWidth;
+        displayHeight = displayWidth / videoAspect;
+        offsetX = 0;
+        offsetY = (canvasHeight - displayHeight) / 2;
+      } else {
+        // Height constrained
+        displayHeight = canvasHeight;
+        displayWidth = displayHeight * videoAspect;
+        offsetX = (canvasWidth - displayWidth) / 2;
+        offsetY = 0;
+      }
+      
+      // Map coordinates based on video orientation
+      const posX = isPortrait ? 
+        offsetX + (y * displayWidth) : 
+        offsetX + (x * displayWidth);
         
-        console.log("Stream successfully created with tracks:", 
-          stream.getVideoTracks().map(track => `${track.kind}:${track.label}`).join(', ') + (stream.active ? ' (live)' : ' (inactive)'));
+      const posY = isPortrait ?
+        offsetY + ((1 - x) * displayHeight) :
+        offsetY + (y * displayHeight);
         
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
+      return { x: posX, y: posY };
+    };
+
+    // Function to detect poses and draw
+    const detectAndDraw = async () => {
+      if (!videoRef.current || !canvasRef.current || videoRef.current.paused || videoRef.current.ended) {
+        return;
+      }
+      
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      
+      // Make sure canvas matches current video display size
+      if (canvas.width !== video.clientWidth || canvas.height !== video.clientHeight) {
+        canvas.width = video.clientWidth;
+        canvas.height = video.clientHeight;
+      }
+      
+      // Clear previous drawing
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      try {
+        // Get video dimensions
+        const videoWidth = video.videoWidth;
+        const videoHeight = video.videoHeight;
+        const isPortrait = videoHeight > videoWidth;
+        
+        // Detect poses
+        const poses = await detectorRef.current.estimatePoses(video);
+        
+        if (poses.length > 0) {
+          const pose = poses[0]; // MoveNet detects a single pose
           
-          // Wait for video metadata to load
-          await new Promise((resolve) => {
-            videoRef.current.onloadedmetadata = () => {
-              console.log("Video metadata loaded");
-              resolve();
-            };
+          // Draw connections between keypoints
+          ctx.strokeStyle = 'white';
+          ctx.lineWidth = 3;
+          
+          // Simplified connection list based on MoveNet keypoints
+          const connections = [
+            ['nose', 'left_eye'], ['nose', 'right_eye'],
+            ['left_eye', 'left_ear'], ['right_eye', 'right_ear'],
+            ['nose', 'left_shoulder'], ['nose', 'right_shoulder'],
+            ['left_shoulder', 'left_elbow'], ['right_shoulder', 'right_elbow'],
+            ['left_elbow', 'left_wrist'], ['right_elbow', 'right_wrist'],
+            ['left_shoulder', 'right_shoulder'],
+            ['left_shoulder', 'left_hip'], ['right_shoulder', 'right_hip'],
+            ['left_hip', 'right_hip'],
+            ['left_hip', 'left_knee'], ['right_hip', 'right_knee'],
+            ['left_knee', 'left_ankle'], ['right_knee', 'right_ankle']
+          ];
+          
+          // Create a keypoint map for easier access
+          const keypointMap = {};
+          pose.keypoints.forEach(keypoint => {
+            keypointMap[keypoint.name] = keypoint;
           });
           
-          // Start video playback (required for pose detection)
-          await videoRef.current.play();
-          console.log("Video playback started");
-          
-          setStreamReady(true);
-          setIsInitialized(true);
-          console.log("Camera initialized successfully");
-          
-          // Initialize pose detector asynchronously, but don't wait for it
-          // This allows the camera to work even if pose detection fails
-          setTimeout(() => {
-            initializePoseDetector().catch(poseError => {
-              console.warn("Pose detector initialization failed, but camera is still available:", poseError);
-            });
-          }, 1000);
-          
-          setIsInitializing(false); // Set initializing to false when successful
-          return stream;
-        } else {
-          throw new Error("Video element not found");
-        }
-      } catch (err) {
-        console.error("Standard constraints failed:", err.message);
-        // Fall through to fallback
-      }
-      
-      // If standard constraints failed, try fallback with minimal constraints
-      if (!stream) {
-        try {
-          const fallbackConstraints = {
-            audio: false,
-            video: true // Just request any video
-          };
-          
-          console.log("Trying fallback constraints:", fallbackConstraints);
-          stream = await navigator.mediaDevices.getUserMedia(fallbackConstraints);
-        } catch (err) {
-          console.error("Fallback constraints also failed:", err.message);
-          throw err;
-        }
-      }
-      
-      // If we still don't have a stream, throw an error
-      if (!stream) {
-        throw new Error("Could not access camera with any configuration");
-      }
-      
-      if (!stream.active) {
-        throw new Error("Stream was created but is not active");
-      }
-      
-      console.log("Stream successfully created with tracks:", 
-        stream.getTracks().map(t => `${t.kind}:${t.label} (${t.readyState})`).join(', '));
-      
-      // Store the stream reference
-      streamRef.current = stream;
-      
-      // Connect stream to video element
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.muted = true; // Prevent feedback
-        
-        // Wait for video to be ready with timeout
-        await Promise.race([
-          new Promise((resolve) => {
-            videoRef.current.onloadedmetadata = () => {
-              console.log("Video metadata loaded");
-              resolve();
-            };
-            // If metadata is already loaded, resolve immediately
-            if (videoRef.current.readyState >= 2) {
-              console.log("Video already ready");
-              resolve();
+          // Draw connections
+          connections.forEach(([start, end]) => {
+            const startPoint = keypointMap[start];
+            const endPoint = keypointMap[end];
+            
+            if (startPoint && endPoint && startPoint.score > 0.4 && endPoint.score > 0.4) {
+              const startPos = mapToCanvas(
+                startPoint.x / videoWidth, 
+                startPoint.y / videoHeight,
+                videoWidth, videoHeight, 
+                canvas.width, canvas.height
+              );
+              
+              const endPos = mapToCanvas(
+                endPoint.x / videoWidth, 
+                endPoint.y / videoHeight,
+                videoWidth, videoHeight, 
+                canvas.width, canvas.height
+              );
+              
+              ctx.beginPath();
+              ctx.moveTo(startPos.x, startPos.y);
+              ctx.lineTo(endPos.x, endPos.y);
+              ctx.stroke();
             }
-          }),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("Video metadata loading timeout")), 5000)
-          )
-        ]);
-        
-        try {
-          await videoRef.current.play();
-          console.log("Video playback started");
-        } catch (playErr) {
-          console.error("Error playing video:", playErr);
-          // Continue anyway - the stream is initialized
+          });
+          
+          // Draw keypoints
+          ctx.fillStyle = 'red';
+          pose.keypoints.forEach(keypoint => {
+            if (keypoint.score > 0.4) {
+              const pos = mapToCanvas(
+                keypoint.x / videoWidth, 
+                keypoint.y / videoHeight,
+                videoWidth, videoHeight, 
+                canvas.width, canvas.height
+              );
+              
+              ctx.beginPath();
+              ctx.arc(pos.x, pos.y, 5, 0, 2 * Math.PI);
+              ctx.fill();
+            }
+          });
+          
+          // Draw real-time feedback if needed
+          const rightHip = keypointMap['right_hip'];
+          const rightKnee = keypointMap['right_knee'];
+          const rightAnkle = keypointMap['right_ankle'];
+          
+          if (rightHip && rightKnee && rightAnkle && 
+              rightHip.score > 0.4 && rightKnee.score > 0.4 && rightAnkle.score > 0.4) {
+            // Calculate knee angle
+            const hip = { x: rightHip.x, y: rightHip.y };
+            const knee = { x: rightKnee.x, y: rightKnee.y };
+            const ankle = { x: rightAnkle.x, y: rightAnkle.y };
+            
+            const angle = calculateAngle(hip, knee, ankle);
+            
+            // Display angle
+            const kneePos = mapToCanvas(
+              rightKnee.x / videoWidth, 
+              rightKnee.y / videoHeight,
+              videoWidth, videoHeight, 
+              canvas.width, canvas.height
+            );
+            
+            ctx.font = '16px Arial';
+            ctx.fillStyle = 'white';
+            ctx.strokeStyle = 'black';
+            ctx.lineWidth = 3;
+            const text = `Knee: ${angle.toFixed(1)}°`;
+            ctx.strokeText(text, kneePos.x + 15, kneePos.y);
+            ctx.fillText(text, kneePos.x + 15, kneePos.y);
+          }
         }
+      } catch (error) {
+        console.error('Error in pose detection:', error);
       }
       
-      console.log("Camera initialized successfully");
-      setStreamReady(true);
-      setIsInitialized(true);
-      setIsInitializing(false); // Set to false when done successfully
-      return streamRef.current;
-    } catch (error) {
-      console.error("Camera initialization error:", error);
-      
-      // Provide more helpful error messages based on the error
-      let errorMessage = "Could not access camera";
-      
-      if (error.name === "NotAllowedError" || error.name === "PermissionDeniedError") {
-        errorMessage = "Camera access denied. Please check your browser permissions and try again.";
-      } else if (error.name === "NotFoundError") {
-        errorMessage = "No camera found. Please connect a camera and reload the page.";
-      } else if (error.name === "NotReadableError" || error.name === "TrackStartError") {
-        errorMessage = "Camera is already in use by another application. Please close other applications using your camera.";
-      } else if (error.name === "OverconstrainedError") {
-        errorMessage = "Camera cannot meet the requested quality requirements. Try a different camera.";
-      } else if (error.name === "TypeError") {
-        errorMessage = "Invalid camera constraints. Please reload the page and try again.";
-      } else if (error.message) {
-        errorMessage = `Camera error: ${error.message}`;
-      }
-      
-      setError(errorMessage);
-      setStreamReady(false);
-      setIsInitialized(false);
-      setIsInitializing(false); // Always set to false when done, even on error
-      return null;
-    }
-  };
-
-  // Function to get the supported MIME type for video recording
-  const getSupportedMimeType = () => {
-    const possibleTypes = [
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-      'video/webm;codecs=h264,opus',
-      'video/webm',
-      'video/mp4'
-    ];
+      // Schedule next frame
+      poseDetectionId.current = requestAnimationFrame(detectAndDraw);
+    };
     
-    return possibleTypes.find(type => MediaRecorder.isTypeSupported(type));
+    // Start detection loop
+    poseDetectionId.current = requestAnimationFrame(detectAndDraw);
   };
 
-  // Format recording time as mm:ss
-  const formatTime = (seconds) => {
-    const mins = Math.floor(seconds / 60).toString().padStart(2, '0');
-    const secs = (seconds % 60).toString().padStart(2, '0');
-    return `${mins}:${secs}`;
+  const calculateAngle = (a, b, c) => {
+    // Handle undefined points
+    if (!a || !b || !c) {
+        console.warn("Undefined points in angle calculation");
+        return 0;
+    }
+    
+    // Calculate vectors
+    const ab = { x: b.x - a.x, y: b.y - a.y };
+    const bc = { x: c.x - b.x, y: c.y - b.y };
+    
+    // Calculate dot product
+    const dotProduct = ab.x * bc.x + ab.y * bc.y;
+    
+    // Calculate magnitudes
+    const magAB = Math.sqrt(ab.x * ab.x + ab.y * ab.y);
+    const magBC = Math.sqrt(bc.x * bc.x + bc.y * bc.y);
+    
+    // Prevent division by zero
+    if (magAB === 0 || magBC === 0) {
+        console.warn("Zero magnitude in angle calculation");
+        return 0;
+    }
+    
+    // Calculate angle in radians and convert to degrees
+    const cosTheta = Math.max(-1, Math.min(1, dotProduct / (magAB * magBC)));
+    const angleRad = Math.acos(cosTheta);
+    return 180 - (angleRad * (180 / Math.PI));
   };
 
   const startTimer = () => {
@@ -468,8 +639,61 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Reset error state
       setError(null);
       
-      // Always reinitialize camera to ensure fresh stream
-      await initializeCamera();
+      // Check if camera is initialized
+      if (!streamRef.current || !streamRef.current.active) {
+        console.log("Camera not initialized, initializing now");
+        // Define the initialization function here since it didn't exist
+        const initializeCamera = async () => {
+          try {
+            setIsLoading(true);
+            setIsInitializing(true);
+            
+            // Get device orientation
+            const orientation = getDeviceOrientation();
+            console.log(`Initializing camera with orientation: ${orientation}`);
+            
+            // Configure constraints based on orientation
+            const constraints = {
+              audio: false,
+              video: {
+                width: { ideal: orientation === 'landscape' ? 1280 : 720 },
+                height: { ideal: orientation === 'landscape' ? 720 : 1280 },
+                facingMode: 'user'
+              }
+            };
+            
+            // Request camera access
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            streamRef.current = stream;
+            
+            if (videoRef.current) {
+              videoRef.current.srcObject = stream;
+              
+              // Setup canvas once video is loaded
+              videoRef.current.onloadedmetadata = () => {
+                if (canvasRef.current) {
+                  canvasRef.current.width = videoRef.current.clientWidth;
+                  canvasRef.current.height = videoRef.current.clientHeight;
+                }
+                setStreamReady(true);
+                setIsInitialized(true);
+                setIsInitializing(false);
+                setIsLoading(false);
+              };
+            }
+            
+            return stream;
+          } catch (err) {
+            console.error("Error in initializeCamera:", err);
+            setError(`Camera initialization error: ${err.message}`);
+            setIsLoading(false);
+            setIsInitializing(false);
+            throw err;
+          }
+        };
+        
+        await initializeCamera();
+      }
       
       // Verify stream is active
       if (!streamRef.current || !streamRef.current.active) {
@@ -788,351 +1012,232 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     });
   };
 
-  // Function to initialize the pose detector
-  const initializePoseDetector = async () => {
+  // Function to get the supported MIME type for video recording
+  const getSupportedMimeType = () => {
+    const possibleTypes = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=h264,opus',
+      'video/webm',
+      'video/mp4'
+    ];
+    
+    return possibleTypes.find(type => MediaRecorder.isTypeSupported(type));
+  };
+
+  // Format recording time as mm:ss
+  const formatTime = (seconds) => {
+    const mins = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const secs = (seconds % 60).toString().padStart(2, '0');
+    return `${mins}:${secs}`;
+  };
+
+  // Properly define stopPoseDetection function that's referenced but not implemented
+  const stopPoseDetection = () => {
+    if (poseDetectionId.current) {
+      cancelAnimationFrame(poseDetectionId.current);
+      poseDetectionId.current = null;
+      console.log("Pose detection stopped");
+    }
+    
+    // Clean up the detector reference if needed
+    if (detectorRef.current) {
+      console.log("Cleaning up pose detector");
+      // No explicit cleanup needed for MoveNet detector
+    }
+  };
+
+  // Initialize camera with proper constraints based on orientation
+  const initializeCamera = async () => {
+    setError('');
+    setIsCameraReady(false);
+    
     try {
-      // First, explicitly initialize TensorFlow.js
-      console.log("Setting up TensorFlow.js backends...");
+      // Stop any existing stream first
+      if (videoRef.current && videoRef.current.srcObject) {
+        const tracks = videoRef.current.srcObject.getTracks();
+        tracks.forEach(track => track.stop());
+      }
       
-      // Try WebGL first, fallback to CPU if needed
-      const preferredBackends = ['webgl', 'cpu'];
-      let backendInitialized = false;
+      // Get current orientation
+      const orientation = getDeviceOrientation();
+      console.log(`Initializing camera with orientation: ${orientation}`);
       
-      // Try each backend in order
-      for (const backendName of preferredBackends) {
-        try {
-          console.log(`Trying to initialize TensorFlow.js backend: ${backendName}`);
-          await tf.setBackend(backendName);
-          await tf.ready();
-          console.log(`Successfully initialized TensorFlow.js backend: ${backendName}`);
-          backendInitialized = true;
-          break;
-        } catch (backendError) {
-          console.warn(`Failed to initialize backend ${backendName}:`, backendError);
+      // Set video constraints based on orientation
+      // Higher resolution for better pose detection but respect device capabilities
+      const videoConstraints = {
+        audio: false,
+        video: {
+          facingMode: isFrontFacing ? 'user' : 'environment',
+          width: { ideal: orientation === 'landscape' ? 1280 : 720 },
+          height: { ideal: orientation === 'landscape' ? 720 : 1280 }
         }
-      }
-      
-      if (!backendInitialized) {
-        throw new Error("Could not initialize any TensorFlow.js backends");
-      }
-      
-      // Use MoveNet as it's lightweight and fast for real-time tracking
-      const detectorConfig = {
-        modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
-        enableSmoothing: true
       };
       
-      console.log("Initializing pose detector with backend:", tf.getBackend());
-      const detector = await poseDetection.createDetector(
-        poseDetection.SupportedModels.MoveNet, 
-        detectorConfig
-      );
+      const stream = await navigator.mediaDevices.getUserMedia(videoConstraints);
       
-      detectorRef.current = detector;
-      setIsPoseTracking(true);
-      console.log("Pose detector initialized successfully");
-      
-      // Start the pose detection loop
-      startPoseDetection();
-      
-      return true;
-    } catch (error) {
-      console.error("Error initializing pose detector:", error);
-      setIsPoseTracking(false);
-      // Don't show an error to the user - pose tracking is optional
-      return false;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        
+        // Wait for the video to be loaded
+        videoRef.current.onloadedmetadata = () => {
+          console.log(`Video dimensions: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`);
+          setIsCameraReady(true);
+          
+          // Start pose detection if enabled
+          if (enableLivePose) {
+            startPoseDetection();
+          }
+        };
+      }
+    } catch (err) {
+      console.error('Error accessing camera:', err);
+      setError(`Camera access error: ${err.message || 'Could not access camera'}`);
     }
   };
 
-  // Function to start pose detection loop
-  const startPoseDetection = () => {
-    if (!detectorRef.current || !videoRef.current || !canvasRef.current) {
-      console.warn("Cannot start pose detection: missing references");
-      return;
-    }
-
-    // Make sure TensorFlow backend is ready
-    if (!tf.ENV.flagRegistry.ENGINE_COMPILE_ONLY) {
-      console.log("TensorFlow.js backend ready, starting pose detection loop");
-    } else {
-      console.warn("TensorFlow.js backend may not be fully initialized");
-    }
-
-    // Setup canvas dimensions based on video
-    if (videoRef.current.videoWidth) {
-      canvasRef.current.width = videoRef.current.videoWidth;
-      canvasRef.current.height = videoRef.current.videoHeight;
-    } else {
-      // Set default dimensions if video dimensions aren't available yet
-      canvasRef.current.width = 640;
-      canvasRef.current.height = 480;
-    }
-
-    let frameCount = 0;
-    let depthHistory = [];
-    let lastDetectionTime = 0;
-    const detectionInterval = 100; // ms between detection attempts (throttle)
-
-    const detectPose = async () => {
-      if (!detectorRef.current || !videoRef.current || !canvasRef.current || 
-          videoRef.current.paused || videoRef.current.ended) {
-        animationRef.current = requestAnimationFrame(detectPose);
-        return;
-      }
-
-      // Update canvas dimensions if they have changed
-      if (videoRef.current.videoWidth && 
-         (canvasRef.current.width !== videoRef.current.videoWidth || 
-          canvasRef.current.height !== videoRef.current.videoHeight)) {
-        canvasRef.current.width = videoRef.current.videoWidth;
-        canvasRef.current.height = videoRef.current.videoHeight;
-      }
-
-      const now = performance.now();
-      const timeSinceLastDetection = now - lastDetectionTime;
-
-      // Throttle detection to reduce CPU usage
-      if (timeSinceLastDetection > detectionInterval) {
-        lastDetectionTime = now;
-        frameCount++;
-        
-        try {
-          const poses = await detectorRef.current.estimatePoses(videoRef.current, {
-            flipHorizontal: false
-          });
-          
-          if (poses.length > 0) {
-            const pose = poses[0];
-            const depth = calculateDepth(pose);
-            
-            // Apply smoothing to depth measurements
-            depthHistory.push(depth);
-            if (depthHistory.length > 5) depthHistory.shift();
-            const smoothedDepth = depthHistory.reduce((a, b) => a + b, 0) / depthHistory.length;
-            
-            drawPose(pose, smoothedDepth);
-          } else {
-            // Clear canvas if no poses detected
-            const ctx = canvasRef.current.getContext('2d');
-            ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-          }
-        } catch (error) {
-          console.error("Error in pose detection:", error);
-          // Don't set UI error - just log it, since pose detection is optional
-          
-          // Clear canvas on error
-          const ctx = canvasRef.current.getContext('2d');
-          if (ctx) {
-            ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-          }
-        }
-      }
-
-      // Continue detection loop
-      animationRef.current = requestAnimationFrame(detectPose);
+  // Add event listener for orientation change
+  useEffect(() => {
+    const handleOrientationChange = () => {
+      console.log('Orientation changed, reinitializing camera');
+      // Give time for the browser to finish changing orientation
+      setTimeout(initializeCamera, 500);
     };
-
-    // Start the detection loop
-    animationRef.current = requestAnimationFrame(detectPose);
-  };
-
-  // Helper function to calculate squat depth
-  const calculateDepth = (pose) => {
-    const keypointMap = {};
-    pose.keypoints.forEach(keypoint => {
-      keypointMap[keypoint.name] = keypoint;
-    });
-
-    if (keypointMap['left_knee'] && keypointMap['left_hip'] && keypointMap['left_knee'].score > 0.3 && keypointMap['left_hip'].score > 0.3) {
-      const kneeY = keypointMap['left_knee'].y;
-      const hipY = keypointMap['left_hip'].y;
-      return (kneeY - hipY) / videoRef.current.videoHeight;
-    }
-    return 0;
-  };
-
-  // Modify drawPose to accept smoothed depth
-  const drawPose = (pose, depth) => {
-    if (!canvasRef.current) return;
     
-    const ctx = canvasRef.current.getContext('2d');
-    if (!ctx) {
-      console.error("Could not get 2D context from canvas");
-      return;
+    // Set up orientation change listener
+    if (window.screen && window.screen.orientation) {
+      window.screen.orientation.addEventListener('change', handleOrientationChange);
+    } else {
+      window.addEventListener('orientationchange', handleOrientationChange);
     }
     
-    const videoWidth = canvasRef.current.width;
-    const videoHeight = canvasRef.current.height;
-
-    ctx.clearRect(0, 0, videoWidth, videoHeight);
-
-    if (!pose || !pose.keypoints || !pose.keypoints.length) {
-      console.warn("No valid pose keypoints to draw");
-      return;
-    }
+    // Initialize camera on component mount
+    initializeCamera();
     
-    try {
-      // Draw keypoints as red dots
-      ctx.fillStyle = '#FF0000';
-      pose.keypoints.forEach(keypoint => {
-        if (keypoint.score > 0.3) {
-          const x = keypoint.x;
-          const y = keypoint.y;
-          
-          ctx.beginPath();
-          ctx.arc(x, y, 5, 0, 2 * Math.PI);
-          ctx.fill();
-        }
-      });
-      
-      // Define the connections to draw
-      const connections = [
-        // Torso
-        ['left_shoulder', 'right_shoulder'],
-        ['left_shoulder', 'left_hip'],
-        ['right_shoulder', 'right_hip'],
-        ['left_hip', 'right_hip'],
-        // Arms
-        ['left_shoulder', 'left_elbow'],
-        ['left_elbow', 'left_wrist'],
-        ['right_shoulder', 'right_elbow'],
-        ['right_elbow', 'right_wrist'],
-        // Legs
-        ['left_hip', 'left_knee'],
-        ['left_knee', 'left_ankle'],
-        ['right_hip', 'right_knee'],
-        ['right_knee', 'right_ankle'],
-      ];
-      
-      // Create a keypoint map for easier lookup
-      const keypointMap = {};
-      pose.keypoints.forEach(keypoint => {
-        keypointMap[keypoint.name] = keypoint;
-      });
-      
-      // Draw connections as white lines
-      ctx.strokeStyle = '#FFFFFF';
-      ctx.lineWidth = 2;
-      
-      connections.forEach(([start, end]) => {
-        const startPoint = keypointMap[start];
-        const endPoint = keypointMap[end];
-        
-        if (startPoint && endPoint && startPoint.score > 0.3 && endPoint.score > 0.3) {
-          ctx.beginPath();
-          ctx.moveTo(startPoint.x, startPoint.y);
-          ctx.lineTo(endPoint.x, endPoint.y);
-          ctx.stroke();
-        }
-      });
-      
-      // Draw squat depth indicator if knees and hips are visible
-      const kneePoint = keypointMap['left_knee'] || keypointMap['right_knee'];
-      const hipPoint = keypointMap['left_hip'] || keypointMap['right_hip'];
-      
-      if (kneePoint && hipPoint && kneePoint.score > 0.3 && hipPoint.score > 0.3) {
-        ctx.fillStyle = depth > 0.15 ? '#00FF00' : '#FF6347';
-        ctx.font = '18px Arial';
-        ctx.fillText(`Depth: ${Math.round(depth * 100)}%`, 10, 30);
+    // Clean up
+    return () => {
+      // Stop media stream
+      if (videoRef.current && videoRef.current.srcObject) {
+        const tracks = videoRef.current.srcObject.getTracks();
+        tracks.forEach(track => track.stop());
       }
-    } catch (error) {
-      console.error("Error drawing pose:", error);
-    }
-  };
+      
+      // Remove event listeners
+      if (window.screen && window.screen.orientation) {
+        window.screen.orientation.removeEventListener('change', handleOrientationChange);
+      } else {
+        window.removeEventListener('orientationchange', handleOrientationChange);
+      }
+      
+      // Stop pose detection if running
+      if (enableLivePose) {
+        stopPoseDetection();
+      }
+    };
+  }, [isFrontFacing, enableLivePose]);
 
   return (
-    <Container>
-      <Heading>Record Your Squat</Heading>
-      
+    <div className="relative w-full max-w-2xl mx-auto">
+      <div className="bg-gray-800 rounded-lg shadow-lg overflow-hidden">
+        {/* Camera controls */}
+        <div className="flex items-center justify-between p-2 bg-gray-900">
+          <div className="flex gap-2">
+            <button
+              onClick={() => {
+                setIsFrontFacing(!isFrontFacing);
+                setTimeout(initializeCamera, 100);
+              }}
+              className="bg-gray-700 text-white px-3 py-1 rounded-md hover:bg-gray-600 transition flex items-center gap-1"
+              title={isFrontFacing ? "Switch to back camera" : "Switch to front camera"}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
+              </svg>
+              {isFrontFacing ? "Back" : "Front"}
+            </button>
+            <button
+              onClick={() => setEnableLivePose(!enableLivePose)}
+              className={`px-3 py-1 rounded-md hover:bg-gray-600 transition flex items-center gap-1
+                ${enableLivePose ? 'bg-blue-600 text-white' : 'bg-gray-700 text-white'}`}
+              title={enableLivePose ? "Disable pose tracking" : "Enable pose tracking"}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
+              </svg>
+              {enableLivePose ? "Tracking On" : "Tracking Off"}
+            </button>
+          </div>
+          <div>
+            {!isRecording ? (
+              <button
+                onClick={startRecording}
+                disabled={isLoading || !isCameraReady}
+                className={`px-4 py-2 rounded-md flex items-center gap-2 transition ${
+                  isLoading || !isCameraReady 
+                    ? 'bg-gray-500 cursor-not-allowed' 
+                    : 'bg-red-600 hover:bg-red-700 text-white'
+                }`}
+              >
+                <div className="w-3 h-3 rounded-full bg-white"></div>
+                {isLoading ? 'Loading...' : 'Record'}
+              </button>
+            ) : (
+              <button
+                onClick={stopRecording}
+                className="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-md flex items-center gap-2 transition"
+              >
+                <div className="w-3 h-3 rounded bg-white"></div>
+                Stop
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Video and canvas container */}
+        <div className="relative">
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            className="w-full"
+            style={{ display: 'block' }}
+          ></video>
+          
+          {/* Pose overlay canvas */}
+          {enableLivePose && (
+            <PoseCanvas
+              ref={canvasRef}
+              className="absolute top-0 left-0 w-full h-full pointer-events-none"
+            />
+          )}
+          
+          {/* Record indicator */}
+          {isRecording && (
+            <div className="absolute top-4 right-4 flex items-center gap-2 bg-black bg-opacity-50 px-3 py-1 rounded-full">
+              <div className="w-3 h-3 rounded-full bg-red-600 animate-pulse"></div>
+              <span className="text-white text-sm font-medium">Recording</span>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Error message */}
       {error && (
-        <ErrorMessage>
-          <div className="error-header">
-            <AlertTriangle size={18} />
-            Camera Error
-          </div>
-          <div>{error}</div>
-          <div className="error-actions">
-            <button onClick={() => initializeCamera()}>
-              <RefreshCw size={14} className="mr-1" /> Retry Camera
-            </button>
-            <button onClick={() => window.location.reload()}>
-              Reload Page
-            </button>
-          </div>
-          <div className="text-sm">
-            Tips: Try closing other applications using your camera, checking your browser permissions, or using a different browser.
-          </div>
-        </ErrorMessage>
+        <div className="mt-4 p-3 bg-red-500 text-white rounded-md">
+          {error}
+        </div>
       )}
       
-      <CameraContainer>
-        <Video 
-        ref={videoRef} 
-        autoPlay 
-        playsInline 
-        muted
-        />
-        <PoseCanvas ref={canvasRef} />
-        
-        {!streamReady && !isRecording && !isInitializing && (
-          <CameraPermissionMessage>
-            <Camera size={32} />
-            <p>Camera access is required</p>
-            <button onClick={initializeCamera} className="bg-blue-500 text-white px-4 py-2 rounded mt-2">
-              Enable Camera
-            </button>
-          </CameraPermissionMessage>
-        )}
-        
-        <RecordingIndicator isRecording={isRecording}>
-          <RecordingDot />
-          {isRecording ? 'Recording' : ''}
-        </RecordingIndicator>
-        
+      {/* Timer */}
       {isRecording && (
-          <RecordingTimer>
-          {formatTime(recordingTime)}
-          </RecordingTimer>
-        )}
-      </CameraContainer>
-      
-      <ControlsContainer>
-        {!isRecording ? (
-          <RecordButton 
-            onClick={startRecording}
-            disabled={!streamReady}
-          >
-            <Circle size={16} fill="#ff4136" />
-            Start Recording
-          </RecordButton>
-        ) : (
-          <StopButton onClick={stopRecording}>
-            <Square size={16} fill="#fff" />
-            Stop Recording
-          </StopButton>
-        )}
-      </ControlsContainer>
-      
-      <InstructionsContainer>
-        <h3>How to Record a Proper Squat</h3>
-        <ol>
-          <li>Position your device so your entire body is visible from the side.</li>
-          <li>Stand about 6-8 feet from the camera.</li>
-          <li>Perform a squat with proper form.</li>
-          <li>Record a single squat repetition (down and up).</li>
-        </ol>
-        
-        <div className="tips-section">
-          <h3>Recording Limits</h3>
-          <ul>
-            <li><strong>Recommended:</strong> Record 1 squat at a time for the best analysis.</li>
-            <li><strong>Maximum:</strong> 10-15 seconds of video (about 1-2 squats) to avoid Render's free tier timeout.</li>
-            <li><strong>File Size:</strong> Keeping videos under 10MB helps with faster uploads and processing.</li>
-            <li><strong>No Audio:</strong> Audio is disabled to reduce file size and improve processing time.</li>
-          </ul>
-      </div>
-      </InstructionsContainer>
-    </Container>
+        <div className="mt-4 text-center">
+          <span className="text-xl font-bold">
+            {Math.floor(recordingTime / 60).toString().padStart(2, '0')}:
+            {(recordingTime % 60).toString().padStart(2, '0')}
+          </span>
+        </div>
+      )}
+    </div>
   );
 };
 
