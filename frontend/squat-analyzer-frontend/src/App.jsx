@@ -49,9 +49,25 @@ const Logo = styled.img`
   object-fit: contain;
 `;
 
-// Use local image paths instead of remote URLs
-const COLUMBIA_BUSINESS_LOGO = '/images/columbia-business.png';
-const COLUMBIA_ENGINEERING_LOGO = '/images/columbia_engineering.svg';
+const TextLogo = styled.div`
+  font-size: 18px;
+  font-weight: bold;
+  color: #333;
+  margin: 0 20px;
+  text-align: center;
+`;
+
+// Try multiple file formats to increase chances of successful loading
+const LOGO_FORMATS = {
+  business: [
+    `${window.location.origin}/images/columbia-business.png`, 
+    `${window.location.origin}/images/columbia-business.svg`
+  ],
+  engineering: [
+    `${window.location.origin}/images/columbia_engineering.svg`,
+    `${window.location.origin}/images/columbia_engineering.png`
+  ]
+};
 
 const App = () => {
   const [videoBlob, setVideoBlob] = useState(null);
@@ -64,6 +80,52 @@ const App = () => {
   const [usingLocalAnalysis, setUsingLocalAnalysis] = useState(false);
   const [serverReady, setServerReady] = useState(false);
   const [logoError, setLogoError] = useState(false);
+  const [businessLogo, setBusinessLogo] = useState(LOGO_FORMATS.business[0]);
+  const [engineeringLogo, setEngineeringLogo] = useState(LOGO_FORMATS.engineering[0]);
+
+  // Check if images are available and find best format
+  useEffect(() => {
+    const checkImages = async () => {
+      let businessFound = false;
+      let engineeringFound = false;
+      
+      // Try each business logo format
+      for (const format of LOGO_FORMATS.business) {
+        try {
+          const response = await fetch(format, { method: 'HEAD' });
+          if (response.ok) {
+            setBusinessLogo(format);
+            businessFound = true;
+            break;
+          }
+        } catch (e) {
+          console.warn(`Failed to load ${format}:`, e);
+        }
+      }
+      
+      // Try each engineering logo format
+      for (const format of LOGO_FORMATS.engineering) {
+        try {
+          const response = await fetch(format, { method: 'HEAD' });
+          if (response.ok) {
+            setEngineeringLogo(format);
+            engineeringFound = true;
+            break;
+          }
+        } catch (e) {
+          console.warn(`Failed to load ${format}:`, e);
+        }
+      }
+      
+      // If either logo fails to load, use text fallback
+      if (!businessFound || !engineeringFound) {
+        console.warn("Some logo images could not be found. Using text fallback.");
+        setLogoError(true);
+      }
+    };
+    
+    checkImages();
+  }, []);
 
   // Start the server warmup service when the app loads
   useEffect(() => {
@@ -220,19 +282,19 @@ const App = () => {
           <Title>Columbia Squat Analyzer</Title>
           <LogosContainer>
             {logoError ? (
-              <div className="text-logos">
-                <span className="text-logo">Columbia Business School</span>
-                <span className="text-logo">Columbia Engineering</span>
-              </div>
+              <>
+                <TextLogo>Columbia Business School</TextLogo>
+                <TextLogo>Columbia Engineering</TextLogo>
+              </>
             ) : (
               <>
                 <Logo 
-                  src={COLUMBIA_BUSINESS_LOGO}
+                  src={businessLogo}
                   alt="Columbia Business School" 
                   onError={handleLogoError}
                 />
                 <Logo 
-                  src={COLUMBIA_ENGINEERING_LOGO}
+                  src={engineeringLogo}
                   alt="Columbia Engineering" 
                   onError={handleLogoError}
                 />
@@ -243,7 +305,7 @@ const App = () => {
           {!showPlayback ? (
             <VideoCapture onRecordingComplete={handleRecordingComplete} />
           ) : (
-            <ExercisePlayback
+              <ExercisePlayback 
               videoUrl={videoUrl}
               analysisData={analysisData}
               isAnalyzing={isAnalyzing || loading}
@@ -271,7 +333,7 @@ const App = () => {
             )}
           </div>
         )}
-      </div>
+        </div>
     </div>
   );
 };

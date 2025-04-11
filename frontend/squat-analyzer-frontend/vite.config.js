@@ -24,6 +24,26 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     assetsDir: 'assets',
-    sourcemap: true
+    sourcemap: true,
+    chunkSizeWarningLimit: 1500, // Increase from default 500kb to 1500kb for TensorFlow.js
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Group TensorFlow.js libraries together
+          tensorflow: [
+            '@tensorflow/tfjs',
+            '@tensorflow/tfjs-backend-webgl',
+            '@tensorflow/tfjs-backend-cpu',
+            '@tensorflow-models/pose-detection'
+          ],
+          // Group React and styling libraries
+          vendor: [
+            'react',
+            'react-dom',
+            'styled-components'
+          ]
+        }
+      }
+    }
   }
 })
