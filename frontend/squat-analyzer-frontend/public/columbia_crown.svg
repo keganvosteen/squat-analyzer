@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Columbia Crown Background -->
+  <circle cx="50" cy="50" r="45" fill="#0072CE" />
+  
+  <!-- Crown -->
+  <path d="M50 15 L75 35 L75 60 L60 60 L60 45 L50 55 L40 45 L40 60 L25 60 L25 35 Z" fill="#FFFFFF" />
+  
+  <!-- Bottom of crown -->
+  <rect x="25" y="60" width="50" height="5" fill="#FFFFFF" />
+  
+  <!-- Jewels in crown -->
+  <circle cx="50" cy="35" r="3" fill="#E6002D" />
+  <circle cx="35" cy="40" r="3" fill="#E6002D" />
+  <circle cx="65" cy="40" r="3" fill="#E6002D" />
+</svg>
