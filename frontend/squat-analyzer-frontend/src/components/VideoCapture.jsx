@@ -341,6 +341,30 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     
     // Initialize app
     initializeTensorFlow();
+    
+    // Add window resize handler
+    const handleResize = () => {
+      if (videoRef.current && canvasRef.current) {
+        // Update canvas dimensions to match video element
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        
+        // Get the computed dimensions of the video
+        const videoRect = video.getBoundingClientRect();
+        
+        canvas.width = videoRect.width;
+        canvas.height = videoRect.height;
+        
+        addDebugLog(`Window resized: Canvas resized to ${canvas.width}x${canvas.height}`);
+      }
+    };
+    
+    window.addEventListener('resize', handleResize);
+    
+    // Clean up
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
   }, []);
   
   // Function to detect browser type
@@ -643,38 +667,28 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       // Helper function to map normalized coordinates to canvas
       const mapToCanvas = (x, y, videoWidth, videoHeight, canvasWidth, canvasHeight) => {
-        // Check if video is in portrait orientation
-        const isPortrait = videoHeight > videoWidth;
-        const videoAspect = videoWidth / videoHeight;
-        const canvasAspect = canvasWidth / canvasHeight;
+        // Get the actual dimensions of the video element as displayed on screen
+        const videoElement = videoRef.current;
+        if (!videoElement) return { x, y }; // Fallback if video element not available
         
-        let displayWidth, displayHeight, offsetX, offsetY;
+        // Get the actual display dimensions of the video element
+        const videoRect = videoElement.getBoundingClientRect();
+        const displayedVideoWidth = videoRect.width;
+        const displayedVideoHeight = videoRect.height;
         
-        if ((isPortrait && canvasAspect < videoAspect) || 
-            (!isPortrait && canvasAspect > videoAspect)) {
-          // Width constrained
-          displayWidth = canvasWidth;
-          displayHeight = displayWidth / videoAspect;
-          offsetX = 0;
-          offsetY = (canvasHeight - displayHeight) / 2;
-        } else {
-          // Height constrained
-          displayHeight = canvasHeight;
-          displayWidth = displayHeight * videoAspect;
-          offsetX = (canvasWidth - displayWidth) / 2;
-          offsetY = 0;
-        }
+        // Calculate scaling factors between original video dimensions and how it's displayed
+        const scaleX = displayedVideoWidth / videoWidth;
+        const scaleY = displayedVideoHeight / videoHeight;
         
-        // Map coordinates based on video orientation
-        const posX = isPortrait ? 
-          offsetX + (y * displayWidth) : 
-          offsetX + (x * displayWidth);
-          
-        const posY = isPortrait ?
-          offsetY + ((1 - x) * displayHeight) :
-          offsetY + (y * displayHeight);
-          
-        return { x: posX, y: posY };
+        // Apply scaling to coordinates
+        const scaledX = x * scaleX;
+        const scaledY = y * scaleY;
+        
+        // Return transformed coordinates
+        return { 
+          x: scaledX, 
+          y: scaledY 
+        };
       };
 
       // Function to detect poses and draw
@@ -688,9 +702,11 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         const ctx = canvas.getContext('2d');
         
         // Make sure canvas matches current video display size
-        if (canvas.width !== video.clientWidth || canvas.height !== video.clientHeight) {
-          canvas.width = video.clientWidth;
-          canvas.height = video.clientHeight;
+        const videoRect = video.getBoundingClientRect();
+        if (canvas.width !== videoRect.width || canvas.height !== videoRect.height) {
+          canvas.width = videoRect.width;
+          canvas.height = videoRect.height;
+          addDebugLog(`Canvas resized to match video: ${canvas.width}x${canvas.height}`);
         }
         
         // Clear previous drawing
