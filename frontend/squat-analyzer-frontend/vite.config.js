@@ -25,25 +25,58 @@ export default defineConfig({
     outDir: 'dist',
     assetsDir: 'assets',
     sourcemap: true,
-    chunkSizeWarningLimit: 1500, // Increase from default 500kb to 1500kb for TensorFlow.js
+    chunkSizeWarningLimit: 2000, // Increase from 1500kb to 2000kb for TensorFlow.js
+    minify: 'terser', // Use terser for better minification
+    terserOptions: {
+      compress: {
+        drop_console: false, // Keep console logs for debugging
+        pure_funcs: ['console.debug'], // But remove debug logs
+      }
+    },
     rollupOptions: {
       output: {
+        // Improve code splitting
         manualChunks: {
           // Group TensorFlow.js libraries together
-          tensorflow: [
-            '@tensorflow/tfjs',
+          'tensorflow-core': [
+            '@tensorflow/tfjs-core',
+          ],
+          'tensorflow-backends': [
             '@tensorflow/tfjs-backend-webgl',
             '@tensorflow/tfjs-backend-cpu',
+          ],
+          'tensorflow-models': [
             '@tensorflow-models/pose-detection'
           ],
           // Group React and styling libraries
-          vendor: [
+          'react-vendor': [
             'react',
             'react-dom',
-            'styled-components'
+          ],
+          'ui-vendor': [
+            'styled-components',
+            'lucide-react'
           ]
-        }
+        },
+        // Optimize chunk size
+        chunkFileNames: 'assets/js/[name]-[hash].js',
+        entryFileNames: 'assets/js/[name]-[hash].js',
+        assetFileNames: 'assets/[ext]/[name]-[hash].[ext]'
       }
+    },
+    // Optimize for mobile
+    target: 'es2018',
+    cssCodeSplit: true,
+    assetsInlineLimit: 4096, // Inline small assets (4kb or less)
+    reportCompressedSize: true
+  },
+  // Optimize CSS
+  css: {
+    devSourcemap: true,
+    postcss: {
+      plugins: [],
     }
-  }
+  },
+  // PWA features for mobile
+  base: './'
 })
