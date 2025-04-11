@@ -34,6 +34,25 @@ const pingServer = async () => {
 };
 
 /**
+ * Warm up the server and check if it's ready
+ * @param {string} url The backend URL to warm up
+ * @returns {Promise<boolean>} True if server is ready
+ */
+const warmupServer = async (url = BACKEND_URL) => {
+  try {
+    console.log(`Warming up server at ${url}...`);
+    // Start the warmup service in the background
+    startWarmupService();
+    
+    // Try to ping the server right away to check if it's ready
+    return await pingServer();
+  } catch (error) {
+    console.error('Server warmup failed:', error);
+    return false;
+  }
+};
+
+/**
  * Start pinging the server at regular intervals
  * @param {number} intervalMs Milliseconds between pings (default: 10 minutes)
  */
@@ -68,5 +87,6 @@ const stopWarmupService = () => {
 export default {
   pingServer,
   startWarmupService,
-  stopWarmupService
+  stopWarmupService,
+  warmupServer
 }; 
