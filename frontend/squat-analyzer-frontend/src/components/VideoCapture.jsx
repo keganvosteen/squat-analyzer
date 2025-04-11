@@ -329,6 +329,41 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     debugLogRef.current = [...debugLogRef.current, logMessage].slice(-50); // Keep last 50 logs
   };
 
+  // Initialize the component with browser detection
+  useEffect(() => {
+    // Set mobile device detection
+    const mobile = isMobileDevice();
+    setIsMobile(mobile);
+    
+    // Detect browser for specific handling
+    const browser = detectBrowser();
+    addDebugLog(`Browser detected: ${browser}`);
+    
+    // Initialize app
+    initializeTensorFlow();
+  }, []);
+  
+  // Function to detect browser type
+  const detectBrowser = () => {
+    const userAgent = navigator.userAgent;
+    let browserName = "Unknown";
+    
+    if (userAgent.match(/firefox|fxios/i)) {
+      browserName = "Firefox";
+    } else if (userAgent.match(/chrome|chromium|crios/i)) {
+      browserName = "Chrome";
+    } else if (userAgent.match(/safari/i)) {
+      browserName = "Safari";
+    } else if (userAgent.match(/opr\//i)) {
+      browserName = "Opera";
+    } else if (userAgent.match(/edg/i)) {
+      browserName = "Edge";
+    }
+    
+    console.log(`Browser detected: ${browserName}`);
+    return browserName;
+  };
+
   // Initialize TensorFlow on component mount with better mobile handling
   useEffect(() => {
     let mounted = true;
@@ -423,27 +458,26 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
               setIsInitializing(false);
               setIsCameraReady(true);
               
-              // Set loadedmetadata flag
-              if (videoRef.current.readyState >= 2) {
-                addDebugLog("Video metadata loaded successfully");
-                
-                // Try to start pose detection, even if enableLivePose is false
-                // This ensures the tracking is available when togglePoseTracking is used
-                if (tfInitialized || await initializeTensorFlow()) {
-                  addDebugLog("TensorFlow initialized, starting pose detection");
+              addDebugLog("Video metadata loaded, video ready");
+              console.log("Video metadata loaded, dimensions:", 
+                videoRef.current.videoWidth, "x", videoRef.current.videoHeight);
+              
+              // Try to ensure TensorFlow is initialized
+              if (!tfInitialized) {
+                addDebugLog("Attempting to initialize TensorFlow...");
+                const success = await initializeTensorFlow();
+                if (success) {
                   setTfInitialized(true);
-                  
-                  // Force enabling live pose if it was disabled
-                  if (!enableLivePose) {
-                    addDebugLog("Enabling live pose tracking");
-                    setEnableLivePose(true);
-                  }
-                  
-                  // Start pose detection
-                  await startPoseDetection();
+                  addDebugLog("TensorFlow initialized successfully");
                 } else {
-                  addDebugLog("Could not initialize TensorFlow for pose detection");
+                  addDebugLog("TensorFlow initialization failed");
                 }
+              }
+              
+              // Now start pose detection if it should be on
+              if (enableLivePose && tfInitialized) {
+                addDebugLog("Starting pose detection after camera ready");
+                await startPoseDetection();
               }
             }
             setIsLoading(false);
@@ -900,6 +934,12 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     addDebugLog("Starting recording process");
     
     try {
+      // If already recording, stop it
+      if (isRecording) {
+        stopRecording();
+        return;
+      }
+      
       // Reset error state
       setError(null);
       
@@ -934,20 +974,32 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       addDebugLog(`Using MIME type: ${mimeType}`);
       
-      // Create a new MediaRecorder instance with more robust error handling
       try {
-        mediaRecorderRef.current = new MediaRecorder(streamRef.current, { 
+        // Create a new MediaRecorder with browser-specific options if needed
+        const options = { 
           mimeType,
-          videoBitsPerSecond: isMobile ? 1500000 : 2000000, // Lower bitrate for mobile
-          audioBitsPerSecond: 0 // No audio
-        });
+          // Adjust quality for mobile or older browsers
+          videoBitsPerSecond: isMobile ? 1500000 : 2000000  
+        };
         
-        addDebugLog("MediaRecorder created successfully");
+        // Create a new MediaRecorder instance
+        mediaRecorderRef.current = new MediaRecorder(streamRef.current, options);
+        
+        addDebugLog(`MediaRecorder created with options: ${JSON.stringify(options)}`);
       } catch (recorderError) {
         console.error("MediaRecorder creation failed:", recorderError);
         addDebugLog(`MediaRecorder creation failed: ${recorderError.message}`);
-        setError("Could not create video recorder. Please try a different browser.");
-        return;
+        
+        // Fallback to basic creation without options
+        try {
+          addDebugLog("Trying fallback MediaRecorder without options");
+          mediaRecorderRef.current = new MediaRecorder(streamRef.current);
+        } catch (fallbackError) {
+          console.error("Fallback MediaRecorder also failed:", fallbackError);
+          addDebugLog(`Fallback MediaRecorder also failed: ${fallbackError.message}`);
+          setError("Could not create video recorder. Please try a different browser.");
+          return;
+        }
       }
       
       // Setup data available handler
@@ -984,30 +1036,12 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           addDebugLog(`Created video blob: ${blob.type}, size: ${Math.round(blob.size / 1024)}KB`);
           
           if (blob.size > 0) {
-            // Process the recording - ensure this callback is called
+            // Process the recording
             console.log("Processing recorded video");
-            // Add small timeout to ensure UI updates before heavy processing begins
-            setTimeout(() => {
-              // Compress video if it's larger than threshold (lower for mobile)
-              const compressionThreshold = isMobile ? 2 * 1024 * 1024 : 3 * 1024 * 1024;
-              
-              if (blob.size > compressionThreshold) {
-                addDebugLog(`Large video detected (${Math.round(blob.size/1024)}KB), compressing`);
-                console.log("Large video detected, compressing before sending to backend");
-                compressVideo(blob).then(compressedBlob => {
-                  console.log(`Compressed video from ${Math.round(blob.size/1024)}KB to ${Math.round(compressedBlob.size/1024)}KB`);
-                  addDebugLog(`Compression complete: ${Math.round(blob.size/1024)}KB → ${Math.round(compressedBlob.size/1024)}KB`);
-                  onRecordingComplete(compressedBlob);
-                }).catch(error => {
-                  console.error("Video compression failed, using original:", error);
-                  addDebugLog(`Compression failed: ${error.message}, using original`);
-                  onRecordingComplete(blob);
-                });
-              } else {
-                addDebugLog("Video size acceptable, sending without compression");
-                onRecordingComplete(blob);
-              }
-            }, 100);
+            addDebugLog("Processing recorded video blob");
+            
+            // Make sure to call the callback to process the recording
+            onRecordingComplete(blob);
           } else {
             addDebugLog("Recording failed - blob size is 0");
             setError("Recording failed - no data captured");
@@ -1019,9 +1053,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         }
       };
       
-      // Start recording with timeslice of 200ms to ensure frequent ondataavailable events
-      mediaRecorderRef.current.start(200);
-      addDebugLog("MediaRecorder started with 200ms timeslice");
+      // Request a smaller timeslice to ensure we get data faster
+      mediaRecorderRef.current.start(100);
+      addDebugLog("MediaRecorder started with 100ms timeslice");
       console.log("MediaRecorder started successfully");
       
       // Start the timer for UI
@@ -1039,22 +1073,25 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
 
   const stopRecording = () => {
     console.log("Stop recording button clicked");
+    addDebugLog("Stop recording requested");
+    
     try {
       if (mediaRecorderRef.current) {
         console.log("MediaRecorder current state:", mediaRecorderRef.current.state);
+        addDebugLog(`MediaRecorder state: ${mediaRecorderRef.current.state}`);
+        
         if (mediaRecorderRef.current.state === "recording") {
+          addDebugLog("Stopping active MediaRecorder");
           console.log("Stopping media recorder");
           mediaRecorderRef.current.stop();
-          // Force UI update in case the onstop event doesn't fire immediately
-          setTimeout(() => {
-            if (isRecording) {
-              console.log("Forcing recording state update");
-              setIsRecording(false);
-              stopTimer();
-            }
-          }, 500);
+          
+          // Force UI update immediately to provide feedback
+          setIsRecording(false);
+          stopTimer();
         } else {
           console.warn("MediaRecorder is not in recording state:", mediaRecorderRef.current.state);
+          addDebugLog(`Cannot stop - MediaRecorder not recording (state: ${mediaRecorderRef.current.state})`);
+          
           // Still update UI state if it's inconsistent
           if (isRecording) {
             setIsRecording(false);
@@ -1063,6 +1100,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         }
       } else {
         console.error("MediaRecorder is not initialized");
+        addDebugLog("Cannot stop - MediaRecorder not initialized");
+        
         // Still update UI state if it's inconsistent
         if (isRecording) {
           setIsRecording(false);
@@ -1071,6 +1110,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       }
     } catch (error) {
       console.error("Error stopping recording:", error);
+      addDebugLog(`Error stopping recording: ${error.message}`);
+      
       // Make sure UI is updated regardless of error
       setIsRecording(false);
       stopTimer();
@@ -1297,12 +1338,25 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   // Toggle camera between front and back
   const switchCamera = async () => {
     addDebugLog(`Switching camera from ${isFrontFacing ? 'front' : 'back'} to ${isFrontFacing ? 'back' : 'front'}`);
+    console.log(`Switching camera from ${isFrontFacing ? 'front' : 'back'}`);
     
-    // Stop current stream and detection
+    // Don't allow switching during recording
+    if (isRecording) {
+      addDebugLog("Cannot switch camera while recording");
+      return;
+    }
+    
+    // Show loading state
+    setIsLoading(true);
+    
+    // Stop current stream and detection first
     stopPoseDetection();
     
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current.getTracks().forEach(track => {
+        addDebugLog(`Stopping track: ${track.kind}`);
+        track.stop();
+      });
       streamRef.current = null;
     }
     
@@ -1310,40 +1364,59 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     setIsFrontFacing(!isFrontFacing);
     
     // Short timeout to ensure state is updated before reinitializing
-    setTimeout(() => {
-      initializeCamera();
+    setTimeout(async () => {
+      try {
+        await initializeCamera();
+        addDebugLog("Camera switched successfully");
+      } catch (error) {
+        console.error("Error switching camera:", error);
+        addDebugLog(`Error switching camera: ${error.message}`);
+        setError(`Could not switch camera: ${error.message}`);
+        setIsLoading(false);
+      }
     }, 300);
   };
 
   // Toggle pose tracking
   const togglePoseTracking = async () => {
     addDebugLog(`Toggling pose tracking from ${enableLivePose ? 'on' : 'off'} to ${enableLivePose ? 'off' : 'on'}`);
+    console.log(`Toggling pose tracking: current state = ${enableLivePose ? 'on' : 'off'}`);
     
-    if (!enableLivePose) {
+    // Start by updating the UI immediately for responsive feel
+    setEnableLivePose(!enableLivePose);
+    
+    if (enableLivePose) {
+      // Turning tracking off
+      addDebugLog("Disabling pose tracking");
+      stopPoseDetection();
+    } else {
       // Turning tracking on
-      setEnableLivePose(true);
+      addDebugLog("Enabling pose tracking");
       
       // If TensorFlow isn't initialized, try to initialize it
       if (!tfInitialized) {
+        addDebugLog("TensorFlow not initialized, attempting initialization");
         const success = await initializeTensorFlow();
         setTfInitialized(success);
+        
         if (!success) {
           setError("Could not initialize pose detection. Please try again.");
+          addDebugLog("TensorFlow initialization failed");
           return;
         }
+        
+        addDebugLog("TensorFlow initialized successfully");
       }
       
       // Make sure detector is initialized and start pose detection
       if (!detectorRef.current) {
         console.log("Starting pose detection");
-        startPoseDetection();
+        addDebugLog("Creating new pose detector");
+        await startPoseDetection();
       } else {
         console.log("Pose detector already initialized");
+        addDebugLog("Reusing existing pose detector");
       }
-    } else {
-      // Turning tracking off
-      setEnableLivePose(false);
-      stopPoseDetection();
     }
   };
 
@@ -1458,20 +1531,18 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
               </svg>
               {isFrontFacing ? "Back" : "Front"}
             </button>
-            {tfInitialized && (
-              <button
-                onClick={togglePoseTracking}
-                className={`px-3 py-1 rounded-md hover:bg-gray-600 transition flex items-center gap-1
-                  ${enableLivePose ? 'bg-blue-600 text-white' : 'bg-gray-700 text-white'}`}
-                title={enableLivePose ? "Disable pose tracking" : "Enable pose tracking"}
-                disabled={!tfInitialized || isLoading || isRecording}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
-                </svg>
-                {enableLivePose ? "Tracking On" : "Tracking Off"}
-              </button>
-            )}
+            <button
+              onClick={togglePoseTracking}
+              className={`px-3 py-1 rounded-md hover:bg-gray-600 transition flex items-center gap-1
+                ${enableLivePose ? 'bg-blue-600 text-white' : 'bg-gray-700 text-white'}`}
+              title={enableLivePose ? "Disable pose tracking" : "Enable pose tracking"}
+              disabled={isLoading || isRecording}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
+              </svg>
+              {enableLivePose ? "Tracking On" : "Tracking Off"}
+            </button>
           </div>
           <div>
             <button
@@ -1521,22 +1592,32 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       {error && (
         <div className="mt-4 p-3 bg-red-500 text-white rounded-md">
           {error}
-          {isMobile && (
-            <div className="mt-2 text-sm">
-              <button 
-                onClick={() => setDebugMode(!debugMode)} 
-                className="underline"
-              >
-                Show debug info
-              </button>
-            </div>
-          )}
+          <div className="mt-2 text-sm">
+            <button 
+              onClick={() => setDebugMode(!debugMode)} 
+              className="underline"
+            >
+              {debugMode ? "Hide debug info" : "Show debug info"}
+            </button>
+          </div>
         </div>
       )}
       
-      {/* Debug info for mobile troubleshooting */}
-      {debugMode && isMobile && (
-        <div className="mt-4 p-3 bg-gray-800 text-white rounded-md text-xs overflow-auto max-h-40">
+      {/* Always show debug button even when no errors */}
+      {!error && (
+        <div className="mt-4 text-center">
+          <button 
+            onClick={() => setDebugMode(!debugMode)} 
+            className="text-sm text-gray-600 underline"
+          >
+            {debugMode ? "Hide debug info" : "Show debug info"}
+          </button>
+        </div>
+      )}
+      
+      {/* Debug info for troubleshooting */}
+      {debugMode && (
+        <div className="mt-4 p-3 bg-gray-800 text-white rounded-md text-xs overflow-auto max-h-60">
           <div className="font-bold mb-1">Debug Log:</div>
           {debugLogRef.current.map((log, i) => (
             <div key={i} className="mb-1">{log}</div>
