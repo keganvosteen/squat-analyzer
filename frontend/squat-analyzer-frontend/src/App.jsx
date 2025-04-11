@@ -6,8 +6,11 @@ import VideoCapture from './components/VideoCapture';
 import ExercisePlayback from './components/ExercisePlayback';
 import LocalAnalysis from './utils/LocalAnalysis'; // Import local analysis module (we'll create this)
 import ServerWarmup from './utils/ServerWarmup'; // Import server warmup utility
-// Import logo images from public folder
+// Import logo images 
 import './App.css';
+// Import logos directly
+import cbsLogo from '/public/CBSLogo.png';
+import seasLogo from '/public/SEASLogo.png';
 
 // Define the backend URL with a fallback
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://squat-analyzer-backend.onrender.com';
@@ -42,6 +45,7 @@ const LogosContainer = styled.div`
   justify-content: center;
   gap: 40px;
   margin-bottom: 2rem;
+  align-items: center;
 `;
 
 const Logo = styled.img`
@@ -62,18 +66,6 @@ const TextLogo = styled.div`
   background-color: var(--bg-secondary);
 `;
 
-// Try multiple file formats to increase chances of successful loading
-const LOGO_FORMATS = {
-  business: [
-    `${window.location.origin}/images/columbia-business.png`, 
-    `${window.location.origin}/images/columbia-business.svg`
-  ],
-  engineering: [
-    `${window.location.origin}/images/columbia_engineering.svg`,
-    `${window.location.origin}/images/columbia_engineering.png`
-  ]
-};
-
 const App = () => {
   const [videoBlob, setVideoBlob] = useState(null);
   const [analysisData, setAnalysisData] = useState(null);
@@ -85,8 +77,6 @@ const App = () => {
   const [usingLocalAnalysis, setUsingLocalAnalysis] = useState(false);
   const [serverReady, setServerReady] = useState(false);
   const [logoError, setLogoError] = useState(false);
-  const [businessLogo, setBusinessLogo] = useState(LOGO_FORMATS.business[0]);
-  const [engineeringLogo, setEngineeringLogo] = useState(LOGO_FORMATS.engineering[0]);
   const [isDarkMode, setIsDarkMode] = useState(
     window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
   );
@@ -134,52 +124,9 @@ const App = () => {
     );
   }, [isDarkMode]);
 
-  // Check if images are available and find best format
-  useEffect(() => {
-    const checkImages = async () => {
-      let businessFound = false;
-      let engineeringFound = false;
-      
-      // Try each business logo format
-      for (const format of LOGO_FORMATS.business) {
-        try {
-          const response = await fetch(format, { method: 'HEAD' });
-          if (response.ok) {
-            setBusinessLogo(format);
-            businessFound = true;
-            break;
-          }
-        } catch (e) {
-          console.warn(`Failed to load ${format}:`, e);
-        }
-      }
-      
-      // Try each engineering logo format
-      for (const format of LOGO_FORMATS.engineering) {
-        try {
-          const response = await fetch(format, { method: 'HEAD' });
-          if (response.ok) {
-            setEngineeringLogo(format);
-            engineeringFound = true;
-            break;
-          }
-        } catch (e) {
-          console.warn(`Failed to load ${format}:`, e);
-        }
-      }
-      
-      // If either logo fails to load, use text fallback
-      if (!businessFound || !engineeringFound) {
-        console.warn("Some logo images could not be found. Using text fallback.");
-        setLogoError(true);
-      }
-    };
-    
-    checkImages();
-  }, []);
-
   // Logo error handler
   const handleLogoError = () => {
+    console.error("Logo image failed to load");
     setLogoError(true);
   };
 
@@ -303,12 +250,12 @@ const App = () => {
             ) : (
               <>
                 <Logo 
-                  src={businessLogo}
+                  src="/CBSLogo.png"
                   alt="Columbia Business School" 
                   onError={handleLogoError}
                 />
                 <Logo 
-                  src={engineeringLogo}
+                  src="/SEASLogo.png"
                   alt="Columbia Engineering" 
                   onError={handleLogoError}
                 />
