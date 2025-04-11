@@ -24,6 +24,7 @@ const api = axios.create({
 // Make sure Axios is using our extended timeout globally
 axios.defaults.timeout = 45000;
 
+// Styled components with improved dark mode support
 const Container = styled.div`
   max-width: 1200px;
   margin: 0 auto;
@@ -32,7 +33,7 @@ const Container = styled.div`
 
 const Title = styled.h1`
   text-align: center;
-  color: #333;
+  color: var(--text-primary);
   margin-bottom: 2rem;
 `;
 
@@ -52,9 +53,13 @@ const Logo = styled.img`
 const TextLogo = styled.div`
   font-size: 18px;
   font-weight: bold;
-  color: #333;
+  color: var(--text-primary);
   margin: 0 20px;
   text-align: center;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background-color: var(--bg-secondary);
 `;
 
 // Try multiple file formats to increase chances of successful loading
@@ -82,6 +87,52 @@ const App = () => {
   const [logoError, setLogoError] = useState(false);
   const [businessLogo, setBusinessLogo] = useState(LOGO_FORMATS.business[0]);
   const [engineeringLogo, setEngineeringLogo] = useState(LOGO_FORMATS.engineering[0]);
+  const [isDarkMode, setIsDarkMode] = useState(
+    window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+  );
+
+  // Add listener for color scheme changes
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleChange = (e) => {
+      setIsDarkMode(e.matches);
+    };
+    
+    mediaQuery.addEventListener('change', handleChange);
+    return () => mediaQuery.removeEventListener('change', handleChange);
+  }, []);
+
+  // Apply CSS variables for theme
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      '--bg-primary', 
+      isDarkMode ? '#121212' : '#f5f5f5'
+    );
+    document.documentElement.style.setProperty(
+      '--bg-secondary', 
+      isDarkMode ? '#1e1e1e' : '#ffffff'
+    );
+    document.documentElement.style.setProperty(
+      '--text-primary', 
+      isDarkMode ? '#e0e0e0' : '#333333'
+    );
+    document.documentElement.style.setProperty(
+      '--text-secondary', 
+      isDarkMode ? '#a0a0a0' : '#666666'
+    );
+    document.documentElement.style.setProperty(
+      '--border-color',
+      isDarkMode ? '#444444' : '#dddddd'
+    );
+    document.documentElement.style.setProperty(
+      '--accent-color',
+      '#0072CE'
+    );
+    document.documentElement.style.setProperty(
+      '--error-color',
+      isDarkMode ? '#ff6b6b' : '#d32f2f'
+    );
+  }, [isDarkMode]);
 
   // Check if images are available and find best format
   useEffect(() => {
@@ -127,157 +178,120 @@ const App = () => {
     checkImages();
   }, []);
 
-  // Start the server warmup service when the app loads
-  useEffect(() => {
-    // Start pinging the server every 8 minutes to keep it warm
-    ServerWarmup.startWarmupService(8 * 60 * 1000);
-    
-    // Try an initial ping to check if server is ready
-    ServerWarmup.pingServer().then(isReady => {
-      setServerReady(isReady);
-    });
-    
-    // Clean up the interval when the component unmounts
-    return () => {
-      ServerWarmup.stopWarmupService();
-    };
-  }, []);
-
-  // Handle logo loading errors
+  // Logo error handler
   const handleLogoError = () => {
     setLogoError(true);
-    console.warn("Error loading one or more logo images. Using text fallback.");
   };
 
-  const handleRecordingComplete = async (videoBlob) => {
-    console.log("Recording complete, preparing for analysis...", {blobSize: videoBlob.size, blobType: videoBlob.type});
-    try {
-      setLoading(true);
-      setError(null);
-      setShowPlayback(true); // Show playback immediately for better UX
-      setUsingLocalAnalysis(false);
-      
-      // Save the blob for potential direct playback
-      setVideoBlob(videoBlob);
-      
-      // Create URL for local playback
-      const videoUrl = URL.createObjectURL(videoBlob);
-      setVideoUrl(videoUrl);
-      
-      const formData = new FormData();
-      formData.append('video', videoBlob, 'squat-recording.webm');
-
-      console.log(`Sending request to ${BACKEND_URL}/analyze with blob size ${Math.round(videoBlob.size / 1024)} KB`);
-      
+  // Start the server warmup service when the app loads
+  useEffect(() => {
+    const warmupServer = async () => {
       try {
-        // Use axios with timeout
-        const response = await api.post('/analyze', formData, {
-          timeout: 45000, // Explicitly set timeout for this request
-          onUploadProgress: progressEvent => {
-            const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-            console.log(`Upload progress: ${percentCompleted}%`);
-          }
-        });
-        
-        console.log("Analysis data received:", response.data);
-        
-        // Validate analysis data
-        if (response.data && 
-            response.data.success && 
-            Array.isArray(response.data.frames) && 
-            response.data.frames.length > 0) {
-          // Valid analysis data
-          setAnalysisData(response.data);
-        } else {
-          console.warn("Received invalid analysis data from backend", response.data);
-          
-          // Try local analysis as fallback
-          console.log("Falling back to local analysis due to invalid backend response");
-          const localAnalysisResult = await LocalAnalysis.analyzeVideo(videoBlob, videoUrl);
-          setAnalysisData(localAnalysisResult);
-          setUsingLocalAnalysis(true);
-          setError("Backend analysis returned invalid data. Using simplified local analysis instead.");
-        }
-      } catch (apiError) {
-        console.error("Backend analysis error:", apiError);
-        
-        // Extract error message
-        let errorMessage = "Unknown error";
-        let shouldTryLocalAnalysis = false;
-        
-        if (apiError.code === 'ECONNABORTED') {
-          // Check if we're hitting the 30s default timeout despite our 45s setting
-          const isDefaultTimeout = apiError.message.includes('timeout of 30000ms exceeded');
-          
-          if (isDefaultTimeout) {
-            console.warn("Warning: Default 30s timeout was used instead of configured 45s timeout!");
-            errorMessage = "Analysis took too long and timed out after 30 seconds (instead of expected 45s). Switching to local analysis mode.";
-          } else {
-            errorMessage = "Analysis took too long and timed out after 45 seconds. Switching to local analysis mode.";
-          }
-          shouldTryLocalAnalysis = true;
-        } else if (apiError.response) {
-          // Server responded with an error status
-          errorMessage = `Server error: ${apiError.response.status} ${apiError.response.statusText}`;
-          console.error("Server error details:", apiError.response.data);
-          shouldTryLocalAnalysis = true; // Also try local analysis for server errors
-        } else if (apiError.request) {
-          // Request was made but no response received
-          errorMessage = "No response from server. The backend may be offline or restarting.";
-          shouldTryLocalAnalysis = true; // Also try local analysis when server is unreachable
-        } else {
-          // Something else caused the error
-          errorMessage = apiError.message;
-        }
-        
-        // Try local analysis as fallback
-        if (shouldTryLocalAnalysis) {
-          console.log("Attempting local analysis as fallback...");
-          try {
-            const localAnalysisResult = await LocalAnalysis.analyzeVideo(videoBlob, videoUrl);
-            if (localAnalysisResult && localAnalysisResult.success) {
-              console.log("Local analysis succeeded:", localAnalysisResult);
-              setAnalysisData(localAnalysisResult);
-              setUsingLocalAnalysis(true);
-              setError("Using simplified local analysis due to backend timeout. Some advanced features may not be available.");
-              return;
-            } else {
-              console.error("Local analysis returned invalid data");
-              errorMessage += " Local analysis also failed.";
-            }
-          } catch (localError) {
-            console.error("Local analysis error:", localError);
-            // Continue with server error message, don't expose local error to user
-          }
-        }
-        
-        setError(errorMessage);
+        const isReady = await ServerWarmup.warmupServer(BACKEND_URL);
+        setServerReady(isReady);
+      } catch (err) {
+        console.error("Server warmup failed:", err);
+        setServerReady(false);
       }
-    } catch (error) {
-      console.error("General error in recording handling:", error);
-      setError(`Error: ${error.message || "Unknown error occurred"}`);
+    };
+    
+    warmupServer();
+  }, []);
+
+  // Handle when a recording is completed
+  const handleRecordingComplete = async (blob) => {
+    if (!blob || blob.size === 0) {
+      setError("Recording failed - no data captured");
+      return;
+    }
+    
+    setLoading(true);
+    setVideoBlob(blob);
+    const url = URL.createObjectURL(blob);
+    setVideoUrl(url);
+    setShowPlayback(true);
+    setIsAnalyzing(true);
+    setError(null);
+    setUsingLocalAnalysis(false);
+    
+    try {
+      const formData = new FormData();
+      formData.append('video', blob, 'squat_video.webm');
+      
+      // Send the video to the backend for analysis
+      console.log("Sending video to backend for analysis...");
+      const response = await api.post('/analyze', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+      
+      console.log("Analysis response:", response.data);
+      
+      if (response.data && response.data.landmarks) {
+        setAnalysisData(response.data);
+      } else {
+        throw new Error("Invalid response from server");
+      }
+      
+    } catch (apiError) {
+      console.error("API Error:", apiError);
+      
+      // Handle timeout errors specifically
+      if (apiError.code === 'ECONNABORTED') {
+        setError("Analysis took too long and timed out after 45 seconds.");
+        
+        // Try local analysis as a fallback
+        try {
+          console.log("Falling back to local analysis...");
+          setUsingLocalAnalysis(true);
+          
+          // Process the video locally
+          const localResults = await LocalAnalysis.analyzeVideo(blob);
+          
+          if (localResults && localResults.landmarks) {
+            setAnalysisData(localResults);
+            setError("Used local analysis mode due to server timeout. Results may be less accurate.");
+          } else {
+            throw new Error("Local analysis failed");
+          }
+        } catch (localError) {
+          console.error("Local analysis failed:", localError);
+          setError("Both remote and local analysis failed. Please try recording a shorter video or try again later.");
+        }
+      } else if (apiError.response) {
+        // Server returned an error
+        setError(`Analysis error: ${apiError.response.data.message || apiError.response.status}`);
+      } else {
+        // Network or other error
+        setError(`Analysis error: ${apiError.message || "Unknown error"}`);
+      }
     } finally {
+      setIsAnalyzing(false);
       setLoading(false);
     }
   };
 
+  // Handle going back to the recording screen
   const handleBackToRecord = () => {
     // Clean up resources
     if (videoUrl) {
       URL.revokeObjectURL(videoUrl);
     }
     
-    setVideoBlob(null);
+    // Reset state
     setVideoUrl(null);
+    setVideoBlob(null);
     setAnalysisData(null);
-    setError(null);
     setShowPlayback(false);
+    setError(null);
+    setIsAnalyzing(false);
     setUsingLocalAnalysis(false);
   };
 
   return (
-    <div className="min-h-screen bg-gray-100 py-8">
-      <div className="container mx-auto px-4">
+    <div className="min-h-screen" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
+      <div className="container mx-auto px-4 py-8">
         <Container>
           <Title>Columbia Squat Analyzer</Title>
           <LogosContainer>
@@ -316,24 +330,15 @@ const App = () => {
           )}
         </Container>
         
-        {loading && (
-          <div className="text-center mt-4 p-4 bg-blue-100 rounded">
-            <p className="font-semibold">Analyzing video...</p>
-            <p className="text-sm text-gray-600 mt-2">This can take up to 45 seconds on the free Render tier. Please be patient.</p>
-            {videoBlob && videoBlob.size > 3 * 1024 * 1024 && (
-              <p className="text-sm text-gray-600 mt-1">
-                <span className="font-medium">Video compression active:</span> Large videos are automatically compressed to improve analysis speed.
-              </p>
-            )}
-            {serverReady && (
-              <p className="text-sm text-green-600 mt-1">✓ Server is warmed up and ready</p>
-            )}
-            {!serverReady && (
-              <p className="text-sm text-orange-600 mt-1">⚠️ Server may be starting up (cold start)</p>
-            )}
+        {!serverReady && !showPlayback && (
+          <div className="text-center mt-4 p-3 bg-opacity-90 rounded-md" style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}>
+            <p className="text-sm">
+              Server is starting up... This can take 30-60 seconds if the server was inactive.
+              You can still record videos while waiting.
+            </p>
           </div>
         )}
-        </div>
+      </div>
     </div>
   );
 };
