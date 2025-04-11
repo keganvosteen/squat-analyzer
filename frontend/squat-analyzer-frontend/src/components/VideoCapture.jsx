@@ -13,13 +13,41 @@ import '@tensorflow/tfjs-backend-cpu';
 // API URL with fallback for local development
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://squat-analyzer-backend.onrender.com';
 
-// Initialize TensorFlow backend explicitly
+// Detect if device is mobile (for optimizations)
+const isMobileDevice = () => {
+  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+};
+
+// Initialize TensorFlow backend explicitly with improved mobile handling
 const initializeTensorFlow = async () => {
   // Try WebGL first, fallback to CPU if needed
   try {
+    console.log("Starting TensorFlow initialization...");
+    
+    // Set flags for better performance on mobile
+    const mobile = isMobileDevice();
+    
+    if (mobile) {
+      console.log("Mobile device detected, optimizing TensorFlow settings");
+      tf.env().set('WEBGL_FORCE_F16_TEXTURES', true);
+      tf.env().set('WEBGL_PACK', false);
+      tf.env().set('WEBGL_CPU_FORWARD', false);
+      tf.env().set('WEBGL_FLUSH_THRESHOLD', 1);
+    } else {
+      console.log("Desktop device detected, using standard TensorFlow settings");
+    }
+    
+    // Try WebGL first
     await tf.setBackend('webgl');
     await tf.ready();
     console.log('Using WebGL backend for TensorFlow.js');
+    console.log('WebGL version:', tf.env().get('WEBGL_VERSION'));
+    console.log('WebGL flags:', {
+      'WEBGL_FORCE_F16_TEXTURES': tf.env().get('WEBGL_FORCE_F16_TEXTURES'),
+      'WEBGL_PACK': tf.env().get('WEBGL_PACK'),
+      'WEBGL_CPU_FORWARD': tf.env().get('WEBGL_CPU_FORWARD'),
+      'WEBGL_FLUSH_THRESHOLD': tf.env().get('WEBGL_FLUSH_THRESHOLD')
+    });
     return true;
   } catch (error) {
     console.warn('WebGL backend failed, falling back to CPU:', error);
@@ -274,6 +302,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const detectorRef = useRef(null);
   const animationRef = useRef(null);
   const poseDetectionIdRef = useRef(null);
+  const debugLogRef = useRef([]);
   
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
@@ -289,16 +318,29 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const [isFrontFacing, setIsFrontFacing] = useState(true);
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [tfInitialized, setTfInitialized] = useState(false);
+  const [isMobile, setIsMobile] = useState(isMobileDevice());
+  const [debugMode, setDebugMode] = useState(false);
   
-  // Initialize TensorFlow on component mount - with better handling for mobile
+  // Debug logging function
+  const addDebugLog = (message) => {
+    const timestamp = new Date().toISOString();
+    const logMessage = `${timestamp}: ${message}`;
+    console.log(`DEBUG: ${logMessage}`);
+    debugLogRef.current = [...debugLogRef.current, logMessage].slice(-50); // Keep last 50 logs
+  };
+
+  // Initialize TensorFlow on component mount with better mobile handling
   useEffect(() => {
     let mounted = true;
     
     const initTF = async () => {
       try {
+        addDebugLog(`Starting TensorFlow initialization on ${isMobile ? 'mobile' : 'desktop'} device`);
         const success = await initializeTensorFlow();
         if (mounted) {
           setTfInitialized(success);
+          addDebugLog(`TensorFlow initialization ${success ? 'succeeded' : 'failed'}`);
+          
           if (!success) {
             console.warn("TensorFlow initialization failed, disabling pose tracking");
             setEnableLivePose(false);
@@ -307,6 +349,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         }
       } catch (err) {
         console.error("Failed to initialize TensorFlow:", err);
+        addDebugLog(`TensorFlow initialization error: ${err.message}`);
+        
         if (mounted) {
           setEnableLivePose(false);
           setError("Could not initialize pose detection. The live tracking feature will be disabled.");
@@ -370,7 +414,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           videoRef.current.srcObject = mediaStream;
           
           // Set up canvas for pose detection overlay once video is ready
-          videoRef.current.onloadedmetadata = () => {
+          videoRef.current.onloadedmetadata = async () => {
             if (canvasRef.current && videoRef.current) {
               canvasRef.current.width = videoRef.current.clientWidth;
               canvasRef.current.height = videoRef.current.clientHeight;
@@ -379,9 +423,27 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
               setIsInitializing(false);
               setIsCameraReady(true);
               
-              // Start pose detection if enabled and TensorFlow is initialized
-              if (enableLivePose && tfInitialized) {
-                startPoseDetection();
+              // Set loadedmetadata flag
+              if (videoRef.current.readyState >= 2) {
+                addDebugLog("Video metadata loaded successfully");
+                
+                // Try to start pose detection, even if enableLivePose is false
+                // This ensures the tracking is available when togglePoseTracking is used
+                if (tfInitialized || await initializeTensorFlow()) {
+                  addDebugLog("TensorFlow initialized, starting pose detection");
+                  setTfInitialized(true);
+                  
+                  // Force enabling live pose if it was disabled
+                  if (!enableLivePose) {
+                    addDebugLog("Enabling live pose tracking");
+                    setEnableLivePose(true);
+                  }
+                  
+                  // Start pose detection
+                  await startPoseDetection();
+                } else {
+                  addDebugLog("Could not initialize TensorFlow for pose detection");
+                }
               }
             }
             setIsLoading(false);
@@ -480,35 +542,67 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   // Modified startPoseDetection to handle errors better and use ref instead of state
   const startPoseDetection = async () => {
     if (!tfInitialized) {
-      console.warn("TensorFlow not initialized, skipping pose detection");
-      return;
+      console.warn("TensorFlow not initialized, attempting to initialize now");
+      addDebugLog("TensorFlow not initialized, attempting initialization");
+      
+      try {
+        const success = await initializeTensorFlow();
+        if (!success) {
+          console.error("Could not initialize TensorFlow");
+          addDebugLog("TensorFlow initialization failed");
+          setError("Could not initialize pose detection. Please try again or check if your device supports it.");
+          return;
+        }
+        
+        setTfInitialized(true);
+        addDebugLog("TensorFlow initialization succeeded");
+      } catch (err) {
+        console.error("TensorFlow initialization error:", err);
+        addDebugLog(`TensorFlow initialization error: ${err.message}`);
+        setError(`Pose detection initialization failed: ${err.message}`);
+        return;
+      }
     }
     
+    // Clear previous pose detection if any
+    if (poseDetectionIdRef.current) {
+      cancelAnimationFrame(poseDetectionIdRef.current);
+      poseDetectionIdRef.current = null;
+    }
+    
+    // Check for an existing detector
     if (detectorRef.current) {
-      console.log("Pose detector already initialized");
-      return;
+      console.log("Pose detector already initialized, reusing it");
+      addDebugLog("Reusing existing pose detector");
     }
     
     if (!videoRef.current || !canvasRef.current) {
       console.warn("Video or canvas refs not ready, can't start pose detection");
+      addDebugLog("Video or canvas refs not ready for pose detection");
       return;
     }
     
     try {
       console.log("Initializing pose detector...");
+      addDebugLog("Initializing pose detector");
       
       // Make sure TensorFlow is ready
       await tf.ready();
       
-      // Load the MoveNet model with more explicit error handling
-      const model = poseDetection.SupportedModels.MoveNet;
-      const detectorConfig = {
-        modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
-        enableSmoothing: true
-      };
-      
-      detectorRef.current = await poseDetection.createDetector(model, detectorConfig);
-      console.log("Pose detector initialized successfully");
+      // Only create a new detector if we don't have one
+      if (!detectorRef.current) {
+        // Load the MoveNet model with more explicit error handling
+        const model = poseDetection.SupportedModels.MoveNet;
+        const detectorConfig = {
+          modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+          enableSmoothing: true
+        };
+        
+        addDebugLog("Creating new pose detector with MoveNet model");
+        detectorRef.current = await poseDetection.createDetector(model, detectorConfig);
+        console.log("Pose detector initialized successfully");
+        addDebugLog("Pose detector created successfully");
+      }
       
       // Store canvas context for drawing
       const ctx = canvasRef.current.getContext('2d');
@@ -581,8 +675,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             const pose = poses[0]; // MoveNet detects a single pose
             
             // Draw connections between keypoints
-            ctx.strokeStyle = 'white';
-            ctx.lineWidth = 3;
+            ctx.strokeStyle = '#22ff00'; // Bright green color
+            ctx.lineWidth = 4; // Thicker lines
             
             // Only include relevant connections for squat analysis (exclude facial features)
             const relevantConnections = [
@@ -616,7 +710,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
               const startPoint = keypointMap[start];
               const endPoint = keypointMap[end];
               
-              if (startPoint && endPoint && startPoint.score > 0.4 && endPoint.score > 0.4) {
+              if (startPoint && endPoint && startPoint.score > 0.3 && endPoint.score > 0.3) { // Lower threshold for better visibility
                 const startPos = mapToCanvas(
                   startPoint.x / videoWidth, 
                   startPoint.y / videoHeight,
@@ -649,9 +743,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             ];
             
             // Draw only relevant keypoints
-            ctx.fillStyle = 'red';
+            ctx.fillStyle = '#ff2200'; // Bright red color
             pose.keypoints.forEach(keypoint => {
-              if (relevantKeypoints.includes(keypoint.name) && keypoint.score > 0.4) {
+              if (relevantKeypoints.includes(keypoint.name) && keypoint.score > 0.3) { // Lower threshold for better visibility
                 const pos = mapToCanvas(
                   keypoint.x / videoWidth, 
                   keypoint.y / videoHeight,
@@ -660,8 +754,13 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
                 );
                 
                 ctx.beginPath();
-                ctx.arc(pos.x, pos.y, 5, 0, 2 * Math.PI);
+                ctx.arc(pos.x, pos.y, 7, 0, 2 * Math.PI); // Larger circles
                 ctx.fill();
+                
+                // Add white outline to the points for better visibility
+                ctx.strokeStyle = 'white';
+                ctx.lineWidth = 2;
+                ctx.stroke();
               }
             });
 
@@ -669,41 +768,64 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             const rightHip = keypointMap['right_hip'];
             const rightKnee = keypointMap['right_knee'];
             const rightAnkle = keypointMap['right_ankle'];
+            const leftHip = keypointMap['left_hip'];
+            const leftKnee = keypointMap['left_knee']; 
+            const leftAnkle = keypointMap['left_ankle'];
 
-            // Display knee angle since it's critical for squat form
-            if (rightHip && rightKnee && rightAnkle && 
-                rightHip.score > 0.4 && rightKnee.score > 0.4 && rightAnkle.score > 0.4) {
-              // Calculate knee angle
-              const hip = { x: rightHip.x, y: rightHip.y };
-              const knee = { x: rightKnee.x, y: rightKnee.y };
-              const ankle = { x: rightAnkle.x, y: rightAnkle.y };
-              
-              const angle = calculateAngle(hip, knee, ankle);
-              
-              // Display angle
-              const kneePos = mapToCanvas(
-                rightKnee.x / videoWidth, 
-                rightKnee.y / videoHeight,
-                videoWidth, videoHeight, 
-                canvas.width, canvas.height
-              );
-              
-              ctx.font = '16px Arial';
-              ctx.fillStyle = 'white';
-              ctx.strokeStyle = 'black';
-              ctx.lineWidth = 3;
-              const text = `Knee: ${angle.toFixed(1)}°`;
-              ctx.strokeText(text, kneePos.x + 15, kneePos.y);
-              ctx.fillText(text, kneePos.x + 15, kneePos.y);
-              
-              // Add additional squat form feedback
-              if (angle < 90) {
-                const warningText = "Knees too bent";
-                ctx.fillStyle = 'yellow';
-                ctx.strokeText(warningText, kneePos.x + 15, kneePos.y + 25);
-                ctx.fillText(warningText, kneePos.x + 15, kneePos.y + 25);
+            // Helper function for drawing angle text
+            const drawAngleText = (hip, knee, ankle, side) => {
+              if (hip && knee && ankle && 
+                  hip.score > 0.3 && knee.score > 0.3 && ankle.score > 0.3) {
+                // Calculate angle
+                const hipPos = { x: hip.x, y: hip.y };
+                const kneePos = { x: knee.x, y: knee.y };
+                const anklePos = { x: ankle.x, y: ankle.y };
+                
+                const angle = calculateAngle(hipPos, kneePos, anklePos);
+                
+                // Map knee position to canvas
+                const kneePosCanvas = mapToCanvas(
+                  knee.x / videoWidth, 
+                  knee.y / videoHeight,
+                  videoWidth, videoHeight, 
+                  canvas.width, canvas.height
+                );
+                
+                // Draw angle with white text with black outline for better visibility
+                ctx.font = 'bold 18px Arial';
+                
+                // Text shadow for better visibility
+                ctx.lineWidth = 4;
+                ctx.strokeStyle = 'black';
+                ctx.strokeText(`${side} Knee: ${angle.toFixed(0)}°`, kneePosCanvas.x + 15, kneePosCanvas.y);
+                
+                // Angle color based on range (red if problematic, green if good)
+                if (angle < 70 || angle > 170) {
+                  ctx.fillStyle = '#ff3333'; // Red for bad angle
+                } else if (angle >= 90 && angle <= 110) {
+                  ctx.fillStyle = '#33ff33'; // Green for good 90° angle
+                } else {
+                  ctx.fillStyle = '#ffff33'; // Yellow for okay angle
+                }
+                
+                ctx.fillText(`${side} Knee: ${angle.toFixed(0)}°`, kneePosCanvas.x + 15, kneePosCanvas.y);
+                
+                // Add form feedback if needed
+                if (angle < 70) {
+                  ctx.fillStyle = '#ff3333';
+                  ctx.strokeText("Too bent", kneePosCanvas.x + 15, kneePosCanvas.y + 25);
+                  ctx.fillText("Too bent", kneePosCanvas.x + 15, kneePosCanvas.y + 25);
+                } else if (angle > 170) {
+                  ctx.fillStyle = '#ff3333';
+                  ctx.strokeText("Straighten more", kneePosCanvas.x + 15, kneePosCanvas.y + 25);
+                  ctx.fillText("Straighten more", kneePosCanvas.x + 15, kneePosCanvas.y + 25);
+                }
               }
-            }
+            };
+            
+            // Draw both knee angles
+            drawAngleText(rightHip, rightKnee, rightAnkle, "R");
+            drawAngleText(leftHip, leftKnee, leftAnkle, "L");
           }
         } catch (error) {
           console.error('Error in pose detection:', error);
@@ -775,21 +897,27 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   // Modified startRecording function to ensure it works even without pose detection
   const startRecording = async () => {
     console.log("Start recording button clicked");
+    addDebugLog("Starting recording process");
+    
     try {
       // Reset error state
       setError(null);
       
       // Check if camera is initialized, ensure camera is ready before proceeding
       if (!streamRef.current || !streamRef.current.active || !isCameraReady) {
+        addDebugLog("Camera not ready, initializing now");
         console.log("Camera not initialized or not ready, initializing now");
         await initializeCamera();
         
         // Double-check camera initialization after attempt
         if (!streamRef.current || !streamRef.current.active) {
-          throw new Error("Failed to initialize camera. Please refresh and try again.");
+          const errorMsg = "Failed to initialize camera. Please refresh and try again.";
+          addDebugLog(`Camera initialization failed: ${errorMsg}`);
+          throw new Error(errorMsg);
         }
       }
       
+      addDebugLog("Camera ready, creating MediaRecorder");
       console.log("Stream active, initializing recorder");
       
       // Clear previous chunks
@@ -798,19 +926,26 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Check for supported MIME types
       const mimeType = getSupportedMimeType();
       if (!mimeType) {
-        setError("Your browser doesn't support video recording. Please try a different browser.");
+        const errorMsg = "Your browser doesn't support video recording. Please try a different browser.";
+        addDebugLog(`No supported MIME type found: ${errorMsg}`);
+        setError(errorMsg);
         return;
       }
+      
+      addDebugLog(`Using MIME type: ${mimeType}`);
       
       // Create a new MediaRecorder instance with more robust error handling
       try {
         mediaRecorderRef.current = new MediaRecorder(streamRef.current, { 
           mimeType,
-          videoBitsPerSecond: 2000000, // 2 Mbps - optimized for squat analysis
+          videoBitsPerSecond: isMobile ? 1500000 : 2000000, // Lower bitrate for mobile
           audioBitsPerSecond: 0 // No audio
         });
+        
+        addDebugLog("MediaRecorder created successfully");
       } catch (recorderError) {
         console.error("MediaRecorder creation failed:", recorderError);
+        addDebugLog(`MediaRecorder creation failed: ${recorderError.message}`);
         setError("Could not create video recorder. Please try a different browser.");
         return;
       }
@@ -820,11 +955,13 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         console.log("Data available event, size:", event.data.size);
         if (event.data && event.data.size > 0) {
           recordedChunksRef.current.push(event.data);
+          addDebugLog(`Received data chunk: ${Math.round(event.data.size / 1024)}KB`);
         }
       };
       
       // Setup stop handler
       mediaRecorderRef.current.onstop = () => {
+        addDebugLog(`MediaRecorder stopped, chunks: ${recordedChunksRef.current.length}`);
         console.log("MediaRecorder onstop event fired, chunks:", recordedChunksRef.current.length);
         
         try {
@@ -836,6 +973,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           
           if (recordedChunksRef.current.length === 0) {
             console.error("No data chunks were recorded");
+            addDebugLog("No data chunks were recorded");
             setError("No video data was recorded. Please try again.");
             return;
           }
@@ -843,37 +981,47 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           // Create blob from chunks
           const blob = new Blob(recordedChunksRef.current, { type: mimeType });
           console.log("Created video blob:", blob.type, "size:", Math.round(blob.size / 1024), "KB");
+          addDebugLog(`Created video blob: ${blob.type}, size: ${Math.round(blob.size / 1024)}KB`);
           
           if (blob.size > 0) {
             // Process the recording - ensure this callback is called
             console.log("Processing recorded video");
             // Add small timeout to ensure UI updates before heavy processing begins
             setTimeout(() => {
-              // Compress video if it's larger than 3MB for better backend processing
-              if (blob.size > 3 * 1024 * 1024) {
+              // Compress video if it's larger than threshold (lower for mobile)
+              const compressionThreshold = isMobile ? 2 * 1024 * 1024 : 3 * 1024 * 1024;
+              
+              if (blob.size > compressionThreshold) {
+                addDebugLog(`Large video detected (${Math.round(blob.size/1024)}KB), compressing`);
                 console.log("Large video detected, compressing before sending to backend");
                 compressVideo(blob).then(compressedBlob => {
                   console.log(`Compressed video from ${Math.round(blob.size/1024)}KB to ${Math.round(compressedBlob.size/1024)}KB`);
+                  addDebugLog(`Compression complete: ${Math.round(blob.size/1024)}KB → ${Math.round(compressedBlob.size/1024)}KB`);
                   onRecordingComplete(compressedBlob);
                 }).catch(error => {
                   console.error("Video compression failed, using original:", error);
+                  addDebugLog(`Compression failed: ${error.message}, using original`);
                   onRecordingComplete(blob);
                 });
               } else {
+                addDebugLog("Video size acceptable, sending without compression");
                 onRecordingComplete(blob);
               }
             }, 100);
           } else {
+            addDebugLog("Recording failed - blob size is 0");
             setError("Recording failed - no data captured");
           }
         } catch (error) {
           console.error("Error in onstop handler:", error);
+          addDebugLog(`Error in onstop handler: ${error.message}`);
           setError(`Recording error: ${error.message || 'Unknown error processing recording'}`);
         }
       };
       
       // Start recording with timeslice of 200ms to ensure frequent ondataavailable events
       mediaRecorderRef.current.start(200);
+      addDebugLog("MediaRecorder started with 200ms timeslice");
       console.log("MediaRecorder started successfully");
       
       // Start the timer for UI
@@ -882,6 +1030,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
     } catch (error) {
       console.error("Error starting recording:", error);
+      addDebugLog(`Recording start error: ${error.message}`);
       stopTimer();
       setIsRecording(false);
       setError(`Recording error: ${error.message}`);
@@ -1081,9 +1230,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             const processFrame = () => {
               if (video.ended || video.paused) {
                 recorder.stop();
-      return;
-    }
-    
+                return;
+              }
+              
               // Draw the current frame at the reduced resolution
               ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
               
@@ -1129,6 +1278,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
 
   // Properly define stopPoseDetection function to use the ref
   const stopPoseDetection = () => {
+    addDebugLog("Stopping pose detection");
     if (poseDetectionIdRef.current) {
       cancelAnimationFrame(poseDetectionIdRef.current);
       poseDetectionIdRef.current = null;
@@ -1141,6 +1291,59 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       console.log("Cleaning up pose detector");
       // No explicit cleanup needed for MoveNet detector
       detectorRef.current = null;
+    }
+  };
+
+  // Toggle camera between front and back
+  const switchCamera = async () => {
+    addDebugLog(`Switching camera from ${isFrontFacing ? 'front' : 'back'} to ${isFrontFacing ? 'back' : 'front'}`);
+    
+    // Stop current stream and detection
+    stopPoseDetection();
+    
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
+    }
+    
+    // Toggle camera facing mode
+    setIsFrontFacing(!isFrontFacing);
+    
+    // Short timeout to ensure state is updated before reinitializing
+    setTimeout(() => {
+      initializeCamera();
+    }, 300);
+  };
+
+  // Toggle pose tracking
+  const togglePoseTracking = async () => {
+    addDebugLog(`Toggling pose tracking from ${enableLivePose ? 'on' : 'off'} to ${enableLivePose ? 'off' : 'on'}`);
+    
+    if (!enableLivePose) {
+      // Turning tracking on
+      setEnableLivePose(true);
+      
+      // If TensorFlow isn't initialized, try to initialize it
+      if (!tfInitialized) {
+        const success = await initializeTensorFlow();
+        setTfInitialized(success);
+        if (!success) {
+          setError("Could not initialize pose detection. Please try again.");
+          return;
+        }
+      }
+      
+      // Make sure detector is initialized and start pose detection
+      if (!detectorRef.current) {
+        console.log("Starting pose detection");
+        startPoseDetection();
+      } else {
+        console.log("Pose detector already initialized");
+      }
+    } else {
+      // Turning tracking off
+      setEnableLivePose(false);
+      stopPoseDetection();
     }
   };
 
@@ -1245,10 +1448,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         <div className="flex items-center justify-between p-2 bg-gray-900">
           <div className="flex gap-2">
             <button
-              onClick={() => {
-                setIsFrontFacing(!isFrontFacing);
-                setTimeout(initializeCamera, 100);
-              }}
+              onClick={switchCamera}
               className="bg-gray-700 text-white px-3 py-1 rounded-md hover:bg-gray-600 transition flex items-center gap-1"
               title={isFrontFacing ? "Switch to back camera" : "Switch to front camera"}
               disabled={isLoading || isRecording}
@@ -1258,51 +1458,36 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
               </svg>
               {isFrontFacing ? "Back" : "Front"}
             </button>
-            <button
-              onClick={() => {
-                setEnableLivePose(!enableLivePose);
-                if (!enableLivePose && tfInitialized) {
-                  // Turning pose tracking on
-                  startPoseDetection();
-                } else if (enableLivePose) {
-                  // Turning pose tracking off
-                  stopPoseDetection();
-                }
-              }}
-              className={`px-3 py-1 rounded-md hover:bg-gray-600 transition flex items-center gap-1
-                ${enableLivePose ? 'bg-blue-600 text-white' : 'bg-gray-700 text-white'}`}
-              title={enableLivePose ? "Disable pose tracking" : "Enable pose tracking"}
-              disabled={!tfInitialized || isLoading || isRecording}
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
-              </svg>
-              {enableLivePose ? "Tracking On" : "Tracking Off"}
-            </button>
-          </div>
-          <div>
-            {!isRecording ? (
+            {tfInitialized && (
               <button
-                onClick={startRecording}
-                disabled={isLoading}
-                className={`px-4 py-2 rounded-md flex items-center gap-2 transition ${
-                  isLoading 
-                    ? 'bg-gray-500 cursor-not-allowed' 
-                    : 'bg-red-600 hover:bg-red-700 text-white'
-                }`}
+                onClick={togglePoseTracking}
+                className={`px-3 py-1 rounded-md hover:bg-gray-600 transition flex items-center gap-1
+                  ${enableLivePose ? 'bg-blue-600 text-white' : 'bg-gray-700 text-white'}`}
+                title={enableLivePose ? "Disable pose tracking" : "Enable pose tracking"}
+                disabled={!tfInitialized || isLoading || isRecording}
               >
-                <div className="w-3 h-3 rounded-full bg-white"></div>
-                {isLoading ? 'Loading...' : 'Record'}
-              </button>
-            ) : (
-              <button
-                onClick={stopRecording}
-                className="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-md flex items-center gap-2 transition"
-              >
-                <div className="w-3 h-3 rounded bg-white"></div>
-                Stop
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
+                </svg>
+                {enableLivePose ? "Tracking On" : "Tracking Off"}
               </button>
             )}
+          </div>
+          <div>
+            <button
+              onClick={isRecording ? stopRecording : startRecording}
+              disabled={isLoading}
+              className={`px-4 py-2 rounded-md flex items-center gap-2 transition ${
+                isLoading 
+                  ? 'bg-gray-500 cursor-not-allowed' 
+                  : isRecording
+                    ? 'bg-gray-600 hover:bg-gray-700 text-white'
+                    : 'bg-red-600 hover:bg-red-700 text-white'
+              }`}
+            >
+              <div className={`w-3 h-3 ${isRecording ? 'rounded' : 'rounded-full'} bg-white`}></div>
+              {isLoading ? 'Loading...' : isRecording ? 'Stop' : 'Record'}
+            </button>
           </div>
         </div>
 
@@ -1317,12 +1502,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           ></video>
           
           {/* Pose overlay canvas */}
-          {enableLivePose && (
-            <PoseCanvas
-              ref={canvasRef}
-              className="absolute top-0 left-0 w-full h-full pointer-events-none"
-            />
-          )}
+          <PoseCanvas
+            ref={canvasRef}
+            className="absolute top-0 left-0 w-full h-full pointer-events-none"
+          />
           
           {/* Record indicator */}
           {isRecording && (
@@ -1338,6 +1521,26 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       {error && (
         <div className="mt-4 p-3 bg-red-500 text-white rounded-md">
           {error}
+          {isMobile && (
+            <div className="mt-2 text-sm">
+              <button 
+                onClick={() => setDebugMode(!debugMode)} 
+                className="underline"
+              >
+                Show debug info
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      
+      {/* Debug info for mobile troubleshooting */}
+      {debugMode && isMobile && (
+        <div className="mt-4 p-3 bg-gray-800 text-white rounded-md text-xs overflow-auto max-h-40">
+          <div className="font-bold mb-1">Debug Log:</div>
+          {debugLogRef.current.map((log, i) => (
+            <div key={i} className="mb-1">{log}</div>
+          ))}
         </div>
       )}
       
