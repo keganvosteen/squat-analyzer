@@ -37,19 +37,20 @@ const Container = styled.div`
 const Title = styled.h1`
   text-align: center;
   color: var(--text-primary);
-  margin-bottom: 2rem;
+  margin-bottom: 1rem;
+  font-size: 2.5rem;
 `;
 
 const LogosContainer = styled.div`
   display: flex;
   justify-content: center;
   gap: 40px;
-  margin-bottom: 2rem;
+  margin-bottom: 1rem;
   align-items: center;
 `;
 
 const Logo = styled.img`
-  height: 50px;
+  height: 80px;
   width: auto;
   object-fit: contain;
 `;
@@ -240,7 +241,6 @@ const App = () => {
     <div className="min-h-screen" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
       <div className="container mx-auto px-4 py-8">
         <Container>
-          <Title>Columbia Squat Analyzer</Title>
           <LogosContainer>
             {logoError ? (
               <>
@@ -262,6 +262,7 @@ const App = () => {
               </>
             )}
           </LogosContainer>
+          <Title>SmartSquat</Title>
           
           {!showPlayback ? (
             <VideoCapture onRecordingComplete={handleRecordingComplete} />

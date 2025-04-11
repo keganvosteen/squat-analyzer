@@ -155,110 +155,30 @@ const CameraPermissionMessage = styled.div`
 
 const RecordingIndicator = styled.div`
   position: absolute;
-  top: 0;
-  right: 0;
-  background-color: ${props => props.isRecording ? '#ff4136' : '#4CAF50'};
+  top: 16px;
+  right: 16px;
+  background-color: rgba(0, 0, 0, 0.6);
   color: white;
-  padding: 5px 10px;
-  border-radius: 5px;
-  margin: 10px;
-  display: ${props => props.isRecording ? 'flex' : 'none'};
-  align-items: center;
-  gap: 5px;
-  animation: ${props => props.isRecording ? 'blink 1.5s ease-in-out infinite' : 'none'};
-  
-  @keyframes blink {
-    0% { opacity: 1; }
-    50% { opacity: 0.4; }
-    100% { opacity: 1; }
-  }
-`;
-
-const RecordingTimer = styled.div`
-  position: absolute;
-  bottom: 0;
-  right: 0;
-  background-color: rgba(0, 0, 0, 0.5);
-  color: white;
-  padding: 5px 10px;
-  border-radius: 5px;
-  margin: 10px;
-`;
-
-const ControlsContainer = styled.div`
+  padding: 8px 16px;
+  border-radius: 20px;
   display: flex;
-  gap: 10px;
-  justify-content: center;
-  margin-top: 20px;
+  align-items: center;
+  gap: 8px;
+  z-index: 10;
 `;
 
-const RecordButton = styled.button`
-  padding: 10px 20px;
-  border-radius: 5px;
-  border: none;
-  background-color: ${props => props.disabled ? '#cccccc' : '#ff4136'};
-  color: white;
-  cursor: pointer;
-  font-size: 16px;
-  
-  &:hover {
-    opacity: 0.9;
-  }
-  
-  &:disabled {
-    background-color: #cccccc;
-    cursor: not-allowed;
-  }
-`;
-
-const StopButton = styled.button`
-  padding: 10px 20px;
-  border-radius: 5px;
-  border: none;
-  background-color: #ff4136;
-  color: white;
-  cursor: pointer;
-  font-size: 16px;
-  
-  &:hover {
-    opacity: 0.9;
-  }
-`;
-
-const InstructionsContainer = styled.div`
-  margin-top: 20px;
-  padding: 20px;
-  background-color: #f0f0f0;
-  border-radius: 5px;
-  text-align: left;
-
-  h3 {
-    margin-bottom: 10px;
-  }
-
-  ol, ul {
-    padding-left: 20px;
-    margin-bottom: 15px;
-  }
-
-  li {
-    margin-bottom: 5px;
-  }
-
-  .tips-section {
-    margin-top: 15px;
-    border-top: 1px solid #ddd;
-    padding-top: 15px;
-  }
-`;
-
-// Add a blinking circle component for the recording indicator
 const RecordingDot = styled.div`
   width: 12px;
   height: 12px;
-  background-color: #ff4136;
+  background-color: #ff0000;
   border-radius: 50%;
-  display: inline-block;
+  animation: blink 1s infinite ease-in-out;
+  
+  @keyframes blink {
+    0% { opacity: 1; }
+    50% { opacity: 0.3; }
+    100% { opacity: 1; }
+  }
 `;
 
 const VideoPreview = styled.video`
@@ -288,6 +208,91 @@ const CanvasOverlay = styled.canvas`
   width: 100%;
   height: 100%;
   pointer-events: none;
+`;
+
+const ControlButton = styled.button`
+  min-width: 120px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  color: white;
+  
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+`;
+
+const RecordButtonContainer = styled.div`
+  display: flex;
+  justify-content: center;
+  margin-top: 20px;
+`;
+
+const RecordButton = styled.button`
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background-color: ${props => props.isRecording ? '#666' : '#ff0000'};
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+  transition: all 0.2s ease;
+  position: relative;
+  
+  &:hover {
+    transform: scale(1.05);
+  }
+  
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  
+  &::after {
+    content: '';
+    display: block;
+    width: ${props => props.isRecording ? '20px' : '30px'};
+    height: ${props => props.isRecording ? '20px' : '30px'};
+    border-radius: ${props => props.isRecording ? '4px' : '50%'};
+    background-color: ${props => props.isRecording ? 'white' : '#ff0000'};
+    transition: all 0.2s ease;
+  }
+`;
+
+const InstructionsContainer = styled.div`
+  margin-top: 20px;
+  padding: 20px;
+  background-color: #f0f0f0;
+  border-radius: 5px;
+  text-align: left;
+
+  h3 {
+    margin-bottom: 10px;
+  }
+
+  ol, ul {
+    padding-left: 20px;
+    margin-bottom: 15px;
+  }
+
+  li {
+    margin-bottom: 5px;
+  }
+
+  .tips-section {
+    margin-top: 15px;
+    border-top: 1px solid #ddd;
+    padding-top: 15px;
+  }
 `;
 
 const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
@@ -1536,45 +1541,32 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         {/* Camera controls */}
         <div className="flex items-center justify-between p-2 bg-gray-900">
           <div className="flex gap-2">
-            <button
+            <ControlButton
               onClick={switchCamera}
-              className="bg-gray-700 text-white px-3 py-1 rounded-md hover:bg-gray-600 transition flex items-center gap-1"
-              title={isFrontFacing ? "Switch to back camera" : "Switch to front camera"}
+              className={`bg-gray-700 hover:bg-gray-600`}
+              title="Switch between front and rear cameras"
               disabled={isLoading || isRecording}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" />
-              </svg>
-              {isFrontFacing ? "Back" : "Front"}
-            </button>
-            <button
+              <RefreshCw size={18} />
+              Swap Camera
+            </ControlButton>
+            
+            <ControlButton
               onClick={togglePoseTracking}
-              className={`px-3 py-1 rounded-md hover:bg-gray-600 transition flex items-center gap-1
-                ${enableLivePose ? 'bg-blue-600 text-white' : 'bg-gray-700 text-white'}`}
+              className={`${enableLivePose ? 'bg-blue-600 hover:bg-blue-500' : 'bg-gray-700 hover:bg-gray-600'}`}
               title={enableLivePose ? "Disable pose tracking" : "Enable pose tracking"}
               disabled={isLoading || isRecording}
             >
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" />
+              {/* Stick figure icon */}
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="12" cy="5" r="3" stroke="currentColor" strokeWidth="2"/>
+                <line x1="12" y1="8" x2="12" y2="14" stroke="currentColor" strokeWidth="2"/>
+                <line x1="8" y1="10" x2="16" y2="10" stroke="currentColor" strokeWidth="2"/>
+                <line x1="12" y1="14" x2="9" y2="20" stroke="currentColor" strokeWidth="2"/>
+                <line x1="12" y1="14" x2="15" y2="20" stroke="currentColor" strokeWidth="2"/>
               </svg>
-              {enableLivePose ? "Tracking On" : "Tracking Off"}
-            </button>
-          </div>
-          <div>
-            <button
-              onClick={isRecording ? stopRecording : startRecording}
-              disabled={isLoading}
-              className={`px-4 py-2 rounded-md flex items-center gap-2 transition ${
-                isLoading 
-                  ? 'bg-gray-500 cursor-not-allowed' 
-                  : isRecording
-                    ? 'bg-gray-600 hover:bg-gray-700 text-white'
-                    : 'bg-red-600 hover:bg-red-700 text-white'
-              }`}
-            >
-              <div className={`w-3 h-3 ${isRecording ? 'rounded' : 'rounded-full'} bg-white`}></div>
-              {isLoading ? 'Loading...' : isRecording ? 'Stop' : 'Record'}
-            </button>
+              Live Tracking
+            </ControlButton>
           </div>
         </div>
 
@@ -1594,15 +1586,26 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             className="absolute top-0 left-0 w-full h-full pointer-events-none"
           />
           
-          {/* Record indicator */}
+          {/* Recording indicator - flashing red dot */}
           {isRecording && (
-            <div className="absolute top-4 right-4 flex items-center gap-2 bg-black bg-opacity-50 px-3 py-1 rounded-full">
-              <div className="w-3 h-3 rounded-full bg-red-600 animate-pulse"></div>
-              <span className="text-white text-sm font-medium">Recording</span>
-            </div>
+            <RecordingIndicator>
+              <RecordingDot />
+              <span>Recording</span>
+            </RecordingIndicator>
           )}
         </div>
       </div>
+      
+      {/* Record button below video */}
+      <RecordButtonContainer>
+        <RecordButton 
+          onClick={isRecording ? stopRecording : startRecording}
+          disabled={isLoading}
+          isRecording={isRecording}
+          title={isRecording ? "Stop recording" : "Start recording"}
+          aria-label={isRecording ? "Stop recording" : "Start recording"}
+        />
+      </RecordButtonContainer>
 
       {/* Error message */}
       {error && (
@@ -1631,7 +1634,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         </div>
       )}
       
-      {/* Debug info for troubleshooting */}
+      {/* Debug info */}
       {debugMode && (
         <div className="mt-4 p-3 bg-gray-800 text-white rounded-md text-xs overflow-auto max-h-60">
           <div className="font-bold mb-1">Debug Log:</div>
