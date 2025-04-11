@@ -273,6 +273,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const timerRef = useRef(null);
   const detectorRef = useRef(null);
   const animationRef = useRef(null);
+  const poseDetectionIdRef = useRef(null);
   
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
@@ -285,7 +286,6 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const [recordedBlob, setRecordedBlob] = useState(null);
   const [playbackRef, setPlaybackRef] = useState(null);
   const [enableLivePose, setEnableLivePose] = useState(true);
-  const [poseDetectionId, setPoseDetectionId] = useState(null);
   const [isFrontFacing, setIsFrontFacing] = useState(true);
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [tfInitialized, setTfInitialized] = useState(false);
@@ -477,7 +477,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     return isLandscape ? 'landscape' : 'portrait';
   };
 
-  // Modified startPoseDetection to handle errors better
+  // Modified startPoseDetection to handle errors better and use ref instead of state
   const startPoseDetection = async () => {
     if (!tfInitialized) {
       console.warn("TensorFlow not initialized, skipping pose detection");
@@ -709,13 +709,14 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           console.error('Error in pose detection:', error);
         }
         
-        // Schedule next frame
-        poseDetectionId.current = requestAnimationFrame(detectAndDraw);
+        // Schedule next frame using the ref
+        poseDetectionIdRef.current = requestAnimationFrame(detectAndDraw);
       };
       
-      // Start detection loop
-      if (typeof poseDetectionId.current === 'undefined' || poseDetectionId.current === null) {
-        poseDetectionId.current = requestAnimationFrame(detectAndDraw);
+      // Start detection loop using the ref
+      if (!poseDetectionIdRef.current) {
+        poseDetectionIdRef.current = requestAnimationFrame(detectAndDraw);
+        setIsPoseTracking(true);
       }
     } catch (err) {
       console.error("Error initializing pose detector:", err);
@@ -1126,18 +1127,20 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     return `${mins}:${secs}`;
   };
 
-  // Properly define stopPoseDetection function that's referenced but not implemented
+  // Properly define stopPoseDetection function to use the ref
   const stopPoseDetection = () => {
-    if (poseDetectionId.current) {
-      cancelAnimationFrame(poseDetectionId.current);
-      poseDetectionId.current = null;
+    if (poseDetectionIdRef.current) {
+      cancelAnimationFrame(poseDetectionIdRef.current);
+      poseDetectionIdRef.current = null;
       console.log("Pose detection stopped");
+      setIsPoseTracking(false);
     }
     
     // Clean up the detector reference if needed
     if (detectorRef.current) {
       console.log("Cleaning up pose detector");
       // No explicit cleanup needed for MoveNet detector
+      detectorRef.current = null;
     }
   };
 

@@ -6,16 +6,26 @@
  * This is a simplified version that provides basic analysis
  * 
  * @param {Blob} videoBlob - The recorded video blob
- * @param {string} videoUrl - The URL of the video blob
+ * @param {string} [videoUrl] - Optional URL of the video blob - will be created if not provided
  * @returns {Promise<Object>} A simplified analysis data object
  */
 const analyzeVideo = async (videoBlob, videoUrl) => {
   console.log("Performing local analysis on video...");
   
   try {
+    // Create URL from blob if not provided
+    let urlToUse = videoUrl;
+    let needsCleanup = false;
+    
+    if (!urlToUse) {
+      urlToUse = URL.createObjectURL(videoBlob);
+      needsCleanup = true;
+      console.log("Created video URL from blob for local analysis");
+    }
+    
     // Create a video element to extract frames
     const video = document.createElement('video');
-    video.src = videoUrl;
+    video.src = urlToUse;
     video.muted = true;
     
     // Wait for video metadata to load
@@ -64,6 +74,7 @@ const analyzeVideo = async (videoBlob, videoUrl) => {
       success: true,
       fps: 3,
       frame_count: frameCount,
+      landmarks: [], // Add a top-level landmarks array to match backend response
       frames: []
     };
     
@@ -89,8 +100,15 @@ const analyzeVideo = async (videoBlob, videoUrl) => {
       });
     }
     
+    // Add the first frame's landmarks to the top level for compatibility
+    if (analysisData.frames.length > 0) {
+      analysisData.landmarks = analysisData.frames[0].landmarks;
+    }
+    
     // Clean up
-    URL.revokeObjectURL(video.src);
+    if (needsCleanup) {
+      URL.revokeObjectURL(urlToUse);
+    }
     
     console.log("Local analysis complete with simulated data");
     return analysisData;
@@ -108,17 +126,19 @@ const analyzeVideo = async (videoBlob, videoUrl) => {
       success: true,
       fps: 3,
       frame_count: frameCount,
+      landmarks: [], // Add this for compatibility
       frames: []
     };
     
     // Generate completely simulated frames
     for (let i = 0; i < frameCount; i++) {
       const timePoint = i * (simulatedDuration / frameCount);
+      const landmarks = generateSimplifiedLandmarks(i, timePoint);
       
       fallbackData.frames.push({
         frame: i,
         timestamp: timePoint,
-        landmarks: generateSimplifiedLandmarks(i, timePoint),
+        landmarks: landmarks,
         measurements: {
           kneeAngle: 90 + 30 * Math.sin(i / frameCount * Math.PI),
           depthRatio: 0.5 + 0.2 * Math.sin(i / frameCount * Math.PI * 2),
@@ -131,6 +151,11 @@ const analyzeVideo = async (videoBlob, videoUrl) => {
           message: i % 2 === 0 ? 'Keep your back straight' : 'Knees should align with feet'
         }] : []
       });
+    }
+    
+    // Add the first frame's landmarks to the top level
+    if (fallbackData.frames.length > 0) {
+      fallbackData.landmarks = fallbackData.frames[0].landmarks;
     }
     
     return fallbackData;
