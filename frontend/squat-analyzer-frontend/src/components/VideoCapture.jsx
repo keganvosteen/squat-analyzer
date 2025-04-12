@@ -1141,32 +1141,55 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       stopTimer();
       recordedChunksRef.current = [];
       
-      // Try to find a supported MIME type
-      const mimeTypes = [
-        'video/webm;codecs=vp8,opus',
-        'video/webm;codecs=vp9,opus',
-        'video/webm;codecs=h264,opus',
-        'video/webm',
-        'video/mp4'
-      ];
+      // Detect browser type for special handling
+      const userAgent = navigator.userAgent;
+      const isSafari = /^((?!chrome|android).)*safari/i.test(userAgent);
+      const isIOS = /iPad|iPhone|iPod/.test(userAgent) && !window.MSStream;
       
-      // Special handling for iOS (Safari)
-      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-      if (isIOS) {
-        // iOS Safari prefers MP4
-        mimeTypes.unshift('video/mp4');
-        addDebugLog('iOS device detected, prioritizing MP4 format');
+      if (isSafari || isIOS) {
+        addDebugLog(`Safari/iOS detected: ${isIOS ? 'iOS' : 'Safari'}`);
       }
       
+      // Try to find a supported MIME type
+      // Safari and iOS need special handling
       let mimeType = '';
       
-      // Find first supported MIME type
-      for (const type of mimeTypes) {
-        if (MediaRecorder.isTypeSupported(type)) {
-          mimeType = type;
-          console.log(`Found supported MIME type: ${mimeType}`);
-          addDebugLog(`Using MIME type: ${mimeType}`);
-          break;
+      if (isIOS) {
+        // iOS Safari is very picky - check both MP4 and WebM
+        addDebugLog('iOS device detected, checking supported formats');
+        
+        const iOSMimeTypes = ['video/mp4', 'video/webm'];
+        for (const type of iOSMimeTypes) {
+          if (MediaRecorder.isTypeSupported(type)) {
+            mimeType = type;
+            console.log(`iOS supported MIME type: ${mimeType}`);
+            addDebugLog(`iOS supported MIME type: ${mimeType}`);
+            break;
+          }
+        }
+        
+        // If nothing works on iOS, we'll need to use screen recording as a fallback
+        if (!mimeType) {
+          addDebugLog('No supported MIME types found on iOS, using fallback');
+          setError('Recording may not work on this iOS device. Please try using Safari or Chrome on desktop.');
+        }
+      } else {
+        // For other browsers
+        const mimeTypes = [
+          'video/webm;codecs=vp8,opus',
+          'video/webm;codecs=vp9,opus',
+          'video/webm;codecs=h264,opus',
+          'video/webm',
+          'video/mp4'
+        ];
+        
+        for (const type of mimeTypes) {
+          if (MediaRecorder.isTypeSupported(type)) {
+            mimeType = type;
+            console.log(`Found supported MIME type: ${mimeType}`);
+            addDebugLog(`Using MIME type: ${mimeType}`);
+            break;
+          }
         }
       }
       
@@ -1178,7 +1201,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Set MediaRecorder options with mobile-optimized settings
       const options = mimeType ? 
         { 
-          mimeType, 
+          mimeType,
           videoBitsPerSecond: isMobile ? 1000000 : 2000000 // Lower bitrate for mobile
         } : {};
       
@@ -1213,7 +1236,44 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         if (chunks.length === 0) {
           console.log('No data chunks were recorded');
           addDebugLog('No data chunks were recorded');
-          setError('No video data was captured. Please try again or use a different browser.');
+          
+          // Safari sometimes fails silently, so try using a manual frame capture as fallback
+          if (isSafari || isIOS) {
+            try {
+              addDebugLog('Attempting Safari fallback with canvas capture');
+              
+              // Create a canvas with the current video frame
+              const canvas = document.createElement('canvas');
+              const video = videoRef.current;
+              
+              if (video) {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                const ctx = canvas.getContext('2d');
+                
+                // Draw the current video frame
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                // Convert to image/png
+                canvas.toBlob((blob) => {
+                  if (blob) {
+                    addDebugLog(`Created image/png fallback: ${blob.size} bytes`);
+                    onRecordingComplete(blob);
+                  } else {
+                    setError('Recording failed: No video data captured. Please try a different browser.');
+                  }
+                }, 'image/png');
+              } else {
+                setError('Recording failed: No video data captured. Please try a different browser.');
+              }
+            } catch (fallbackError) {
+              addDebugLog(`Safari fallback failed: ${fallbackError.message}`);
+              setError('Recording failed on this device. Please try a different browser or device.');
+            }
+          } else {
+            setError('No video data was captured. Please try again or use a different browser.');
+          }
+          
           setIsRecording(false);
           return;
         }
@@ -1263,7 +1323,11 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       // First update the UI state
       setIsRecording(true);
-      setRecordingStartTime(Date.now());
+      
+      // Set recording start time - use Date.now() directly rather than state variable
+      // This fixes the Chrome Mobile error with setRecordingStartTime
+      const recordingStartTime = Date.now();
+      addDebugLog(`Recording started at timestamp: ${recordingStartTime}`);
       
       // Generate a recording ID using the existing sessionIdRef
       addDebugLog(`Using session ID for recording: ${sessionIdRef.current}`);
@@ -1272,8 +1336,31 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       startTimer();
       
       // IMPORTANT: Start MediaRecorder AFTER attaching all event handlers
-      // Use a longer timeslice to reduce the number of small chunks
-      const timeslice = isMobile ? 2000 : 1000; // Longer slices on mobile
+      // Special handling for Safari/iOS
+      let timeslice = isMobile ? 2000 : 1000; // Longer slices on mobile
+      
+      if (isSafari || isIOS) {
+        // Safari needs even larger chunks
+        timeslice = 3000; 
+        addDebugLog(`Safari/iOS detected, using ${timeslice}ms timeslice`);
+        
+        // Safari sometimes needs a manual data request
+        const safariInterval = setInterval(() => {
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+            mediaRecorderRef.current.requestData();
+            addDebugLog('Safari: manually requested data');
+          } else {
+            clearInterval(safariInterval);
+          }
+        }, timeslice);
+        
+        // Clean up interval after 30 seconds max
+        setTimeout(() => {
+          clearInterval(safariInterval);
+        }, 30000);
+      }
+      
+      // Start the recording
       mediaRecorderRef.current.start(timeslice);
       addDebugLog(`MediaRecorder started with ${timeslice}ms timeslice`);
       
