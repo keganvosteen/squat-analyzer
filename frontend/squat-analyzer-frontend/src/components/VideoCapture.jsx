@@ -379,6 +379,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const [isMobile, setIsMobile] = useState(isMobileDevice());
   const [debugMode, setDebugMode] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
+  const [darkMode, setDarkMode] = useState(false);
   const recordingTimerRef = useRef(null);
   const recordingInterval = useRef(null);
   
@@ -1480,7 +1481,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   };
 
   return (
-    <div className={`video-container ${dark ? 'dark-mode' : ''}`}>
+    <div className={`video-container ${darkMode ? 'dark-mode' : ''}`}>
       <div style={{ position: 'relative', width: '100%' }}>
         {isRecording && (
           <div className="recording-indicator" style={{ position: 'absolute', top: '15px', right: '15px', zIndex: 10 }}>
@@ -1494,7 +1495,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           autoPlay
           playsInline
           muted
-          style={{ width: '100%', maxHeight: '75vh', backgroundColor: dark ? '#1a1a1a' : '#000', borderRadius: '8px' }}
+          style={{ width: '100%', maxHeight: '75vh', backgroundColor: darkMode ? '#1a1a1a' : '#000', borderRadius: '8px' }}
         />
         <canvas
           ref={canvasRef}
