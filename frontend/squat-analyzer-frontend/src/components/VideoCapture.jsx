@@ -738,20 +738,38 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         const videoElement = videoRef.current;
         if (!videoElement) return { x, y }; // Fallback if video element not available
         
-        // Get the actual display dimensions of the video element
-        const videoRect = videoElement.getBoundingClientRect();
-        const displayedVideoWidth = videoRect.width;
-        const displayedVideoHeight = videoRect.height;
+        // First, calculate pixel position within original video frame
+        const pixelX = x * videoWidth;
+        const pixelY = y * videoHeight;
         
-        // Calculate scaling factors between original video dimensions and how it's displayed
-        const scaleX = displayedVideoWidth / videoWidth;
-        const scaleY = displayedVideoHeight / videoHeight;
+        // Then convert to canvas coordinates
+        // This is where the fix is needed - we need to calculate aspect ratio differences
+        const videoAspectRatio = videoWidth / videoHeight;
+        const canvasAspectRatio = canvasWidth / canvasHeight;
         
-        // Apply scaling to coordinates
-        const scaledX = x * scaleX;
-        const scaledY = y * scaleY;
+        let scaledX, scaledY;
+        let offsetX = 0, offsetY = 0;
         
-        // Return transformed coordinates
+        if (videoAspectRatio > canvasAspectRatio) {
+          // Video is wider than canvas - calculate vertical letterboxing
+          const scaleFactor = canvasWidth / videoWidth;
+          scaledX = pixelX * scaleFactor;
+          
+          const scaledVideoHeight = videoHeight * scaleFactor;
+          offsetY = (canvasHeight - scaledVideoHeight) / 2;
+          scaledY = pixelY * scaleFactor + offsetY;
+        } else {
+          // Video is taller than canvas - calculate horizontal letterboxing
+          const scaleFactor = canvasHeight / videoHeight;
+          scaledY = pixelY * scaleFactor;
+          
+          const scaledVideoWidth = videoWidth * scaleFactor;
+          offsetX = (canvasWidth - scaledVideoWidth) / 2;
+          scaledX = pixelX * scaleFactor + offsetX;
+        }
+        
+        addDebugLog(`Mapping point: original (${x.toFixed(2)}, ${y.toFixed(2)}) to canvas (${scaledX.toFixed(0)}, ${scaledY.toFixed(0)})`);
+        
         return { 
           x: scaledX, 
           y: scaledY 
@@ -1427,108 +1445,140 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     }
   };
 
-  return (
-    <div className={`video-container ${darkMode ? 'dark-mode' : ''}`}>
-      <div style={{ position: 'relative', width: '100%' }}>
-        {isRecording && (
-          <div className="recording-indicator" style={{ position: 'absolute', top: '15px', right: '15px', zIndex: 10 }}>
-            <div className="recording-dot"></div>
-            <span className="recording-text">Recording {recordingTime}</span>
-          </div>
-        )}
-        <video
-          ref={videoRef}
-          className="video-element"
-          autoPlay
-          playsInline
-          muted
-          style={{ width: '100%', maxHeight: '75vh', backgroundColor: darkMode ? '#1a1a1a' : '#000', borderRadius: '8px' }}
-        />
-        <canvas
-          ref={canvasRef}
-          style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            width: '100%',
-            height: '100%',
-            pointerEvents: 'none',
-          }}
-        />
-      </div>
-      
-      <div className="video-controls">
-        <div className="control-row">
-          <button 
-            className={`control-button ${isFrontFacing ? 'active' : ''}`}
-            onClick={toggleCamera}
-            disabled={!isCameraReady || isLoading || (showTFWarning && !tfInitialized) || isRecording}
-            aria-label="Toggle camera"
-          >
-            <Camera style={{ marginRight: '5px' }} size={18} />
-            {isFrontFacing ? 'Back' : 'Front'}
-          </button>
+  // Function to draw pose landmarks on canvas with proper scaling
+  const drawPose = (pose, canvas, ctx) => {
+    if (!canvas || !ctx || !videoRef.current) return;
+    
+    // Get the current video dimensions
+    const videoWidth = videoRef.current.videoWidth;
+    const videoHeight = videoRef.current.videoHeight;
+    
+    // Get the displayed video dimensions (scaled in the browser)
+    const displayWidth = videoRef.current.clientWidth;
+    const displayHeight = videoRef.current.clientHeight;
+    
+    // Clear the canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Ensure canvas dimensions match the display size
+    if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
+      canvas.width = displayWidth;
+      canvas.height = displayHeight;
+      addDebugLog(`Canvas resized to ${displayWidth}x${displayHeight}`);
+    }
+    
+    // Set canvas styles
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 2;
+    
+    // Scale factors to map from video coordinates to display coordinates
+    const scaleX = displayWidth / videoWidth;
+    const scaleY = displayHeight / videoHeight;
+    
+    addDebugLog(`Pose detection: Video dimensions ${videoWidth}x${videoHeight}, Display dimensions ${displayWidth}x${displayHeight}, Scale factors: ${scaleX}, ${scaleY}`);
+    
+    // Draw landmarks
+    if (pose && pose.keypoints) {
+      // Draw the keypoints
+      pose.keypoints.forEach(keypoint => {
+        if (keypoint.score > 0.3) { // Only draw keypoints with confidence above threshold
+          const { x, y } = keypoint.position;
           
-          <button 
-            className={`control-button ${isPoseTracking ? 'active' : ''}`}
-            onClick={togglePoseTracking}
-            disabled={!isCameraReady || isLoading || (showTFWarning && !tfInitialized) || isRecording}
-            aria-label="Toggle pose tracking"
-          >
-            <RefreshCw style={{ marginRight: '5px' }} size={18} />
-            {isPoseTracking ? 'Tracking On' : 'Start Tracking'}
-          </button>
-        </div>
-        
-        <div className="record-container">
-          <button 
-            className={`record-button ${isRecording ? 'recording' : ''}`}
-            onClick={toggleRecording}
-            onTouchStart={(e) => {
-              e.preventDefault(); // Prevent default touch behavior
-              toggleRecording();
-            }}
-            disabled={!isCameraReady || isLoading || (showTFWarning && !tfInitialized)}
-            aria-label={isRecording ? 'Stop recording' : 'Start recording'}
-            style={{
-              touchAction: 'manipulation', // Improve touch responsiveness
-              WebkitTapHighlightColor: 'transparent', // Remove tap highlight on iOS
-            }}
-          >
-            {isRecording ? (
-              <Square size={24} />
-            ) : (
-              <Circle size={24} fill="#ffffff" />
-            )}
-          </button>
-          <span style={{ fontSize: '14px', marginTop: '5px' }}>
-            {isRecording ? 'Stop' : 'Record'}
-          </span>
-        </div>
-      </div>
+          // Scale coordinates to match display size
+          const scaledX = x * scaleX;
+          const scaledY = y * scaleY;
+          
+          // Draw landmark
+          ctx.beginPath();
+          ctx.arc(scaledX, scaledY, 5, 0, 2 * Math.PI);
+          ctx.fillStyle = getKeypointColor(keypoint.part);
+          ctx.fill();
+          
+          // Optionally draw keypoint name for debugging
+          if (debugMode) {
+            ctx.fillStyle = 'white';
+            ctx.font = '12px Arial';
+            ctx.fillText(`${keypoint.part} (${Math.round(keypoint.score * 100)}%)`, scaledX + 7, scaledY);
+          }
+        }
+      });
       
-      {error && (
-        <div className="error-message">
-          <AlertTriangle size={18} style={{ marginRight: '5px' }} />
-          {error}
-          <button 
-            onClick={() => setError(null)} 
-            style={{ marginLeft: '10px', background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer' }}
-            aria-label="Dismiss error"
-          >
-            ✕
-          </button>
-        </div>
-      )}
+      // Draw the skeleton
+      const adjacentKeyPoints = getAdjacentKeyPoints(pose.keypoints);
+      adjacentKeyPoints.forEach(keypoints => {
+        drawSegment(keypoints[0].position, keypoints[1].position, ctx, scaleX, scaleY);
+      });
+    }
+  };
+  
+  // Draw a line segment between keypoints
+  const drawSegment = (start, end, ctx, scaleX, scaleY) => {
+    if (!start || !end) return;
+    
+    // Scale coordinates
+    const scaledStartX = start.x * scaleX;
+    const scaledStartY = start.y * scaleY;
+    const scaledEndX = end.x * scaleX;
+    const scaledEndY = end.y * scaleY;
+    
+    ctx.beginPath();
+    ctx.moveTo(scaledStartX, scaledStartY);
+    ctx.lineTo(scaledEndX, scaledEndY);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'white';
+    ctx.stroke();
+  };
+  
+  // Get adjacent keypoints for skeleton drawing
+  const getAdjacentKeyPoints = (keypoints) => {
+    return poseConnections.map(([a, b]) => {
+      const keyPointA = keypoints.find(kp => kp.part === a);
+      const keyPointB = keypoints.find(kp => kp.part === b);
       
-      {showTFWarning && !tfInitialized && (
-        <div className="error-message">
-          <AlertTriangle size={18} style={{ marginRight: '5px' }} />
-          Loading pose detection model... This may take a moment.
-        </div>
-      )}
-    </div>
-  );
-};
+      if (keyPointA && keyPointB && keyPointA.score > 0.3 && keyPointB.score > 0.3) {
+        return [keyPointA, keyPointB];
+      }
+      return null;
+    }).filter(pair => pair !== null);
+  };
+  
+  // Define connections between keypoints for drawing skeleton
+  const poseConnections = [
+    ['nose', 'leftEye'], ['leftEye', 'leftEar'], ['nose', 'rightEye'],
+    ['rightEye', 'rightEar'], ['leftShoulder', 'rightShoulder'],
+    ['leftShoulder', 'leftElbow'], ['leftElbow', 'leftWrist'],
+    ['rightShoulder', 'rightElbow'], ['rightElbow', 'rightWrist'],
+    ['leftShoulder', 'leftHip'], ['rightShoulder', 'rightHip'],
+    ['leftHip', 'rightHip'], ['leftHip', 'leftKnee'],
+    ['leftKnee', 'leftAnkle'], ['rightHip', 'rightKnee'],
+    ['rightKnee', 'rightAnkle']
+  ];
+  
+  // Get color based on keypoint type
+  const getKeypointColor = (part) => {
+    const colors = {
+      nose: 'red',
+      leftEye: 'yellow',
+      rightEye: 'yellow',
+      leftEar: 'yellow',
+      rightEar: 'yellow',
+      leftShoulder: 'green',
+      rightShoulder: 'green',
+      leftElbow: 'green',
+      rightElbow: 'green',
+      leftWrist: 'green',
+      rightWrist: 'green',
+      leftHip: 'blue',
+      rightHip: 'blue',
+      leftKnee: 'blue',
+      rightKnee: 'blue',
+      leftAnkle: 'blue',
+      rightAnkle: 'blue'
+    };
+    
+    return colors[part] || 'white';
+  };
 
-export default VideoCapture;
+  return (
+    <div className={`
