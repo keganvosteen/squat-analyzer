@@ -949,393 +949,276 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     setRecordingTime(0);
   };
 
-  // Modified startRecording function to ensure it works even without pose detection
-  const startRecording = async () => {
-    console.log("Start recording button clicked");
-    addDebugLog("Starting recording process");
+  // Modified initializeCamera for better handling of camera errors
+  const initializeCamera = async () => {
+    setError('');
+    setIsCameraReady(false);
+    setIsLoading(true);
+    
+    // Clear any existing safety timeouts to prevent multiple timeouts
+    if (window.safetyTimeoutId) {
+      clearTimeout(window.safetyTimeoutId);
+      window.safetyTimeoutId = null;
+    }
     
     try {
-      // If already recording, stop it
-      if (isRecording) {
-        stopRecording();
-        return;
+      // Stop any existing stream first
+      if (videoRef.current && videoRef.current.srcObject) {
+        const tracks = videoRef.current.srcObject.getTracks();
+        tracks.forEach(track => track.stop());
       }
       
-      // Reset error state
-      setError(null);
+      // Get current orientation
+      const orientation = getDeviceOrientation();
+      console.log(`Initializing camera with orientation: ${orientation}`);
+      addDebugLog(`Initializing camera with orientation: ${orientation}`);
       
-      // Check if camera is initialized, ensure camera is ready before proceeding
-      if (!streamRef.current || !streamRef.current.active || !isCameraReady) {
-        addDebugLog("Camera not ready, initializing now");
-        console.log("Camera not initialized or not ready, initializing now");
-        await initializeCamera();
-        
-        // Double-check camera initialization after attempt
-        if (!streamRef.current || !streamRef.current.active) {
-          const errorMsg = "Failed to initialize camera. Please refresh and try again.";
-          addDebugLog(`Camera initialization failed: ${errorMsg}`);
-          throw new Error(errorMsg);
-        }
-      }
-      
-      addDebugLog("Camera ready, creating MediaRecorder");
-      console.log("Stream active, initializing recorder");
-      
-      // Clear previous chunks
-      recordedChunksRef.current = [];
-      
-      // Check for supported MIME types
-      const mimeType = getSupportedMimeType();
-      if (!mimeType) {
-        const errorMsg = "Your browser doesn't support video recording. Please try a different browser.";
-        addDebugLog(`No supported MIME type found: ${errorMsg}`);
-        setError(errorMsg);
-        return;
-      }
-      
-      addDebugLog(`Using MIME type: ${mimeType}`);
-      
-      try {
-        // Create a new MediaRecorder with browser-specific options if needed
-        const options = { 
-          mimeType,
-          // Adjust quality for mobile or older browsers
-          videoBitsPerSecond: isMobile ? 1500000 : 2000000  
-        };
-        
-        // Create a new MediaRecorder instance
-        mediaRecorderRef.current = new MediaRecorder(streamRef.current, options);
-        
-        addDebugLog(`MediaRecorder created with options: ${JSON.stringify(options)}`);
-      } catch (recorderError) {
-        console.error("MediaRecorder creation failed:", recorderError);
-        addDebugLog(`MediaRecorder creation failed: ${recorderError.message}`);
-        
-        // Fallback to basic creation without options
-        try {
-          addDebugLog("Trying fallback MediaRecorder without options");
-          mediaRecorderRef.current = new MediaRecorder(streamRef.current);
-        } catch (fallbackError) {
-          console.error("Fallback MediaRecorder also failed:", fallbackError);
-          addDebugLog(`Fallback MediaRecorder also failed: ${fallbackError.message}`);
-          setError("Could not create video recorder. Please try a different browser.");
-          return;
-        }
-      }
-      
-      // Setup data available handler
-      mediaRecorderRef.current.ondataavailable = (event) => {
-        console.log("Data available event, size:", event.data.size);
-        if (event.data && event.data.size > 0) {
-          recordedChunksRef.current.push(event.data);
-          addDebugLog(`Received data chunk: ${Math.round(event.data.size / 1024)}KB`);
+      // Set video constraints based on orientation
+      // Higher resolution for better pose detection but respect device capabilities
+      const videoConstraints = {
+        audio: false,
+        video: {
+          facingMode: isFrontFacing ? 'user' : 'environment',
+          width: { ideal: orientation === 'landscape' ? 1280 : 720 },
+          height: { ideal: orientation === 'landscape' ? 720 : 1280 }
         }
       };
       
-      // Setup stop handler
-      mediaRecorderRef.current.onstop = () => {
-        addDebugLog(`MediaRecorder stopped, chunks: ${recordedChunksRef.current.length}`);
-        console.log("MediaRecorder onstop event fired, chunks:", recordedChunksRef.current.length);
-        
-        try {
-          // Stop UI timer
-          stopTimer();
-          
-          // Update recording state
-          setIsRecording(false);
-          
-          if (recordedChunksRef.current.length === 0) {
-            console.error("No data chunks were recorded");
-            addDebugLog("No data chunks were recorded");
-            setError("No video data was recorded. Please try again.");
-            return;
-          }
-          
-          // Create blob from chunks
-          const blob = new Blob(recordedChunksRef.current, { type: mimeType });
-          console.log("Created video blob:", blob.type, "size:", Math.round(blob.size / 1024), "KB");
-          addDebugLog(`Created video blob: ${blob.type}, size: ${Math.round(blob.size / 1024)}KB`);
-          
-          if (blob.size > 0) {
-            // Process the recording
-            console.log("Processing recorded video");
-            addDebugLog("Processing recorded video blob");
-            
-            // Make sure to call the callback to process the recording
-            onRecordingComplete(blob);
-          } else {
-            addDebugLog("Recording failed - blob size is 0");
-            setError("Recording failed - no data captured");
-          }
-        } catch (error) {
-          console.error("Error in onstop handler:", error);
-          addDebugLog(`Error in onstop handler: ${error.message}`);
-          setError(`Recording error: ${error.message || 'Unknown error processing recording'}`);
-        }
-      };
+      // Try to get the stream with a timeout
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Camera access timed out')), 15000); // Increased from 10000
+      });
       
-      // Request a smaller timeslice to ensure we get data faster
-      mediaRecorderRef.current.start(100);
-      addDebugLog("MediaRecorder started with 100ms timeslice");
-      console.log("MediaRecorder started successfully");
+      const stream = await Promise.race([
+        navigator.mediaDevices.getUserMedia(videoConstraints),
+        timeoutPromise
+      ]);
       
-      // Start the timer for UI
-      startTimer();
-      setIsRecording(true);
+      // Store the stream reference
+      streamRef.current = stream;
       
-    } catch (error) {
-      console.error("Error starting recording:", error);
-      addDebugLog(`Recording start error: ${error.message}`);
-      stopTimer();
-      setIsRecording(false);
-      setError(`Recording error: ${error.message}`);
-    }
-  };
-
-  const stopRecording = () => {
-    console.log("Stop recording button clicked");
-    addDebugLog("Stop recording requested");
-    
-    try {
-      if (mediaRecorderRef.current) {
-        console.log("MediaRecorder current state:", mediaRecorderRef.current.state);
-        addDebugLog(`MediaRecorder state: ${mediaRecorderRef.current.state}`);
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
         
-        if (mediaRecorderRef.current.state === "recording") {
-          addDebugLog("Stopping active MediaRecorder");
-          console.log("Stopping media recorder");
-          mediaRecorderRef.current.stop();
-          
-          // Force UI update immediately to provide feedback
-          setIsRecording(false);
-          stopTimer();
-        } else {
-          console.warn("MediaRecorder is not in recording state:", mediaRecorderRef.current.state);
-          addDebugLog(`Cannot stop - MediaRecorder not recording (state: ${mediaRecorderRef.current.state})`);
-          
-          // Still update UI state if it's inconsistent
-          if (isRecording) {
-            setIsRecording(false);
-            stopTimer();
-          }
-        }
-      } else {
-        console.error("MediaRecorder is not initialized");
-        addDebugLog("Cannot stop - MediaRecorder not initialized");
-        
-        // Still update UI state if it's inconsistent
-        if (isRecording) {
-          setIsRecording(false);
-          stopTimer();
-        }
-      }
-    } catch (error) {
-      console.error("Error stopping recording:", error);
-      addDebugLog(`Error stopping recording: ${error.message}`);
-      
-      // Make sure UI is updated regardless of error
-      setIsRecording(false);
-      stopTimer();
-    }
-  };
-
-  const cleanupStream = () => {
-    console.log("Cleaning up media resources");
-    
-    // Stop pose detection loop
-    if (animationRef.current) {
-      cancelAnimationFrame(animationRef.current);
-      animationRef.current = null;
-    }
-    
-    // Reset pose tracking state
-    setIsPoseTracking(false);
-    detectorRef.current = null;
-    
-    // Clear timer first
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-    
-    // Cleanup MediaRecorder
-    if (mediaRecorderRef.current) {
-      try {
-        console.log("Cleaning up MediaRecorder in state:", mediaRecorderRef.current.state);
-        if (mediaRecorderRef.current.state === 'recording') {
-          mediaRecorderRef.current.stop();
-        }
-      } catch (e) {
-        console.error("Error stopping MediaRecorder during cleanup:", e);
-      }
-      mediaRecorderRef.current = null;
-    }
-    
-    // Stop all tracks on the current stream
-    if (streamRef.current) {
-      try {
-        console.log("Cleaning up stream tracks");
-        const tracks = streamRef.current.getTracks();
-        tracks.forEach(track => {
-          try {
-            console.log(`Stopping track: ${track.kind}:${track.label}`);
-            track.stop();
-          } catch (trackErr) {
-            console.error(`Error stopping track ${track.kind}:${track.label}:`, trackErr);
-          }
-        });
-      } catch (streamErr) {
-        console.error("Error cleaning up stream:", streamErr);
-      } finally {
-        streamRef.current = null;
-      }
-    }
-    
-    // Clear video element srcObject
-    if (videoRef.current) {
-      try {
-        videoRef.current.pause();
-        videoRef.current.srcObject = null;
-        console.log("Cleared video source");
-      } catch (videoErr) {
-        console.error("Error clearing video element:", videoErr);
-      }
-    }
-    
-    // Clear chunks
-    if (recordedChunksRef.current) {
-      recordedChunksRef.current = [];
-    }
-    
-    // Reset UI state
-    setStreamReady(false);
-    setIsInitialized(false);
-    setIsRecording(false);
-    setRecordingTime(0);
-    setIsInitializing(false); // Ensure we're not in initializing state
-    
-    console.log("Media resources cleanup complete");
-  };
-
-  // Add video compression function
-  const compressVideo = async (videoBlob) => {
-    return new Promise((resolve, reject) => {
-      try {
-        console.log("Starting video compression");
-        
-        // Create a video element to process the blob
-        const video = document.createElement('video');
-        video.muted = true;
-        video.autoplay = false;
-        video.preload = "auto";
-        
-        // Create canvas for processing
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        
-        // Create temporary URL for the video blob
-        const videoUrl = URL.createObjectURL(videoBlob);
-        video.src = videoUrl;
-        
-        // Handle video errors
-        video.onerror = (err) => {
-          URL.revokeObjectURL(videoUrl);
-          reject(new Error(`Video loading failed during compression: ${err}`));
-        };
-        
-        // Once metadata is loaded, we can start processing
-        video.onloadedmetadata = () => {
-          // Set target size (640x480 is good for ML processing while reducing size)
-          const targetWidth = 640;
-          const targetHeight = 480;
-          
-          // If the video is already smaller, just return the original
-          if (video.videoWidth <= targetWidth && video.videoHeight <= targetHeight) {
-            URL.revokeObjectURL(videoUrl);
-            console.log("Video already small enough, skipping compression");
-            resolve(videoBlob);
-            return;
-          }
-          
-          // Set canvas dimensions
-          canvas.width = targetWidth;
-          canvas.height = targetHeight;
-          
-          // Create a MediaRecorder for the canvas
-          const canvasStream = canvas.captureStream(30); // 30fps
-          const recorder = new MediaRecorder(canvasStream, {
-            mimeType: getSupportedMimeType(),
-            videoBitsPerSecond: 1500000 // 1.5 Mbps - good balance for squat analysis
-          });
-          
-          const chunks = [];
-          recorder.ondataavailable = e => {
-            if (e.data.size > 0) {
-              chunks.push(e.data);
+        // Multiple event handlers to catch video loading across different browsers
+        const videoLoadHandler = () => {
+          if (!isCameraReady) {
+            // Clear the safety timeout
+            if (window.safetyTimeoutId) {
+              clearTimeout(window.safetyTimeoutId);
+              window.safetyTimeoutId = null;
+              console.log("Safety timeout cleared - video loaded successfully");
+              addDebugLog("Safety timeout cleared - video loaded successfully");
             }
-          };
-          
-          recorder.onstop = () => {
-            const compressedBlob = new Blob(chunks, { type: getSupportedMimeType() });
-            URL.revokeObjectURL(videoUrl);
-            resolve(compressedBlob);
-          };
-          
-          // Start recording from the canvas
-          recorder.start();
-          
-          // Set video to start from the beginning when we start processing
-          video.currentTime = 0;
-          
-          // Play and process the video frames
-          video.onplay = () => {
-            const processFrame = () => {
-              if (video.ended || video.paused) {
-                recorder.stop();
-                return;
+            
+            console.log(`Video metadata loaded, dimensions: ${videoRef.current.videoWidth} x ${videoRef.current.videoHeight}`);
+            addDebugLog(`Video metadata loaded, video ready`);
+            
+            // Make sure canvas is properly sized
+            if (canvasRef.current) {
+              canvasRef.current.width = videoRef.current.clientWidth;
+              canvasRef.current.height = videoRef.current.clientHeight;
+            }
+            
+            setIsCameraReady(true);
+            setIsLoading(false);
+            setIsInitialized(true);
+            setIsInitializing(false);
+            
+            // Start pose detection if it should be on
+            if (enableLivePose && tfInitialized) {
+              addDebugLog("Starting pose detection after camera ready");
+              startPoseDetection();
+            }
+          }
+        };
+        
+        // Wait for the video to be loaded - try multiple events for better browser compatibility
+        videoRef.current.onloadedmetadata = videoLoadHandler;
+        videoRef.current.onloadeddata = videoLoadHandler;
+        videoRef.current.oncanplay = videoLoadHandler;
+        
+        // Ensure loading state is reset even if metadata event doesn't fire
+        videoRef.current.onerror = (err) => {
+          console.error("Video element error");
+          addDebugLog(`Video element error: ${err}`);
+          setIsLoading(false);
+          setIsInitializing(false);
+          setError("Video initialization failed. Please refresh the page and try again.");
+        };
+        
+        // Additional safety timeout to ensure loading state is reset
+        window.safetyTimeoutId = setTimeout(() => {
+          if (isLoading) {
+            console.warn("Safety timeout triggered - resetting loading state");
+            addDebugLog("Safety timeout triggered - resetting loading state");
+            
+            // If video has dimensions but events didn't fire, consider it ready
+            if (videoRef.current && videoRef.current.videoWidth > 0) {
+              addDebugLog(`Video appears ready despite timeout. Dimensions: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`);
+              
+              // Size canvas to match video
+              if (canvasRef.current) {
+                canvasRef.current.width = videoRef.current.clientWidth;
+                canvasRef.current.height = videoRef.current.clientHeight;
               }
               
-              // Draw the current frame at the reduced resolution
-              ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+              // Try to ensure video is playing
+              videoRef.current.play().catch(e => {
+                console.warn("Could not autoplay video after timeout:", e);
+                addDebugLog(`Post-timeout play attempt failed: ${e.message}`);
+              });
               
-              // Continue with the next frame
-              requestAnimationFrame(processFrame);
-            };
+              setIsCameraReady(true);
+              setIsInitialized(true);
+            }
             
-            // Start processing
-            processFrame();
-          };
-          
-          // Play the video to start processing
-          video.play().catch(playErr => {
-            URL.revokeObjectURL(videoUrl);
-            reject(new Error(`Couldn't play video for compression: ${playErr}`));
-          });
-        };
-      } catch (err) {
-        reject(err);
+            setIsLoading(false);
+            setIsInitializing(false);
+          }
+        }, 7000);
       }
-    });
+    } catch (err) {
+      console.error("Error accessing camera:", err);
+      addDebugLog(`Camera access error: ${err.message}`);
+      setError(`Camera access error: ${err.message}. Please ensure you've granted camera permissions.`);
+      setIsLoading(false);
+      setIsInitializing(false);
+      setIsCameraReady(false);
+    }
   };
 
-  // Function to get the supported MIME type for video recording
-  const getSupportedMimeType = () => {
-    const possibleTypes = [
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-      'video/webm;codecs=h264,opus',
-      'video/webm',
-      'video/mp4'
-    ];
+  // Start recording button handler
+  const handleRecordButtonClick = async () => {
+    console.log('Start recording button clicked');
+    addDebugLog('Starting recording process');
     
-    return possibleTypes.find(type => MediaRecorder.isTypeSupported(type));
-  };
-
-  // Format recording time as mm:ss
-  const formatTime = (seconds) => {
-    const mins = Math.floor(seconds / 60).toString().padStart(2, '0');
-    const secs = (seconds % 60).toString().padStart(2, '0');
-    return `${mins}:${secs}`;
+    // Only proceed if we have a camera stream
+    if (!isCameraReady || !streamRef.current) {
+      console.error('Cannot start recording: camera not ready or no stream available');
+      addDebugLog('Recording failed: Camera not ready or no stream');
+      setError('Cannot start recording: camera not ready. Please refresh the page.');
+      return;
+    }
+    
+    addDebugLog('Camera ready, creating MediaRecorder');
+    
+    try {
+      // Verify the stream is still active
+      if (!streamRef.current.active) {
+        throw new Error('Camera stream is not active');
+      }
+      
+      console.log('Stream active, initializing recorder');
+      
+      // Check if MediaRecorder is supported
+      if (typeof MediaRecorder === 'undefined') {
+        throw new Error('MediaRecorder is not supported in this browser');
+      }
+      
+      // Try to find a supported MIME type
+      const mimeTypes = [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm;codecs=h264,opus',
+        'video/webm',
+        'video/mp4'
+      ];
+      
+      let mimeType = '';
+      
+      // Find first supported MIME type
+      for (const type of mimeTypes) {
+        if (MediaRecorder.isTypeSupported(type)) {
+          mimeType = type;
+          console.log(`Found supported MIME type: ${mimeType}`);
+          addDebugLog(`Using MIME type: ${mimeType}`);
+          break;
+        }
+      }
+      
+      if (!mimeType) {
+        console.warn('No supported MIME types found, using default');
+        addDebugLog('No supported MIME types found, using default');
+      }
+      
+      // Set MediaRecorder options
+      const options = mimeType ? { mimeType, videoBitsPerSecond: 2000000 } : {};
+      addDebugLog(`MediaRecorder created with options: ${JSON.stringify(options)}`);
+      
+      // Store chunks in component scope rather than closure
+      chunksRef.current = [];
+      
+      // Create new MediaRecorder instance
+      mediaRecorderRef.current = new MediaRecorder(streamRef.current, options);
+      
+      // Handle data available event
+      mediaRecorderRef.current.ondataavailable = (e) => {
+        console.log(`Data available event, size: ${e.data ? e.data.size : 0}`);
+        
+        if (e.data && e.data.size > 0) {
+          chunksRef.current.push(e.data);
+          addDebugLog(`Chunk added, total chunks: ${chunksRef.current.length}`);
+        }
+      };
+      
+      // Handle recording stop event
+      mediaRecorderRef.current.onstop = () => {
+        const chunks = chunksRef.current;
+        addDebugLog(`MediaRecorder stopped, chunks: ${chunks.length}`);
+        console.log(`MediaRecorder onstop event fired, chunks: ${chunks.length}`);
+        
+        if (chunks.length === 0) {
+          console.log('No data chunks were recorded');
+          addDebugLog('No data chunks were recorded');
+          setError('No video data was captured. Please try again or use a different browser.');
+          setIsRecording(false);
+          return;
+        }
+        
+        // Create a blob from the recorded chunks
+        const blob = new Blob(chunks, { type: mimeType || 'video/webm' });
+        
+        if (blob.size === 0) {
+          console.error('Recorded blob has size 0');
+          addDebugLog('Recording failed: blob size is 0');
+          setError('Recording failed: no data captured. Please try a different browser.');
+          setIsRecording(false);
+          return;
+        }
+        
+        console.log(`Recording completed, blob size: ${blob.size} bytes`);
+        addDebugLog(`Recording completed, blob size: ${blob.size} bytes`);
+        
+        // Process the recording
+        handleRecordingComplete(blob);
+      };
+      
+      // Start MediaRecorder with small timeslice to capture data frequently
+      mediaRecorderRef.current.start(100); // 100ms chunks
+      addDebugLog('MediaRecorder started with 100ms timeslice');
+      
+      // Disable pose detection during recording to improve performance
+      if (detectorRef.current) {
+        addDebugLog('Stopping pose detection');
+        stopPoseDetection();
+      }
+      
+      console.log('MediaRecorder started successfully');
+      setIsRecording(true);
+      setRecordingStartTime(Date.now());
+      
+      // Create a unique ID for this recording
+      setCurrentRecordingId(uuidv4());
+      
+      // Start the timer
+      startTimer();
+    } catch (error) {
+      console.error('Error starting recording:', error);
+      addDebugLog(`Recording error: ${error.message}`);
+      setError(`Error starting recording: ${error.message}. Please try a different browser.`);
+      setIsRecording(false);
+    }
   };
 
   // Properly define stopPoseDetection function to use the ref
@@ -1438,100 +1321,6 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         console.log("Pose detector already initialized");
         addDebugLog("Reusing existing pose detector");
       }
-    }
-  };
-
-  // Modified initializeCamera for better handling of camera errors
-  const initializeCamera = async () => {
-    setError('');
-    setIsCameraReady(false);
-    setIsLoading(true);
-    
-    try {
-      // Stop any existing stream first
-      if (videoRef.current && videoRef.current.srcObject) {
-        const tracks = videoRef.current.srcObject.getTracks();
-        tracks.forEach(track => track.stop());
-      }
-      
-      // Get current orientation
-      const orientation = getDeviceOrientation();
-      console.log(`Initializing camera with orientation: ${orientation}`);
-      
-      // Set video constraints based on orientation
-      // Higher resolution for better pose detection but respect device capabilities
-      const videoConstraints = {
-        audio: false,
-        video: {
-          facingMode: isFrontFacing ? 'user' : 'environment',
-          width: { ideal: orientation === 'landscape' ? 1280 : 720 },
-          height: { ideal: orientation === 'landscape' ? 720 : 1280 }
-        }
-      };
-      
-      // Try to get the stream with a timeout
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error('Camera access timed out')), 10000);
-      });
-      
-      const stream = await Promise.race([
-        navigator.mediaDevices.getUserMedia(videoConstraints),
-        timeoutPromise
-      ]);
-      
-      // Store the stream reference
-      streamRef.current = stream;
-      
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        
-        // Wait for the video to be loaded
-        videoRef.current.onloadedmetadata = () => {
-          console.log(`Video dimensions: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`);
-          
-          // Make sure canvas is properly sized
-          if (canvasRef.current) {
-            canvasRef.current.width = videoRef.current.clientWidth;
-            canvasRef.current.height = videoRef.current.clientHeight;
-          }
-          
-          setIsCameraReady(true);
-          setIsLoading(false);
-          setIsInitialized(true);
-          setIsInitializing(false);
-          
-          // Start pose detection if enabled and TensorFlow is initialized
-          if (enableLivePose && tfInitialized) {
-            startPoseDetection();
-          }
-        };
-        
-        // Add error handler to reset state
-        videoRef.current.onerror = () => {
-          console.error("Video element error during initialization");
-          setIsCameraReady(false);
-          setIsLoading(false);
-          setIsInitializing(false);
-          setError("Video initialization failed. Please refresh the page and try again.");
-        };
-        
-        // Safety timeout in case metadata event never fires
-        setTimeout(() => {
-          if (isLoading) {
-            console.warn("Camera initialization timeout - forcing state reset");
-            setIsLoading(false);
-            setIsCameraReady(true);
-            setIsInitialized(true);
-            setIsInitializing(false);
-          }
-        }, 5000);
-      }
-    } catch (err) {
-      console.error('Error accessing camera:', err);
-      setError(`Camera access error: ${err.message || 'Could not access camera'}. Please check permissions.`);
-      setIsCameraReady(false);
-      setIsLoading(false);
-      setIsInitializing(false);
     }
   };
 
