@@ -247,9 +247,15 @@ const RecordButton = styled.button`
   box-shadow: 0 2px 10px rgba(0,0,0,0.2);
   transition: all 0.2s ease;
   position: relative;
+  -webkit-tap-highlight-color: transparent; /* Remove tap highlight on mobile */
+  touch-action: manipulation; /* Optimize for touch */
   
   &:hover {
     transform: scale(1.05);
+  }
+  
+  &:active {
+    transform: scale(0.95); /* Provide feedback when pressed */
   }
   
   &:disabled {
@@ -1095,6 +1101,18 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     console.log('Start recording button clicked');
     addDebugLog('Starting recording process');
     
+    // Prevent double clicks/taps
+    if (isRecording) {
+      addDebugLog('Already recording, ignoring click');
+      return;
+    }
+    
+    // Prevent clicks while loading
+    if (isLoading) {
+      addDebugLog('Camera loading, ignoring click');
+      return;
+    }
+    
     // Only proceed if we have a camera stream
     if (!isCameraReady || !streamRef.current) {
       console.error('Cannot start recording: camera not ready or no stream available');
@@ -1132,6 +1150,14 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         'video/mp4'
       ];
       
+      // Special handling for iOS (Safari)
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+      if (isIOS) {
+        // iOS Safari prefers MP4
+        mimeTypes.unshift('video/mp4');
+        addDebugLog('iOS device detected, prioritizing MP4 format');
+      }
+      
       let mimeType = '';
       
       // Find first supported MIME type
@@ -1149,8 +1175,12 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         addDebugLog('No supported MIME types found, using default');
       }
       
-      // Set MediaRecorder options
-      const options = mimeType ? { mimeType, videoBitsPerSecond: 2000000 } : {};
+      // Set MediaRecorder options with mobile-optimized settings
+      const options = mimeType ? 
+        { 
+          mimeType, 
+          videoBitsPerSecond: isMobile ? 1000000 : 2000000 // Lower bitrate for mobile
+        } : {};
       
       // Stop any existing recorder
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -1243,8 +1273,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       // IMPORTANT: Start MediaRecorder AFTER attaching all event handlers
       // Use a longer timeslice to reduce the number of small chunks
-      mediaRecorderRef.current.start(1000); // 1-second chunks for better reliability
-      addDebugLog(`MediaRecorder started with 1000ms timeslice`);
+      const timeslice = isMobile ? 2000 : 1000; // Longer slices on mobile
+      mediaRecorderRef.current.start(timeslice);
+      addDebugLog(`MediaRecorder started with ${timeslice}ms timeslice`);
       
       console.log('MediaRecorder started successfully');
     } catch (error) {
@@ -1256,31 +1287,63 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     }
   };
 
-  // Stop recording handler
+  // Stop recording handler with improved mobile handling
   const handleStopRecording = () => {
     console.log('Stop recording button clicked');
     addDebugLog('Stopping recording');
     
-    if (!isRecording || !mediaRecorderRef.current) {
-      console.warn('Cannot stop recording: no active recording');
-      addDebugLog('Stop recording failed: no active recording');
+    // Prevent multiple stop attempts
+    if (!isRecording) {
+      console.warn('Not currently recording, ignoring stop request');
+      addDebugLog('Not recording, ignoring stop attempt');
+      return;
+    }
+    
+    if (!mediaRecorderRef.current) {
+      console.warn('Cannot stop recording: no MediaRecorder instance');
+      addDebugLog('Stop recording failed: no MediaRecorder instance');
+      // Force UI reset
+      setIsRecording(false);
+      stopTimer();
       return;
     }
     
     try {
+      // Update UI state first for immediate feedback
+      setIsRecording(false);
+      
       // Explicitly request a final dataavailable event with all recorded data
       if (mediaRecorderRef.current.state === 'recording') {
         addDebugLog('Requesting final data before stopping MediaRecorder');
         mediaRecorderRef.current.requestData();
         
+        // Mobile browsers sometimes need a bit more time to process the data
+        const delay = isMobile ? 300 : 100;
+        
         // Small delay to ensure data is processed
         setTimeout(() => {
           // Stop the MediaRecorder (this will trigger the onstop event)
           if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-            mediaRecorderRef.current.stop();
-            addDebugLog('MediaRecorder stopped');
+            try {
+              mediaRecorderRef.current.stop();
+              addDebugLog('MediaRecorder stopped successfully');
+            } catch (innerError) {
+              console.error('Error during MediaRecorder.stop():', innerError);
+              addDebugLog(`MediaRecorder.stop() error: ${innerError.message}`);
+              
+              // Since recording is technically over and UI is updated, handle manually
+              if (recordedChunksRef.current.length > 0) {
+                const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' });
+                if (blob.size > 0) {
+                  addDebugLog(`Manually creating blob with ${recordedChunksRef.current.length} chunks`);
+                  onRecordingComplete(blob);
+                }
+              }
+            }
+          } else {
+            addDebugLog(`Cannot stop MediaRecorder: state is ${mediaRecorderRef.current ? mediaRecorderRef.current.state : 'undefined'}`);
           }
-        }, 100);
+        }, delay);
       } else {
         addDebugLog(`Cannot stop MediaRecorder: state is ${mediaRecorderRef.current.state}`);
       }
@@ -1463,6 +1526,14 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       <RecordButtonContainer>
         <RecordButton 
           onClick={isRecording ? handleStopRecording : handleRecordButtonClick}
+          onTouchEnd={(e) => {
+            e.preventDefault(); // Prevent ghost clicks
+            if (isRecording) {
+              handleStopRecording();
+            } else {
+              handleRecordButtonClick();
+            }
+          }}
           disabled={isLoading}
           isRecording={isRecording}
           title={isRecording ? "Stop recording" : "Start recording"}
