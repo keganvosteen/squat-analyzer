@@ -67,6 +67,25 @@ const TextLogo = styled.div`
   background-color: var(--bg-secondary);
 `;
 
+const ServerStatusMessage = styled.div`
+  text-align: center;
+  margin-bottom: 1rem;
+  padding: 8px 16px;
+  border-radius: 4px;
+  background-color: ${props => {
+    switch(props.status) {
+      case 'ready': return 'var(--success-color)';
+      case 'error': return 'var(--error-color)';
+      case 'starting': return 'var(--warning-color)';
+      default: return 'var(--bg-secondary)';
+    }
+  }};
+  color: ${props => props.status === 'ready' ? '#fff' : 'var(--text-primary)'};
+  font-weight: ${props => props.status === 'ready' ? 'normal' : 'bold'};
+  transition: all 0.3s ease;
+  display: ${props => props.status === 'unknown' ? 'none' : 'block'};
+`;
+
 const App = () => {
   const [videoBlob, setVideoBlob] = useState(null);
   const [analysisData, setAnalysisData] = useState(null);
@@ -76,7 +95,7 @@ const App = () => {
   const [showPlayback, setShowPlayback] = useState(false);
   const [loading, setLoading] = useState(false);
   const [usingLocalAnalysis, setUsingLocalAnalysis] = useState(false);
-  const [serverReady, setServerReady] = useState(false);
+  const [serverStatus, setServerStatus] = useState('unknown');
   const [logoError, setLogoError] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(
     window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -123,6 +142,14 @@ const App = () => {
       '--error-color',
       isDarkMode ? '#ff6b6b' : '#d32f2f'
     );
+    document.documentElement.style.setProperty(
+      '--success-color',
+      isDarkMode ? '#4caf50' : '#4caf50'
+    );
+    document.documentElement.style.setProperty(
+      '--warning-color',
+      isDarkMode ? '#ff9800' : '#ff9800'
+    );
   }, [isDarkMode]);
 
   // Logo error handler
@@ -133,18 +160,40 @@ const App = () => {
 
   // Start the server warmup service when the app loads
   useEffect(() => {
-    const warmupServer = async () => {
-      try {
-        const isReady = await ServerWarmup.warmupServer(BACKEND_URL);
-        setServerReady(isReady);
-      } catch (err) {
-        console.error("Server warmup failed:", err);
-        setServerReady(false);
-      }
-    };
+    // Warm up the server
+    ServerWarmup.warmupServer(BACKEND_URL);
     
-    warmupServer();
+    // Subscribe to server status changes
+    const unsubscribe = ServerWarmup.onServerStatusChange((status) => {
+      console.log("Server status updated:", status);
+      setServerStatus(status);
+    });
+    
+    // Set a shorter ping interval to check server status more frequently
+    const pingInterval = setInterval(() => {
+      ServerWarmup.pingServer();
+    }, 10000); // Every 10 seconds
+    
+    // Clean up on unmount
+    return () => {
+      unsubscribe();
+      clearInterval(pingInterval);
+    };
   }, []);
+
+  // Function to get server status message
+  const getServerStatusMessage = () => {
+    switch (serverStatus) {
+      case 'ready':
+        return 'Server is ready for analysis';
+      case 'starting':
+        return 'Server is starting up... This can take 30-60 seconds. You can still record videos while waiting.';
+      case 'error':
+        return 'Server is currently unavailable. Local analysis will be used.';
+      default:
+        return 'Checking server status...';
+    }
+  };
 
   // Handle when a recording is completed
   const handleRecordingComplete = async (blob) => {
@@ -163,6 +212,12 @@ const App = () => {
     setUsingLocalAnalysis(false);
     
     try {
+      // Check server status before sending
+      if (serverStatus !== 'ready') {
+        console.log("Server not ready, using local analysis");
+        throw new Error("Server not ready");
+      }
+      
       const formData = new FormData();
       formData.append('video', blob, 'squat_video.webm');
       
@@ -185,34 +240,35 @@ const App = () => {
     } catch (apiError) {
       console.error("API Error:", apiError);
       
+      // Update server status if we got an error
+      if (apiError.code === 'ECONNABORTED' || apiError.message === 'Server not ready') {
+        ServerWarmup.pingServer(); // Check server status again
+      }
+      
       // Handle timeout errors specifically
       if (apiError.code === 'ECONNABORTED') {
         setError("Analysis took too long and timed out after 45 seconds.");
-        
-        // Try local analysis as a fallback
-        try {
-          console.log("Falling back to local analysis...");
-          setUsingLocalAnalysis(true);
-          
-          // Process the video locally
-          const localResults = await LocalAnalysis.analyzeVideo(blob);
-          
-          if (localResults && localResults.landmarks) {
-            setAnalysisData(localResults);
-            setError("Used local analysis mode due to server timeout. Results may be less accurate.");
-          } else {
-            throw new Error("Local analysis failed");
-          }
-        } catch (localError) {
-          console.error("Local analysis failed:", localError);
-          setError("Both remote and local analysis failed. Please try recording a shorter video or try again later.");
-        }
-      } else if (apiError.response) {
-        // Server returned an error
-        setError(`Analysis error: ${apiError.response.data.message || apiError.response.status}`);
       } else {
-        // Network or other error
-        setError(`Analysis error: ${apiError.message || "Unknown error"}`);
+        setError(`Analysis failed: ${apiError.message}`);
+      }
+      
+      // Try local analysis as a fallback
+      try {
+        console.log("Falling back to local analysis...");
+        setUsingLocalAnalysis(true);
+        
+        // Process the video locally
+        const localResults = await LocalAnalysis.analyzeVideo(blob);
+        
+        if (localResults && localResults.landmarks) {
+          setAnalysisData(localResults);
+        } else {
+          throw new Error("Local analysis failed to generate valid results");
+        }
+      } catch (localError) {
+        console.error("Local analysis failed:", localError);
+        setError(`Analysis failed: ${localError.message || 'Unknown error'}`);
+        setAnalysisData(null);
       }
     } finally {
       setIsAnalyzing(false);
@@ -238,55 +294,53 @@ const App = () => {
   };
 
   return (
-    <div className="min-h-screen" style={{ backgroundColor: 'var(--bg-primary)', color: 'var(--text-primary)' }}>
-      <div className="container mx-auto px-4 py-8">
-        <Container>
-          <LogosContainer>
-            {logoError ? (
-              <>
-                <TextLogo>Columbia Business School</TextLogo>
-                <TextLogo>Columbia Engineering</TextLogo>
-              </>
-            ) : (
-              <>
-                <Logo 
-                  src="/CBSLogo.png"
-                  alt="Columbia Business School" 
-                  onError={handleLogoError}
-                />
-                <Logo 
-                  src="/SEASLogo.png"
-                  alt="Columbia Engineering" 
-                  onError={handleLogoError}
-                />
-              </>
-            )}
-          </LogosContainer>
-          <Title>SmartSquat</Title>
-          
-          {!showPlayback ? (
-            <VideoCapture onRecordingComplete={handleRecordingComplete} />
-          ) : (
-              <ExercisePlayback 
-              videoUrl={videoUrl}
-              analysisData={analysisData}
-              isAnalyzing={isAnalyzing || loading}
-              error={error}
-              onBackToRecord={handleBackToRecord}
-              usingLocalAnalysis={usingLocalAnalysis}
-            />
-          )}
-        </Container>
+    <div className="app">
+      <Container>
+        <LogosContainer>
+          <Logo 
+            src={seasLogo} 
+            alt="Columbia Engineering Logo" 
+            onError={handleLogoError}
+          />
+          <Logo 
+            src={cbsLogo} 
+            alt="Columbia Business School Logo" 
+            onError={handleLogoError}
+          />
+        </LogosContainer>
         
-        {!serverReady && !showPlayback && (
-          <div className="text-center mt-4 p-3 bg-opacity-90 rounded-md" style={{ backgroundColor: 'var(--bg-secondary)', color: 'var(--text-secondary)' }}>
-            <p className="text-sm">
-              Server is starting up... This can take 30-60 seconds if the server was inactive.
-              You can still record videos while waiting.
-            </p>
-          </div>
+        <Title>SmartSquat</Title>
+        
+        <ServerStatusMessage status={serverStatus}>
+          {getServerStatusMessage()}
+        </ServerStatusMessage>
+        
+        {!showPlayback ? (
+          <VideoCapture 
+            onRecordingComplete={handleRecordingComplete} 
+          />
+        ) : (
+          <ExercisePlayback 
+            videoUrl={videoUrl}
+            analysisData={analysisData}
+            isLoading={isAnalyzing || loading}
+            error={error}
+            onBack={() => {
+              setShowPlayback(false);
+              setVideoUrl(null);
+              setVideoBlob(null);
+              setAnalysisData(null);
+              setError(null);
+              setIsAnalyzing(false);
+              
+              if (videoUrl) {
+                URL.revokeObjectURL(videoUrl);
+              }
+            }}
+            usingLocalAnalysis={usingLocalAnalysis}
+          />
         )}
-      </div>
+      </Container>
     </div>
   );
 };

@@ -16,6 +16,47 @@ const pingApi = axios.create({
 
 let pingInterval = null;
 let isInitialized = false;
+let serverStatus = 'unknown'; // 'unknown', 'starting', 'ready', 'error'
+let statusListeners = [];
+
+/**
+ * Update the server status and notify all listeners
+ * @param {string} status The new status
+ */
+const updateServerStatus = (status) => {
+  serverStatus = status;
+  notifyStatusListeners();
+};
+
+/**
+ * Notify all status listeners of the current status
+ */
+const notifyStatusListeners = () => {
+  statusListeners.forEach(listener => listener(serverStatus));
+};
+
+/**
+ * Register a listener for server status changes
+ * @param {Function} listener A function that accepts a status string
+ * @returns {Function} A function to unregister the listener
+ */
+const onServerStatusChange = (listener) => {
+  statusListeners.push(listener);
+  
+  // Notify the new listener of the current status immediately
+  listener(serverStatus);
+  
+  // Return a function to unregister this listener
+  return () => {
+    statusListeners = statusListeners.filter(l => l !== listener);
+  };
+};
+
+/**
+ * Get the current server status
+ * @returns {string} The current server status
+ */
+const getServerStatus = () => serverStatus;
 
 /**
  * Ping the server to keep it warm
@@ -26,9 +67,18 @@ const pingServer = async () => {
     console.log('Pinging server to keep it warm...');
     const response = await pingApi.get('/ping');
     console.log('Server is alive:', response.data);
+    updateServerStatus('ready');
     return true;
   } catch (error) {
     console.warn('Server ping failed:', error.message);
+    
+    // If the error is a timeout or network error, the server is probably starting up
+    if (error.code === 'ECONNABORTED' || error.message.includes('timeout') || error.message.includes('Network Error')) {
+      updateServerStatus('starting');
+    } else {
+      updateServerStatus('error');
+    }
+    
     return false;
   }
 };
@@ -41,13 +91,21 @@ const pingServer = async () => {
 const warmupServer = async (url = BACKEND_URL) => {
   try {
     console.log(`Warming up server at ${url}...`);
+    updateServerStatus('starting');
+    
     // Start the warmup service in the background
     startWarmupService();
     
     // Try to ping the server right away to check if it's ready
-    return await pingServer();
+    const isReady = await pingServer();
+    
+    // Update status based on ping result
+    updateServerStatus(isReady ? 'ready' : 'starting');
+    
+    return isReady;
   } catch (error) {
     console.error('Server warmup failed:', error);
+    updateServerStatus('error');
     return false;
   }
 };
@@ -60,6 +118,11 @@ const startWarmupService = (intervalMs = 10 * 60 * 1000) => {
   if (isInitialized) {
     console.log('Server warmup service already running');
     return;
+  }
+  
+  // If status is unknown, set it to starting
+  if (serverStatus === 'unknown') {
+    updateServerStatus('starting');
   }
   
   // Ping immediately on startup
@@ -88,5 +151,7 @@ export default {
   pingServer,
   startWarmupService,
   stopWarmupService,
-  warmupServer
+  warmupServer,
+  onServerStatusChange,
+  getServerStatus
 }; 

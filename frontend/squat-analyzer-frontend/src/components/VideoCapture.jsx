@@ -1118,10 +1118,15 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         throw new Error('MediaRecorder is not supported in this browser');
       }
       
+      // Clear previous recording state
+      setIsRecording(false);
+      stopTimer();
+      recordedChunksRef.current = [];
+      
       // Try to find a supported MIME type
       const mimeTypes = [
-        'video/webm;codecs=vp9,opus',
         'video/webm;codecs=vp8,opus',
+        'video/webm;codecs=vp9,opus',
         'video/webm;codecs=h264,opus',
         'video/webm',
         'video/mp4'
@@ -1146,13 +1151,16 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       // Set MediaRecorder options
       const options = mimeType ? { mimeType, videoBitsPerSecond: 2000000 } : {};
-      addDebugLog(`MediaRecorder created with options: ${JSON.stringify(options)}`);
       
-      // Store chunks in component scope rather than closure
-      recordedChunksRef.current = []; // Clear previous chunks
+      // Stop any existing recorder
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+        addDebugLog('Stopping existing MediaRecorder');
+        mediaRecorderRef.current.stop();
+      }
       
       // Create new MediaRecorder instance
       mediaRecorderRef.current = new MediaRecorder(streamRef.current, options);
+      addDebugLog(`MediaRecorder created with options: ${JSON.stringify(options)}`);
       
       // Handle data available event
       mediaRecorderRef.current.ondataavailable = (e) => {
@@ -1160,7 +1168,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         
         if (e.data && e.data.size > 0) {
           recordedChunksRef.current.push(e.data);
-          addDebugLog(`Chunk added, total chunks: ${recordedChunksRef.current.length}`);
+          addDebugLog(`Chunk added, total chunks: ${recordedChunksRef.current.length}, size: ${e.data.size}`);
+        } else {
+          addDebugLog(`Empty data received in ondataavailable`);
         }
       };
       
@@ -1193,33 +1203,56 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         addDebugLog(`Recording completed, blob size: ${blob.size} bytes`);
         
         // Process the recording
-        handleRecordingComplete(blob);
+        onRecordingComplete(blob);
+        
+        // Update UI state
+        setIsRecording(false);
+        stopTimer();
+        
+        // Resume pose detection if it was previously enabled
+        if (enableLivePose && tfInitialized) {
+          addDebugLog('Resuming pose detection after recording');
+          startPoseDetection();
+        }
       };
       
-      // Start MediaRecorder with small timeslice to capture data frequently
-      mediaRecorderRef.current.start(100); // 100ms chunks
-      addDebugLog('MediaRecorder started with 100ms timeslice');
+      // Add error handler
+      mediaRecorderRef.current.onerror = (event) => {
+        console.error('MediaRecorder error:', event);
+        addDebugLog(`MediaRecorder error: ${event.name}: ${event.message}`);
+        setError(`Recording error: ${event.name}. Please try a different browser.`);
+        setIsRecording(false);
+        stopTimer();
+      };
       
       // Disable pose detection during recording to improve performance
       if (detectorRef.current) {
-        addDebugLog('Stopping pose detection');
+        addDebugLog('Stopping pose detection during recording');
         stopPoseDetection();
       }
       
-      console.log('MediaRecorder started successfully');
+      // First update the UI state
       setIsRecording(true);
       setRecordingStartTime(Date.now());
       
-      // Generate a recording ID using the existing sessionIdRef instead of creating a new one
+      // Generate a recording ID using the existing sessionIdRef
       addDebugLog(`Using session ID for recording: ${sessionIdRef.current}`);
       
       // Start the timer
       startTimer();
+      
+      // IMPORTANT: Start MediaRecorder AFTER attaching all event handlers
+      // Use a longer timeslice to reduce the number of small chunks
+      mediaRecorderRef.current.start(1000); // 1-second chunks for better reliability
+      addDebugLog(`MediaRecorder started with 1000ms timeslice`);
+      
+      console.log('MediaRecorder started successfully');
     } catch (error) {
       console.error('Error starting recording:', error);
       addDebugLog(`Recording error: ${error.message}`);
       setError(`Error starting recording: ${error.message}. Please try a different browser.`);
       setIsRecording(false);
+      stopTimer();
     }
   };
 
@@ -1235,27 +1268,27 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     }
     
     try {
-      // Stop the MediaRecorder (this will trigger the onstop event)
-      if (mediaRecorderRef.current.state !== 'inactive') {
-        mediaRecorderRef.current.stop();
-        addDebugLog('MediaRecorder stopped');
-      }
-      
-      // Stop the timer
-      stopTimer();
-      
-      // Update UI state
-      setIsRecording(false);
-      
-      // Resume pose detection if it was previously enabled
-      if (enableLivePose && tfInitialized) {
-        addDebugLog('Resuming pose detection after recording');
-        startPoseDetection();
+      // Explicitly request a final dataavailable event with all recorded data
+      if (mediaRecorderRef.current.state === 'recording') {
+        addDebugLog('Requesting final data before stopping MediaRecorder');
+        mediaRecorderRef.current.requestData();
+        
+        // Small delay to ensure data is processed
+        setTimeout(() => {
+          // Stop the MediaRecorder (this will trigger the onstop event)
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+            mediaRecorderRef.current.stop();
+            addDebugLog('MediaRecorder stopped');
+          }
+        }, 100);
+      } else {
+        addDebugLog(`Cannot stop MediaRecorder: state is ${mediaRecorderRef.current.state}`);
       }
     } catch (error) {
       console.error('Error stopping recording:', error);
       addDebugLog(`Stop recording error: ${error.message}`);
       setError(`Error stopping recording: ${error.message}`);
+      
       // Force reset recording state
       setIsRecording(false);
       stopTimer();
