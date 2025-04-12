@@ -312,6 +312,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
+  const [recordingStartTime, setRecordingStartTime] = useState(null);
   const [error, setError] = useState(null);
   const [streamReady, setStreamReady] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
@@ -1209,8 +1210,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       setIsRecording(true);
       setRecordingStartTime(Date.now());
       
-      // Create a unique ID for this recording
-      setCurrentRecordingId(uuidv4());
+      // Generate a recording ID using the existing sessionIdRef instead of creating a new one
+      addDebugLog(`Using session ID for recording: ${sessionIdRef.current}`);
       
       // Start the timer
       startTimer();
