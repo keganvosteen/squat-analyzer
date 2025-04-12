@@ -1221,6 +1221,45 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     }
   };
 
+  // Stop recording handler
+  const handleStopRecording = () => {
+    console.log('Stop recording button clicked');
+    addDebugLog('Stopping recording');
+    
+    if (!isRecording || !mediaRecorderRef.current) {
+      console.warn('Cannot stop recording: no active recording');
+      addDebugLog('Stop recording failed: no active recording');
+      return;
+    }
+    
+    try {
+      // Stop the MediaRecorder (this will trigger the onstop event)
+      if (mediaRecorderRef.current.state !== 'inactive') {
+        mediaRecorderRef.current.stop();
+        addDebugLog('MediaRecorder stopped');
+      }
+      
+      // Stop the timer
+      stopTimer();
+      
+      // Update UI state
+      setIsRecording(false);
+      
+      // Resume pose detection if it was previously enabled
+      if (enableLivePose && tfInitialized) {
+        addDebugLog('Resuming pose detection after recording');
+        startPoseDetection();
+      }
+    } catch (error) {
+      console.error('Error stopping recording:', error);
+      addDebugLog(`Stop recording error: ${error.message}`);
+      setError(`Error stopping recording: ${error.message}`);
+      // Force reset recording state
+      setIsRecording(false);
+      stopTimer();
+    }
+  };
+
   // Properly define stopPoseDetection function to use the ref
   const stopPoseDetection = () => {
     addDebugLog("Stopping pose detection");
@@ -1388,7 +1427,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       {/* Record button below video */}
       <RecordButtonContainer>
         <RecordButton 
-          onClick={isRecording ? stopRecording : startRecording}
+          onClick={isRecording ? handleStopRecording : handleRecordButtonClick}
           disabled={isLoading}
           isRecording={isRecording}
           title={isRecording ? "Stop recording" : "Start recording"}
