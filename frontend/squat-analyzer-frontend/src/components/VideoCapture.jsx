@@ -308,6 +308,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const animationRef = useRef(null);
   const poseDetectionIdRef = useRef(null);
   const debugLogRef = useRef([]);
+  const chunksRef = useRef([]);
   
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
@@ -1147,7 +1148,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       addDebugLog(`MediaRecorder created with options: ${JSON.stringify(options)}`);
       
       // Store chunks in component scope rather than closure
-      chunksRef.current = [];
+      recordedChunksRef.current = []; // Clear previous chunks
       
       // Create new MediaRecorder instance
       mediaRecorderRef.current = new MediaRecorder(streamRef.current, options);
@@ -1157,14 +1158,14 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         console.log(`Data available event, size: ${e.data ? e.data.size : 0}`);
         
         if (e.data && e.data.size > 0) {
-          chunksRef.current.push(e.data);
-          addDebugLog(`Chunk added, total chunks: ${chunksRef.current.length}`);
+          recordedChunksRef.current.push(e.data);
+          addDebugLog(`Chunk added, total chunks: ${recordedChunksRef.current.length}`);
         }
       };
       
       // Handle recording stop event
       mediaRecorderRef.current.onstop = () => {
-        const chunks = chunksRef.current;
+        const chunks = recordedChunksRef.current;
         addDebugLog(`MediaRecorder stopped, chunks: ${chunks.length}`);
         console.log(`MediaRecorder onstop event fired, chunks: ${chunks.length}`);
         
