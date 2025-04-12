@@ -1259,9 +1259,274 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     }
   };
 
+  // Toggle pose tracking function
+  const togglePoseTracking = async () => {
+    addDebugLog(`Toggling pose tracking: current state ${isPoseTracking ? 'on' : 'off'}`);
+    
+    if (!tfInitialized) {
+      addDebugLog("TensorFlow not initialized, attempting to initialize");
+      await initializeTensorFlow();
+    }
+    
+    if (isPoseTracking) {
+      // Stop pose tracking
+      stopPoseDetection();
+      addDebugLog("Pose tracking stopped");
+    } else {
+      // Start pose tracking
+      addDebugLog("Starting pose tracking");
+      await startPoseDetection();
+    }
+  };
+
+  // Function to format recording time
+  const formatRecordingTime = (seconds) => {
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+  };
+  
+  // Unified function to toggle recording
+  const toggleRecording = () => {
+    if (isRecording) {
+      handleStopRecording();
+    } else {
+      handleStartRecording();
+    }
+  };
+
+  // Handle start recording function
+  const handleStartRecording = async () => {
+    try {
+      // Check if camera is ready and stream exists
+      if (!isCameraReady || !streamRef.current) {
+        addDebugLog("Cannot start recording: camera not ready");
+        setError("Camera not ready. Please ensure camera access is granted.");
+        return;
+      }
+      
+      // Get the video stream tracks
+      const videoTracks = streamRef.current.getVideoTracks();
+      if (!videoTracks || videoTracks.length === 0) {
+        addDebugLog("Cannot start recording: no video tracks available");
+        setError("No video stream available for recording.");
+        return;
+      }
+      
+      // Reset the recorded chunks array
+      chunksRef.current = [];
+      
+      // Set up MediaRecorder with options optimized for different browsers
+      const options = { mimeType: 'video/webm;codecs=vp9,opus' };
+      try {
+        mediaRecorderRef.current = new MediaRecorder(streamRef.current, options);
+        addDebugLog("MediaRecorder initialized with video/webm;codecs=vp9,opus");
+      } catch (e) {
+        // Try alternative codec
+        try {
+          const fallbackOptions = { mimeType: 'video/webm' };
+          mediaRecorderRef.current = new MediaRecorder(streamRef.current, fallbackOptions);
+          addDebugLog("MediaRecorder initialized with video/webm");
+        } catch (err) {
+          // Last resort: no specific options
+          try {
+            mediaRecorderRef.current = new MediaRecorder(streamRef.current);
+            addDebugLog("MediaRecorder initialized with default options");
+          } catch (finalError) {
+            console.error("Cannot create MediaRecorder:", finalError);
+            addDebugLog(`MediaRecorder creation failed: ${finalError.message}`);
+            setError("Your browser doesn't support recording. Please try a different browser.");
+            return;
+          }
+        }
+      }
+      
+      // Set up event handlers for the MediaRecorder
+      mediaRecorderRef.current.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunksRef.current.push(event.data);
+          addDebugLog(`Received data chunk: ${event.data.size} bytes`);
+        }
+      };
+      
+      mediaRecorderRef.current.onstop = async () => {
+        addDebugLog("MediaRecorder stopped, processing recording...");
+        
+        if (chunksRef.current.length === 0) {
+          addDebugLog("No data chunks recorded");
+          setError("No video data was recorded. Please try again.");
+          setIsRecording(false);
+          return;
+        }
+        
+        try {
+          // Create a blob from the chunks
+          const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+          addDebugLog(`Recording complete: ${blob.size} bytes`);
+          
+          // Create a URL for the blob
+          const url = URL.createObjectURL(blob);
+          setRecordedVideo({
+            url,
+            blob,
+            mimeType: 'video/webm',
+            timestamp: new Date().toISOString()
+          });
+          
+          // Call the callback with the recorded blob if provided
+          if (onRecordingComplete) {
+            onRecordingComplete(blob);
+          }
+        } catch (error) {
+          console.error("Error processing recording:", error);
+          addDebugLog(`Error processing recording: ${error.message}`);
+          setError(`Recording processing failed: ${error.message}`);
+        } finally {
+          setIsRecording(false);
+          stopTimer();
+        }
+      };
+      
+      // Start the recording
+      mediaRecorderRef.current.start(1000); // Collect data in 1-second chunks
+      
+      // Update state
+      setIsRecording(true);
+      setRecordingStartTime(Date.now());
+      
+      // Start the timer
+      startTimer();
+      
+      addDebugLog("Recording started");
+      
+    } catch (error) {
+      console.error("Error starting recording:", error);
+      addDebugLog(`Recording start error: ${error.message}`);
+      setError(`Failed to start recording: ${error.message}`);
+      setIsRecording(false);
+    }
+  };
+  
+  // Handle stop recording
+  const handleStopRecording = () => {
+    addDebugLog("Stopping recording...");
+    
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+        addDebugLog("MediaRecorder stopped");
+      } catch (error) {
+        console.error("Error stopping MediaRecorder:", error);
+        addDebugLog(`Error stopping MediaRecorder: ${error.message}`);
+        setError(`Failed to stop recording properly: ${error.message}`);
+      }
+    } else {
+      addDebugLog("No active MediaRecorder to stop");
+      setIsRecording(false);
+      stopTimer();
+    }
+  };
+
   return (
-    <div>
-      {/* Render your component content here */}
+    <div className={`video-container ${darkMode ? 'dark-mode' : ''}`}>
+      <div style={{ position: 'relative', width: '100%' }}>
+        {isRecording && (
+          <div className="recording-indicator" style={{ position: 'absolute', top: '15px', right: '15px', zIndex: 10 }}>
+            <div className="recording-dot"></div>
+            <span className="recording-text">Recording {recordingTime}</span>
+          </div>
+        )}
+        <video
+          ref={videoRef}
+          className="video-element"
+          autoPlay
+          playsInline
+          muted
+          style={{ width: '100%', maxHeight: '75vh', backgroundColor: darkMode ? '#1a1a1a' : '#000', borderRadius: '8px' }}
+        />
+        <canvas
+          ref={canvasRef}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            width: '100%',
+            height: '100%',
+            pointerEvents: 'none',
+          }}
+        />
+      </div>
+      
+      <div className="video-controls">
+        <div className="control-row">
+          <button 
+            className={`control-button ${isFrontFacing ? 'active' : ''}`}
+            onClick={toggleCamera}
+            disabled={!isCameraReady || isLoading || (showTFWarning && !tfInitialized) || isRecording}
+            aria-label="Toggle camera"
+          >
+            <Camera style={{ marginRight: '5px' }} size={18} />
+            {isFrontFacing ? 'Back' : 'Front'}
+          </button>
+          
+          <button 
+            className={`control-button ${isPoseTracking ? 'active' : ''}`}
+            onClick={togglePoseTracking}
+            disabled={!isCameraReady || isLoading || (showTFWarning && !tfInitialized) || isRecording}
+            aria-label="Toggle pose tracking"
+          >
+            <RefreshCw style={{ marginRight: '5px' }} size={18} />
+            {isPoseTracking ? 'Tracking On' : 'Start Tracking'}
+          </button>
+        </div>
+        
+        <div className="record-container">
+          <button 
+            className={`record-button ${isRecording ? 'recording' : ''}`}
+            onClick={toggleRecording}
+            onTouchStart={(e) => {
+              e.preventDefault(); // Prevent default touch behavior
+              toggleRecording();
+            }}
+            disabled={!isCameraReady || isLoading || (showTFWarning && !tfInitialized)}
+            aria-label={isRecording ? 'Stop recording' : 'Start recording'}
+            style={{
+              touchAction: 'manipulation', // Improve touch responsiveness
+              WebkitTapHighlightColor: 'transparent', // Remove tap highlight on iOS
+            }}
+          >
+            {isRecording ? (
+              <Square size={24} />
+            ) : (
+              <Circle size={24} fill="#ffffff" />
+            )}
+          </button>
+          <span style={{ fontSize: '14px', marginTop: '5px' }}>
+            {isRecording ? 'Stop' : 'Record'}
+          </span>
+        </div>
+      </div>
+      
+      {error && (
+        <div className="error-message">
+          <AlertTriangle size={18} style={{ marginRight: '5px' }} />
+          {error}
+          <button 
+            onClick={() => setError(null)} 
+            style={{ marginLeft: '10px', background: 'transparent', border: 'none', color: '#fff', cursor: 'pointer' }}
+            aria-label="Dismiss error"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      
+      {showTFWarning && !tfInitialized && (
+        <div className="error-message">
+          <AlertTriangle size={18} style={{ marginRight: '5px' }} />
+          Loading pose detection model... This may take a moment.
+        </div>
+      )}
     </div>
   );
 };
