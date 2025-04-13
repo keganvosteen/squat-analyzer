@@ -873,6 +873,151 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     }, 800);
   };
 
+  // Function to determine device orientation
+  const getDeviceOrientation = () => {
+    // Check screen orientation API first (most reliable)
+    if (window.screen && window.screen.orientation) {
+      const type = window.screen.orientation.type;
+      console.log(`Screen orientation type: ${type}`);
+      
+      if (type.includes('landscape')) {
+        return 'landscape';
+      } else if (type.includes('portrait')) {
+        return 'portrait';
+      }
+    }
+    
+    // Fallback to window dimensions
+    const isLandscape = window.innerWidth > window.innerHeight;
+    console.log(`Fallback orientation check: ${isLandscape ? 'landscape' : 'portrait'} (window dimensions: ${window.innerWidth}x${window.innerHeight})`);
+    
+    return isLandscape ? 'landscape' : 'portrait';
+  };
+
+  // Modified startPoseDetection to handle errors better and use ref instead of state
+  const startPoseDetection = async () => {
+    if (!tfInitialized) {
+      console.warn("TensorFlow not initialized, attempting to initialize now");
+      addDebugLog("TensorFlow not initialized, attempting initialization");
+      
+      try {
+        const success = await initializeTensorFlow();
+        if (!success) {
+          console.error("Could not initialize TensorFlow");
+          addDebugLog("TensorFlow initialization failed");
+          setError("Could not initialize pose detection. Please try again or check if your device supports it.");
+          return;
+        }
+        
+        setTfInitialized(true);
+        addDebugLog("TensorFlow initialization succeeded");
+      } catch (err) {
+        console.error("TensorFlow initialization error:", err);
+        addDebugLog(`TensorFlow initialization error: ${err.message}`);
+        setError(`Pose detection initialization failed: ${err.message}`);
+        return;
+      }
+    }
+    
+    // Clear previous pose detection if any
+    if (poseDetectionIdRef.current) {
+      cancelAnimationFrame(poseDetectionIdRef.current);
+      poseDetectionIdRef.current = null;
+    }
+    
+    // Check for an existing detector
+    if (detectorRef.current) {
+      console.log("Pose detector already initialized, reusing it");
+      addDebugLog("Reusing existing pose detector");
+    }
+    
+    if (!videoRef.current || !canvasRef.current) {
+      console.warn("Video or canvas refs not ready, can't start pose detection");
+      addDebugLog("Video or canvas refs not ready for pose detection");
+      return;
+    }
+    
+    try {
+      console.log("Initializing pose detector...");
+      addDebugLog("Initializing pose detector");
+      
+      // Make sure TensorFlow is ready
+      await tf.ready();
+      
+      // Only create a new detector if we don't have one
+      if (!detectorRef.current) {
+        // Load the MoveNet model with more explicit error handling
+        const model = poseDetection.SupportedModels.MoveNet;
+        const detectorConfig = {
+          modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+          enableSmoothing: true
+        };
+        
+        addDebugLog("Creating new pose detector with MoveNet model");
+        detectorRef.current = await poseDetection.createDetector(model, detectorConfig);
+        console.log("Pose detector initialized successfully");
+        addDebugLog("Pose detector created successfully");
+      }
+      
+      // Store canvas context for drawing
+      const ctx = canvasRef.current.getContext('2d');
+      
+      // Function to detect poses and draw
+      const detectAndDraw = async () => {
+        if (!videoRef.current || !canvasRef.current || videoRef.current.paused || videoRef.current.ended) {
+          return;
+        }
+        
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        const ctx = canvas.getContext('2d');
+        
+        // Make sure canvas matches current video display size
+        const videoRect = video.getBoundingClientRect();
+        if (canvas.width !== videoRect.width || canvas.height !== videoRect.height) {
+          canvas.width = videoRect.width;
+          canvas.height = videoRect.height;
+          addDebugLog(`Canvas resized to match video: ${canvas.width}x${canvas.height}`);
+        }
+        
+        // Clear previous drawing
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        
+        try {
+          // Get video dimensions
+          const videoWidth = video.videoWidth;
+          const videoHeight = video.videoHeight;
+          
+          // Detect poses
+          const poses = await detectorRef.current.estimatePoses(video);
+          
+          if (poses.length > 0) {
+            const pose = poses[0]; // MoveNet detects a single pose
+            drawPose(pose, canvas, ctx);
+          }
+        } catch (error) {
+          console.error('Error in pose detection:', error);
+          addDebugLog(`Pose detection error: ${error.message}`);
+        }
+        
+        // Schedule next frame using the ref
+        poseDetectionIdRef.current = requestAnimationFrame(detectAndDraw);
+      };
+      
+      // Start detection loop using the ref
+      if (!poseDetectionIdRef.current) {
+        poseDetectionIdRef.current = requestAnimationFrame(detectAndDraw);
+        setIsPoseTracking(true);
+      }
+    } catch (err) {
+      console.error("Error initializing pose detector:", err);
+      addDebugLog(`Pose detector initialization error: ${err.message}`);
+      detectorRef.current = null;
+      setEnableLivePose(false);
+      setError("Failed to initialize pose tracking. This feature will be disabled.");
+    }
+  };
+
   // Properly define stopPoseDetection function to use the ref
   const stopPoseDetection = () => {
     addDebugLog("Stopping pose detection");
@@ -966,6 +1111,249 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     } else {
       handleStartRecording();
     }
+  };
+
+  // Handle start recording function
+  const handleStartRecording = async () => {
+    try {
+      // Check if camera is ready and stream exists
+      if (!isCameraReady || !streamRef.current) {
+        addDebugLog("Cannot start recording: camera not ready");
+        setError("Camera not ready. Please ensure camera access is granted.");
+        return;
+      }
+      
+      // Save the current camera state to preserve it after recording completes
+      const currentFacingMode = isFrontFacing;
+      addDebugLog(`Current camera facing mode before recording: ${currentFacingMode ? 'front' : 'back'}`);
+      
+      // Get the video stream tracks
+      const videoTracks = streamRef.current.getVideoTracks();
+      if (!videoTracks || videoTracks.length === 0) {
+        addDebugLog("Cannot start recording: no video tracks available");
+        setError("No video stream available for recording.");
+        return;
+      }
+      
+      // Reset the recorded chunks array
+      chunksRef.current = [];
+      
+      // Mobile device specific handling
+      if (isMobile) {
+        addDebugLog("Mobile device detected, using optimized recording settings");
+      }
+      
+      // Determine supported MIME types first
+      const supportedMimeTypes = [
+        'video/webm',
+        'video/webm;codecs=vp8',
+        'video/webm;codecs=h264',
+        'video/mp4'
+      ].filter(mimeType => {
+        try {
+          return MediaRecorder.isTypeSupported(mimeType);
+        } catch (e) {
+          addDebugLog(`Error checking MIME type support for ${mimeType}: ${e.message}`);
+          return false;
+        }
+      });
+      
+      addDebugLog(`Supported MIME types: ${supportedMimeTypes.join(', ') || 'None found!'}`);
+      
+      // Try to create MediaRecorder with appropriate options based on device
+      try {
+        if (supportedMimeTypes.length > 0) {
+          // Use the first supported mimetype
+          const options = { 
+            mimeType: supportedMimeTypes[0],
+            videoBitsPerSecond: isMobile ? 1000000 : 2500000 // Lower bitrate for mobile
+          };
+          addDebugLog(`Using mimetype: ${options.mimeType} with bitrate: ${options.videoBitsPerSecond}`);
+          mediaRecorderRef.current = new MediaRecorder(streamRef.current, options);
+        } else {
+          // Fallback to default options
+          addDebugLog("No supported MIME types found, using default MediaRecorder options");
+          mediaRecorderRef.current = new MediaRecorder(streamRef.current);
+        }
+      } catch (e) {
+        addDebugLog(`MediaRecorder initialization failed: ${e.message}, trying with minimal options`);
+        // Last resort attempt with minimal options
+        mediaRecorderRef.current = new MediaRecorder(streamRef.current);
+      }
+
+      // Setup event handlers and continue with recording
+      mediaRecorderRef.current.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunksRef.current.push(event.data);
+          addDebugLog(`Received data chunk: ${event.data.size} bytes`);
+        }
+      };
+      
+      mediaRecorderRef.current.onstop = async () => {
+        addDebugLog("MediaRecorder stopped, processing recording...");
+        
+        if (chunksRef.current.length === 0) {
+          addDebugLog("No data chunks recorded");
+          setError("No video data was recorded. Please try again.");
+          setIsRecording(false);
+          stopTimer();
+          return;
+        }
+        
+        try {
+          // Create a blob from the chunks
+          let recordingMimeType = 'video/webm';
+          
+          // On iOS Safari, we may need to use a different mime type
+          if (/iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream) {
+            recordingMimeType = 'video/mp4';
+          }
+          
+          const blob = new Blob(chunksRef.current, { type: recordingMimeType });
+          addDebugLog(`Recording complete: ${blob.size} bytes, mime type: ${recordingMimeType}`);
+          
+          // Create a URL for the blob
+          const url = URL.createObjectURL(blob);
+          setRecordedVideo({
+            url,
+            blob,
+            mimeType: recordingMimeType,
+            timestamp: new Date().toISOString()
+          });
+          
+          // Call the callback with the recorded blob if provided
+          if (onRecordingComplete) {
+            // Create a metadata object with information about the recording
+            const metadata = {
+              cameraFacing: currentFacingMode ? 'front' : 'back',
+              recordingTime: recordingTimerRef.current,
+              deviceType: isMobile ? 'mobile' : 'desktop'
+            };
+            
+            // Pass both the blob and metadata
+            onRecordingComplete(blob, metadata);
+          }
+        } catch (error) {
+          console.error("Error processing recording:", error);
+          addDebugLog(`Error processing recording: ${error.message}`);
+          setError(`Recording processing failed: ${error.message}`);
+        } finally {
+          setIsRecording(false);
+          stopTimer();
+        }
+      };
+      
+      // Add error handlers for MediaRecorder
+      mediaRecorderRef.current.onerror = (event) => {
+        console.error("MediaRecorder error:", event);
+        addDebugLog(`MediaRecorder error: ${event.error ? (event.error.name + ' - ' + event.error.message) : 'Unknown error'}`);
+        setError(`Recording error: ${event.error ? event.error.message : 'Unknown error'}`);
+        
+        // Try to recover by stopping the recording
+        try {
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+            mediaRecorderRef.current.stop();
+          }
+        } catch (e) {
+          addDebugLog(`Error while trying to recover from MediaRecorder error: ${e.message}`);
+        }
+        
+        setIsRecording(false);
+        stopTimer();
+      };
+      
+      // Start the recording with a smaller timeslice for more frequent chunks
+      // Use a larger timeslice for mobile to reduce processing overhead
+      const timeslice = isMobile ? 1000 : 500;
+      mediaRecorderRef.current.start(timeslice);
+      addDebugLog(`MediaRecorder started with timeslice: ${timeslice}ms`);
+      
+      // Update state
+      setIsRecording(true);
+      setRecordingStartTime(Date.now());
+      
+      // Start the timer
+      startTimer();
+      
+      // Ensure pose tracking is active during recording
+      if (!isPoseTracking && tfInitialized) {
+        addDebugLog("Starting pose tracking for recording");
+        await startPoseDetection();
+      } else if (isPoseTracking) {
+        addDebugLog("Keeping pose tracking active during recording");
+      }
+      
+      addDebugLog("Recording started successfully");
+      
+    } catch (error) {
+      console.error("Error starting recording:", error);
+      addDebugLog(`Recording start error: ${error.message}`);
+      setError(`Failed to start recording: ${error.message}`);
+      setIsRecording(false);
+    }
+  };
+
+  // Handle stop recording
+  const handleStopRecording = () => {
+    addDebugLog("Stopping recording...");
+    
+    if (!mediaRecorderRef.current) {
+      addDebugLog("No MediaRecorder instance exists");
+      setIsRecording(false);
+      stopTimer();
+      return;
+    }
+    
+    if (mediaRecorderRef.current.state === 'recording') {
+      try {
+        addDebugLog("Attempting to stop MediaRecorder");
+        mediaRecorderRef.current.stop();
+        addDebugLog("MediaRecorder stopped successfully");
+      } catch (error) {
+        console.error("Error stopping MediaRecorder:", error);
+        addDebugLog(`Error stopping MediaRecorder: ${error.message}`);
+        setError(`Failed to stop recording properly: ${error.message}`);
+        
+        // Reset recording state anyway
+        setIsRecording(false);
+        stopTimer();
+      }
+    } else {
+      addDebugLog(`MediaRecorder not in recording state: ${mediaRecorderRef.current.state}`);
+      setIsRecording(false);
+      stopTimer();
+    }
+  };
+
+  // Timer utility functions
+  const startTimer = () => {
+    // Initialize recording time and start interval
+    setRecordingTime('00:00');
+    let seconds = 0;
+    recordingTimerRef.current = 0;
+    
+    // Clear any existing interval first
+    if (recordingInterval.current) {
+      clearInterval(recordingInterval.current);
+    }
+    
+    // Create new interval that increments seconds and updates display
+    recordingInterval.current = setInterval(() => {
+      seconds++;
+      recordingTimerRef.current = seconds;
+      setRecordingTime(formatRecordingTime(seconds));
+    }, 1000);
+  };
+
+  const stopTimer = () => {
+    // Clear the interval
+    if (recordingInterval.current) {
+      clearInterval(recordingInterval.current);
+      recordingInterval.current = null;
+    }
+    
+    // Reset recording time display
+    setRecordingTime('00:00');
   };
 
   // Function to draw pose landmarks on canvas with proper scaling

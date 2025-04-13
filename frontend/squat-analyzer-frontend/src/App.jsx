@@ -15,14 +15,48 @@ import seasLogo from '/public/SEASLogo.png';
 // Define the backend URL with a fallback
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://squat-analyzer-backend.onrender.com';
 
-// Create an axios instance with shorter timeout for free Render tier
+// Create an axios instance with better CORS handling and timeout for free Render tier
 const api = axios.create({
   baseURL: BACKEND_URL,
   timeout: 45000, // 45 seconds timeout instead of 30
   headers: {
     'Content-Type': 'multipart/form-data',
-  }
+    'Origin': window.location.origin,
+    'Access-Control-Request-Method': 'POST,GET,OPTIONS'
+  },
+  withCredentials: false // Don't send cookies for cross-domain requests
 });
+
+// Setup axios interceptors for better error handling
+api.interceptors.request.use(
+  (config) => {
+    // Add timestamp to prevent caching
+    config.params = {
+      ...config.params,
+      _t: Date.now()
+    };
+    return config;
+  },
+  (error) => {
+    console.error("Axios request error:", error);
+    return Promise.reject(error);
+  }
+);
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    // Check for CORS errors
+    if (error.code === 'ERR_NETWORK' || 
+        (error.response && error.response.status === 0) ||
+        error.message.includes('Network Error')) {
+      console.error("CORS or network error detected:", error);
+      // Force local analysis mode when we encounter CORS issues
+      ServerWarmup.forceLocalAnalysis();
+    }
+    return Promise.reject(error);
+  }
+);
 
 // Make sure Axios is using our extended timeout globally
 axios.defaults.timeout = 45000;
@@ -77,6 +111,7 @@ const ServerStatusMessage = styled.div`
       case 'ready': return 'var(--success-color)';
       case 'error': return 'var(--error-color)';
       case 'starting': return 'var(--warning-color)';
+      case 'local': return 'var(--success-color)';
       default: return 'var(--bg-secondary)';
     }
   }};
@@ -160,6 +195,17 @@ const App = () => {
 
   // Start the server warmup service when the app loads
   useEffect(() => {
+    // Check if we should force local analysis mode based on URL parameter
+    const urlParams = new URLSearchParams(window.location.search);
+    const forceLocal = urlParams.get('local') === 'true';
+    
+    if (forceLocal) {
+      console.log("Forcing local analysis mode based on URL parameter");
+      ServerWarmup.forceLocalAnalysis();
+      setUsingLocalAnalysis(true);
+      return;
+    }
+    
     // Warm up the server
     ServerWarmup.warmupServer(BACKEND_URL);
     
@@ -167,11 +213,18 @@ const App = () => {
     const unsubscribe = ServerWarmup.onServerStatusChange((status) => {
       console.log("Server status updated:", status);
       setServerStatus(status);
+      
+      // Automatically set local analysis mode if server is in error or local state
+      if (status === 'error' || status === 'local') {
+        setUsingLocalAnalysis(true);
+      }
     });
     
     // Set a shorter ping interval to check server status more frequently
     const pingInterval = setInterval(() => {
-      ServerWarmup.pingServer();
+      if (!ServerWarmup.isUsingLocalAnalysis()) {
+        ServerWarmup.pingServer();
+      }
     }, 10000); // Every 10 seconds
     
     // Clean up on unmount
@@ -190,6 +243,8 @@ const App = () => {
         return 'Server is starting up... This can take 30-60 seconds. You can still record videos while waiting.';
       case 'error':
         return 'Server is currently unavailable. Local analysis will be used.';
+      case 'local':
+        return 'Using local analysis mode for faster processing.';
       default:
         return 'Checking server status...';
     }
@@ -213,15 +268,15 @@ const App = () => {
     // Store recording metadata (like camera facing mode) for later use
     console.log("Recording metadata:", metadata);
     
-    // Start with local analysis immediately if server is not ready
-    const shouldUseLocalAnalysis = serverStatus !== 'ready';
+    // Check if we should use local analysis
+    const shouldUseLocalAnalysis = ServerWarmup.isUsingLocalAnalysis() || serverStatus !== 'ready';
     setUsingLocalAnalysis(shouldUseLocalAnalysis);
     
     try {
       // If server is not ready or has errors, skip the API call and go straight to local analysis
       if (shouldUseLocalAnalysis) {
-        console.log("Server not ready, skipping API call and using local analysis");
-        throw new Error("Server not available");
+        console.log("Using local analysis due to server status:", serverStatus);
+        throw new Error("Using local analysis mode");
       }
       
       const formData = new FormData();
@@ -251,11 +306,11 @@ const App = () => {
     } catch (apiError) {
       console.error("API Error:", apiError);
       
-      // Update server status if we got an error
+      // Update server status if we got a network error
       if (apiError.code === 'ECONNABORTED' || 
-          apiError.message.includes('Server not') || 
           apiError.message.includes('Network Error')) {
-        ServerWarmup.pingServer(); // Check server status again
+        console.log("Network error, switching to local analysis mode");
+        ServerWarmup.forceLocalAnalysis();
         setUsingLocalAnalysis(true);
       }
       
@@ -263,8 +318,11 @@ const App = () => {
       let errorMessage = '';
       if (apiError.code === 'ECONNABORTED') {
         errorMessage = "Analysis took too long. Using local analysis instead.";
-      } else if (apiError.message.includes('Server not')) {
-        errorMessage = "Server unavailable. Using local analysis instead.";
+      } else if (apiError.message.includes('Using local analysis')) {
+        // This is expected when we choose to use local analysis
+        errorMessage = '';
+      } else if (apiError.message.includes('Network Error')) {
+        errorMessage = "Network error. Using local analysis instead.";
       } else {
         errorMessage = `Server analysis failed: ${apiError.message}`;
       }

@@ -8,6 +8,9 @@ import axios from 'axios';
 // Get the backend URL from environment or use default
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://squat-analyzer-backend.onrender.com';
 
+// Flag to determine if we should use local analysis instead of server
+let useLocalAnalysis = false;
+
 // Create an axios instance with shorter timeout for pings
 const pingApi = axios.create({
   baseURL: BACKEND_URL,
@@ -16,8 +19,10 @@ const pingApi = axios.create({
 
 let pingInterval = null;
 let isInitialized = false;
-let serverStatus = 'unknown'; // 'unknown', 'starting', 'ready', 'error'
+let serverStatus = 'unknown'; // 'unknown', 'starting', 'ready', 'error', 'local'
 let statusListeners = [];
+let pingRetryCount = 0;
+const MAX_RETRY_COUNT = 3;
 
 /**
  * Update the server status and notify all listeners
@@ -59,54 +64,125 @@ const onServerStatusChange = (listener) => {
 const getServerStatus = () => serverStatus;
 
 /**
+ * Check if we're using local analysis mode
+ * @returns {boolean} True if using local analysis
+ */
+const isUsingLocalAnalysis = () => useLocalAnalysis;
+
+/**
+ * Switch to local analysis mode
+ */
+const switchToLocalAnalysis = () => {
+  console.log('Switching to local analysis mode');
+  useLocalAnalysis = true;
+  updateServerStatus('local');
+};
+
+/**
+ * Create a CORS-friendly request to the server
+ * Uses multiple methods to attempt to circumvent CORS issues
+ */
+const corsRequest = async (endpoint) => {
+  const url = `${BACKEND_URL}${endpoint}`;
+  
+  // First try with standard fetch with CORS mode
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      mode: 'cors',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Access-Control-Request-Method': 'GET',
+        'Origin': window.location.origin
+      }
+    });
+    
+    if (response.ok) {
+      return response.json();
+    }
+    
+    // If we got a response but it wasn't ok, throw an error
+    throw new Error(`Server response: ${response.status} ${response.statusText}`);
+  } catch (fetchError) {
+    console.warn(`Direct CORS request failed: ${fetchError.message}`);
+    
+    // If CORS error, try using a CORS proxy
+    try {
+      // Use a CORS proxy (this is a public one, consider setting up your own for production)
+      const corsProxyUrl = 'https://cors-anywhere.herokuapp.com/';
+      const proxyResponse = await fetch(corsProxyUrl + url, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'Origin': window.location.origin
+        }
+      });
+      
+      if (proxyResponse.ok) {
+        return proxyResponse.json();
+      }
+      
+      throw new Error(`Proxy response: ${proxyResponse.status} ${proxyResponse.statusText}`);
+    } catch (proxyError) {
+      console.warn(`CORS proxy request failed: ${proxyError.message}`);
+      
+      // All methods failed, throw error
+      throw new Error('All CORS request methods failed');
+    }
+  }
+};
+
+/**
  * Ping the server to keep it warm
  * @returns {Promise<boolean>} True if ping was successful
  */
 const pingServer = async () => {
+  if (useLocalAnalysis) {
+    console.log('Using local analysis mode, skipping server ping');
+    return false;
+  }
+  
   try {
     console.log('Pinging server to keep it warm...');
     
-    // Use fetch instead of axios to better handle CORS errors
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
-    
+    // Use the CORS-friendly request method
     try {
-      const response = await fetch(`${BACKEND_URL}/ping`, {
-        method: 'GET',
-        mode: 'cors',
-        signal: controller.signal,
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json'
-        },
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if (!response.ok) {
-        throw new Error(`Server response: ${response.status} ${response.statusText}`);
-      }
-      
-      const data = await response.json();
+      const data = await corsRequest('/ping');
       console.log('Server is alive:', data);
       updateServerStatus('ready');
+      pingRetryCount = 0; // Reset retry count on success
       return true;
-    } catch (fetchError) {
-      clearTimeout(timeoutId);
+    } catch (corsError) {
+      console.warn(`CORS request failed: ${corsError.message}`);
       
-      // Check for CORS error (which appears as TypeError or AbortError)
-      if (fetchError instanceof TypeError || fetchError.name === 'AbortError') {
-        console.warn('Server ping failed with possible CORS error:', fetchError.message);
-        
-        // If server is unavailable, switch to local analysis more quickly
-        updateServerStatus('error');
+      // Increment retry count
+      pingRetryCount++;
+      
+      // If we've exceeded the retry limit, switch to local mode
+      if (pingRetryCount >= MAX_RETRY_COUNT) {
+        console.warn(`Max ping retry count (${MAX_RETRY_COUNT}) reached, switching to local analysis`);
+        switchToLocalAnalysis();
         return false;
       }
       
-      throw fetchError; // Rethrow for the outer catch
+      // Otherwise, update status to error
+      updateServerStatus('error');
+      return false;
     }
   } catch (error) {
     console.warn('Server ping failed:', error.message);
+    
+    // Increment retry count
+    pingRetryCount++;
+    
+    // If we've exceeded the retry limit, switch to local mode
+    if (pingRetryCount >= MAX_RETRY_COUNT) {
+      console.warn(`Max ping retry count (${MAX_RETRY_COUNT}) reached, switching to local analysis`);
+      switchToLocalAnalysis();
+      return false;
+    }
     
     // If the error is a timeout or network error, the server is probably starting up
     if (error.code === 'ECONNABORTED' || 
@@ -129,6 +205,11 @@ const pingServer = async () => {
  * @returns {Promise<boolean>} True if server is ready
  */
 const warmupServer = async (url = BACKEND_URL) => {
+  if (useLocalAnalysis) {
+    console.log('Using local analysis mode, skipping server warmup');
+    return false;
+  }
+  
   try {
     console.log(`Warming up server at ${url}...`);
     updateServerStatus('starting');
@@ -146,6 +227,12 @@ const warmupServer = async (url = BACKEND_URL) => {
   } catch (error) {
     console.error('Server warmup failed:', error);
     updateServerStatus('error');
+    
+    // Check if we should just use local analysis mode
+    if (pingRetryCount >= MAX_RETRY_COUNT) {
+      switchToLocalAnalysis();
+    }
+    
     return false;
   }
 };
@@ -169,7 +256,13 @@ const startWarmupService = (intervalMs = 10 * 60 * 1000) => {
   pingServer();
   
   // Then set up the interval
-  pingInterval = setInterval(pingServer, intervalMs);
+  pingInterval = setInterval(() => {
+    // Skip ping if we're in local mode
+    if (!useLocalAnalysis) {
+      pingServer();
+    }
+  }, intervalMs);
+  
   isInitialized = true;
   
   console.log(`Server warmup service started, pinging every ${intervalMs/1000} seconds`);
@@ -187,11 +280,21 @@ const stopWarmupService = () => {
   }
 };
 
+/**
+ * Force the use of local analysis mode
+ */
+const forceLocalAnalysis = () => {
+  switchToLocalAnalysis();
+  stopWarmupService(); // No need to ping server anymore
+};
+
 export default {
   pingServer,
   startWarmupService,
   stopWarmupService,
   warmupServer,
   onServerStatusChange,
-  getServerStatus
+  getServerStatus,
+  isUsingLocalAnalysis,
+  forceLocalAnalysis
 }; 
