@@ -159,7 +159,7 @@ const DebugInfo = styled.pre`
   overflow-y: auto;
   width: 100%;
   white-space: pre-wrap;
-  display: ${props => props.show ? 'block' : 'none'};
+  display: ${props => props.$show ? 'block' : 'none'};
 `;
 
 const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }) => {
@@ -265,22 +265,36 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
     }
   };
 
-  // Adjust to properly handle landmark coordinates on potentially rotated video
-  const transformCoordinates = useCallback((x, y, width, height, isPortrait = false) => {
-    // For mobile recordings that might be rotated
-    if (isPortrait) {
-      // If the video is portrait and seems to be rotated left 90 degrees
-      // This adjusts for the 90 degree counterclockwise rotation
-      return { 
-        x: 1.0 - y, // Flip the y coordinate to become the new x
-        y: x        // Use the x coordinate as the new y
-      };
+  // Transform coordinates based on video orientation and apply scaling
+  const transformCoordinates = useCallback((x, y, canvasWidth, canvasHeight, isPortrait = false) => {
+    // Default values to prevent NaN
+    if (typeof x !== 'number' || typeof y !== 'number') {
+      console.warn('Invalid coordinates:', x, y);
+      return { x: 0.5, y: 0.5 };
     }
     
-    // No transformations needed for standard landscape orientation
-    return { x, y };
+    // Better handling for coordinates that are in decimal format (0-1)
+    // or in pixel format (0-width/height)
+    let normalizedX = x;
+    let normalizedY = y;
+    
+    if (x > 1) normalizedX = x / canvasWidth;
+    if (y > 1) normalizedY = y / canvasHeight;
+    
+    // Clamp values to valid range
+    normalizedX = Math.max(0, Math.min(1, normalizedX));
+    normalizedY = Math.max(0, Math.min(1, normalizedY));
+    
+    // If we're in portrait mode and need to adjust (disabled for now as it may cause issues)
+    const usePortraitAdjustment = false;
+    if (isPortrait && usePortraitAdjustment) {
+      // Swap coordinates for portrait mode
+      return { x: normalizedY, y: 1 - normalizedX };
+    }
+    
+    return { x: normalizedX, y: normalizedY };
   }, []);
-  
+
   // Detect mobile recordings that are rotated
   const detectVideoRotation = useCallback((video) => {
     if (!video) return 'landscape';
@@ -304,111 +318,103 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
     return 'landscape';
   }, []);
 
-  // Draw overlays on the canvas with better coordinate handling
-  const drawOverlays = useCallback((ctx, timestamp) => {
-    if (!ctx) return;
+  // Draw overlays on canvas
+  const drawOverlays = useCallback((ctx, time) => {
+    if (!ctx || !ctx.canvas || !hasAnalysisData) return;
     
-    // Clear canvas
+    // Clear canvas first
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
     
     // Update debug info
-    setDebugInfo(prev => ({
-      ...prev,
-      currentFrame: {
-        timestamp,
-        canvasWidth: ctx.canvas.width,
-        canvasHeight: ctx.canvas.height
-      }
-    }));
+    setDebugInfo({
+      currentTime: time.toFixed(2),
+      canvasWidth: ctx.canvas.width,
+      canvasHeight: ctx.canvas.height,
+      videoWidth: videoRef.current?.videoWidth || 0,
+      videoHeight: videoRef.current?.videoHeight || 0
+    });
     
-    if (!hasAnalysisData) {
-      // Draw "Analysis not available" message
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-      ctx.fillRect(0, 0, 220, 30);
-      ctx.font = '16px Arial';
-      ctx.fillStyle = 'white';
-      ctx.fillText('Analysis not available', 10, 20);
-      return;
-    }
-    
-    // Find the closest frame to the current timestamp
-    const currentSeconds = timestamp || 0;
+    // Find closest frame to current time
     const frames = analysisData.frames;
+    if (!frames || frames.length === 0) return;
     
-    // Find the frame that's closest to our current time
-    let closestFrame = null;
-    let smallestDiff = Infinity;
+    let closestFrame = frames[0];
+    let smallestDiff = Math.abs(frames[0].timestamp - time);
     
-    for (const frame of frames) {
-      const diff = Math.abs(frame.timestamp - currentSeconds);
+    for (let i = 1; i < frames.length; i++) {
+      const diff = Math.abs(frames[i].timestamp - time);
       if (diff < smallestDiff) {
         smallestDiff = diff;
-        closestFrame = frame;
+        closestFrame = frames[i];
       }
     }
     
-    if (!closestFrame) {
-      return;
-    }
+    if (!closestFrame || !closestFrame.landmarks) return;
     
+    // Determine if video is in portrait
     const isPortrait = videoOrientation === 'portrait';
-    console.log(`Drawing frame at ${closestFrame.timestamp.toFixed(2)}s, diff: ${smallestDiff.toFixed(2)}s, orientation: ${videoOrientation}`);
     
-    // Update debug with frame info
-    setDebugInfo(prev => ({
-      ...prev,
-      closestFrame: {
-        timestamp: closestFrame.timestamp,
-        diff: smallestDiff,
-        frameIndex: closestFrame.frame,
-        hasLandmarks: closestFrame.landmarks?.length || 0
-      }
-    }));
-    
-    // Draw landmarks if available
-    if (closestFrame.landmarks && Array.isArray(closestFrame.landmarks)) {
-      console.log(`Drawing ${closestFrame.landmarks.length} landmarks`);
-      
-      // Draw skeleton lines connecting landmarks
-      // Only connect body parts relevant for squat analysis (exclude facial features)
+    // Draw landmark connections (skeleton lines)
+    if (closestFrame.landmarks) {
+      // Define connections for the pose landmarks (simplified for squat analysis)
       const connections = [
-        // Torso - essential for tracking body alignment
-        [11, 12], [11, 23], [12, 24], [23, 24],
-        // Arms - helpful for balance assessment
-        [11, 13], [13, 15],
-        [12, 14], [14, 16],
-        // Legs - critical for squat form analysis
-        [23, 25], [25, 27], [27, 31],
-        [24, 26], [26, 28], [28, 32]
+        // Torso
+        [11, 12], // Left shoulder to right shoulder
+        [11, 23], // Left shoulder to left hip
+        [12, 24], // Right shoulder to right hip
+        [23, 24], // Left hip to right hip
+        
+        // Left arm
+        [11, 13], // Left shoulder to left elbow
+        [13, 15], // Left elbow to left wrist
+        
+        // Right arm
+        [12, 14], // Right shoulder to right elbow
+        [14, 16], // Right elbow to right wrist
+        
+        // Left leg
+        [23, 25], // Left hip to left knee
+        [25, 27], // Left knee to left ankle
+        [27, 31], // Left ankle to left foot
+        
+        // Right leg
+        [24, 26], // Right hip to right knee
+        [26, 28], // Right knee to right ankle
+        [28, 32], // Right ankle to right foot
       ];
       
       ctx.strokeStyle = 'white';
       ctx.lineWidth = 2;
       
-      connections.forEach(([startIdx, endIdx]) => {
-        const start = closestFrame.landmarks[startIdx];
-        const end = closestFrame.landmarks[endIdx];
+      // Draw skeleton lines
+      connections.forEach(([i, j]) => {
+        const landmark1 = closestFrame.landmarks[i];
+        const landmark2 = closestFrame.landmarks[j];
         
-        if (start && end && typeof start.x === 'number' && typeof end.x === 'number' && 
-            start.visibility > 0.5 && end.visibility > 0.5) {
-          // Transform coordinates for proper rendering based on video orientation
-          const startCoord = transformCoordinates(
-            start.x, start.y, 
-            ctx.canvas.width, ctx.canvas.height, 
-            isPortrait
-          );
-          
-          const endCoord = transformCoordinates(
-            end.x, end.y, 
-            ctx.canvas.width, ctx.canvas.height, 
-            isPortrait
-          );
-          
-          ctx.beginPath();
-          ctx.moveTo(startCoord.x * ctx.canvas.width, startCoord.y * ctx.canvas.height);
-          ctx.lineTo(endCoord.x * ctx.canvas.width, endCoord.y * ctx.canvas.height);
-          ctx.stroke();
+        if (!landmark1 || !landmark2 || 
+            typeof landmark1.x !== 'number' || 
+            typeof landmark2.x !== 'number' ||
+            landmark1.visibility < 0.5 || 
+            landmark2.visibility < 0.5) {
+          return;
         }
+        
+        const p1 = transformCoordinates(
+          landmark1.x, landmark1.y, 
+          ctx.canvas.width, ctx.canvas.height, 
+          isPortrait
+        );
+        
+        const p2 = transformCoordinates(
+          landmark2.x, landmark2.y, 
+          ctx.canvas.width, ctx.canvas.height, 
+          isPortrait
+        );
+        
+        ctx.beginPath();
+        ctx.moveTo(p1.x * ctx.canvas.width, p1.y * ctx.canvas.height);
+        ctx.lineTo(p2.x * ctx.canvas.width, p2.y * ctx.canvas.height);
+        ctx.stroke();
       });
       
       // Define relevant landmark indices for squat analysis (exclude facial features)
@@ -418,32 +424,46 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
       ];
       
       // Draw only relevant landmark points
-      ctx.fillStyle = 'red';
-      closestFrame.landmarks.forEach((landmark, idx) => {
-        // Only render landmarks that are relevant for squat analysis
-        if (relevantLandmarks.includes(idx) && typeof landmark.x === 'number' && landmark.visibility > 0.5) {
-          // Transform coordinates based on video orientation
-          const coord = transformCoordinates(
-            landmark.x, landmark.y, 
-            ctx.canvas.width, ctx.canvas.height, 
-            isPortrait
-          );
-          
-          ctx.beginPath();
-          ctx.arc(
-            coord.x * ctx.canvas.width, 
-            coord.y * ctx.canvas.height, 
-            4, 0, 2 * Math.PI
-          );
-          ctx.fill();
-          
-          // Add index number for debugging
-          if (showDebug) {
-            ctx.fillStyle = 'yellow';
-            ctx.font = '10px Arial';
-            ctx.fillText(`${idx}`, coord.x * ctx.canvas.width + 5, coord.y * ctx.canvas.height + 5);
-            ctx.fillStyle = 'red';
-          }
+      relevantLandmarks.forEach((idx) => {
+        const landmark = closestFrame.landmarks[idx];
+        if (!landmark || typeof landmark.x !== 'number' || landmark.visibility < 0.5) {
+          return;
+        }
+        
+        // Transform coordinates
+        const coord = transformCoordinates(
+          landmark.x, landmark.y, 
+          ctx.canvas.width, ctx.canvas.height, 
+          isPortrait
+        );
+        
+        // Use different colors for different body parts
+        if (idx === 11 || idx === 12) { // Shoulders
+          ctx.fillStyle = 'red';
+        } else if (idx === 23 || idx === 24) { // Hips
+          ctx.fillStyle = 'blue';
+        } else if (idx === 25 || idx === 26) { // Knees
+          ctx.fillStyle = 'green';
+        } else if (idx === 27 || idx === 28 || idx === 31 || idx === 32) { // Ankles and feet
+          ctx.fillStyle = 'yellow';
+        } else {
+          ctx.fillStyle = 'white';
+        }
+        
+        // Draw landmark point
+        ctx.beginPath();
+        ctx.arc(
+          coord.x * ctx.canvas.width, 
+          coord.y * ctx.canvas.height, 
+          5, 0, 2 * Math.PI
+        );
+        ctx.fill();
+        
+        // Add index number for debugging
+        if (showDebug) {
+          ctx.fillStyle = 'white';
+          ctx.font = '10px Arial';
+          ctx.fillText(`${idx}`, coord.x * ctx.canvas.width + 7, coord.y * ctx.canvas.height);
         }
       });
     }
@@ -722,7 +742,7 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
       </Controls>
       
       {/* Debug information panel */}
-      <DebugInfo show={showDebug}>
+      <DebugInfo $show={showDebug}>
         {JSON.stringify(debugInfo, null, 2)}
       </DebugInfo>
       

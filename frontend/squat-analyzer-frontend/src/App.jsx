@@ -73,17 +73,17 @@ const ServerStatusMessage = styled.div`
   padding: 8px 16px;
   border-radius: 4px;
   background-color: ${props => {
-    switch(props.status) {
+    switch(props.$status) {
       case 'ready': return 'var(--success-color)';
       case 'error': return 'var(--error-color)';
       case 'starting': return 'var(--warning-color)';
       default: return 'var(--bg-secondary)';
     }
   }};
-  color: ${props => props.status === 'ready' ? '#fff' : 'var(--text-primary)'};
-  font-weight: ${props => props.status === 'ready' ? 'normal' : 'bold'};
+  color: ${props => props.$status === 'ready' ? '#fff' : 'var(--text-primary)'};
+  font-weight: ${props => props.$status === 'ready' ? 'normal' : 'bold'};
   transition: all 0.3s ease;
-  display: ${props => props.status === 'unknown' ? 'none' : 'block'};
+  display: ${props => props.$status === 'unknown' ? 'none' : 'block'};
 `;
 
 const App = () => {
@@ -196,7 +196,7 @@ const App = () => {
   };
 
   // Handle when a recording is completed
-  const handleRecordingComplete = async (blob) => {
+  const handleRecordingComplete = async (blob, metadata = {}) => {
     if (!blob || blob.size === 0) {
       setError("Recording failed - no data captured");
       return;
@@ -209,13 +209,19 @@ const App = () => {
     setShowPlayback(true);
     setIsAnalyzing(true);
     setError(null);
-    setUsingLocalAnalysis(false);
+    
+    // Store recording metadata (like camera facing mode) for later use
+    console.log("Recording metadata:", metadata);
+    
+    // Start with local analysis immediately if server is not ready
+    const shouldUseLocalAnalysis = serverStatus !== 'ready';
+    setUsingLocalAnalysis(shouldUseLocalAnalysis);
     
     try {
-      // Check server status before sending
-      if (serverStatus !== 'ready') {
-        console.log("Server not ready, using local analysis");
-        throw new Error("Server not ready");
+      // If server is not ready or has errors, skip the API call and go straight to local analysis
+      if (shouldUseLocalAnalysis) {
+        console.log("Server not ready, skipping API call and using local analysis");
+        throw new Error("Server not available");
       }
       
       const formData = new FormData();
@@ -231,36 +237,52 @@ const App = () => {
       
       console.log("Analysis response:", response.data);
       
-      if (response.data && response.data.landmarks) {
+      // More robust response validation
+      if (response.data && 
+          typeof response.data === 'object' && 
+          Array.isArray(response.data.frames) && 
+          response.data.frames.length > 0) {
         setAnalysisData(response.data);
       } else {
-        throw new Error("Invalid response from server");
+        console.error("Invalid server response format:", response.data);
+        throw new Error("Invalid response format from server");
       }
       
     } catch (apiError) {
       console.error("API Error:", apiError);
       
       // Update server status if we got an error
-      if (apiError.code === 'ECONNABORTED' || apiError.message === 'Server not ready') {
+      if (apiError.code === 'ECONNABORTED' || 
+          apiError.message.includes('Server not') || 
+          apiError.message.includes('Network Error')) {
         ServerWarmup.pingServer(); // Check server status again
+        setUsingLocalAnalysis(true);
       }
       
-      // Handle timeout errors specifically
+      // For user-facing error message
+      let errorMessage = '';
       if (apiError.code === 'ECONNABORTED') {
-        setError("Analysis took too long and timed out after 45 seconds.");
+        errorMessage = "Analysis took too long. Using local analysis instead.";
+      } else if (apiError.message.includes('Server not')) {
+        errorMessage = "Server unavailable. Using local analysis instead.";
       } else {
-        setError(`Analysis failed: ${apiError.message}`);
+        errorMessage = `Server analysis failed: ${apiError.message}`;
+      }
+      
+      // Only set the error if we'll need to show it
+      if (errorMessage) {
+        setError(errorMessage);
       }
       
       // Try local analysis as a fallback
       try {
-        console.log("Falling back to local analysis...");
-        setUsingLocalAnalysis(true);
+        console.log("Running local analysis...");
         
         // Process the video locally
-        const localResults = await LocalAnalysis.analyzeVideo(blob);
+        const localResults = await LocalAnalysis.analyzeVideo(blob, url);
         
-        if (localResults && localResults.landmarks) {
+        if (localResults && Array.isArray(localResults.frames) && localResults.frames.length > 0) {
+          console.log("Local analysis successful with", localResults.frames.length, "frames");
           setAnalysisData(localResults);
         } else {
           throw new Error("Local analysis failed to generate valid results");
@@ -311,14 +333,14 @@ const App = () => {
         
         <Title>SmartSquat</Title>
         
-        <ServerStatusMessage status={serverStatus}>
+        <ServerStatusMessage $status={serverStatus}>
           {getServerStatusMessage()}
         </ServerStatusMessage>
         
         {!showPlayback ? (
-          <VideoCapture 
-            onRecordingComplete={handleRecordingComplete} 
-          />
+              <VideoCapture 
+                onRecordingComplete={handleRecordingComplete}
+              />
         ) : (
           <ExercisePlayback 
             videoUrl={videoUrl}

@@ -96,7 +96,7 @@ const analyzeVideo = async (videoBlob, videoUrl) => {
           depthRatio: 0.4 + 0.2 * Math.sin(timePoint * 2), // Simulated depth ratio
           shoulderMidfootDiff: 0.05 + 0.05 * Math.sin(timePoint) // Simulated shoulder alignment
         },
-        arrows: generateFeedbackArrows(timePoint)
+        arrows: generateFeedbackArrows(timePoint, i)
       });
     }
     
@@ -199,27 +199,46 @@ const generateSimplifiedLandmarks = (frameIndex, timestamp) => {
 };
 
 /**
- * Generates feedback arrows based on the timestamp
+ * Generates feedback arrows for visualization based on the timestamp
+ * @param {number} timestamp - The current timestamp
+ * @param {number} frameIndex - The current frame index
+ * @return {Array} - Array of arrow objects with feedback
  */
-const generateFeedbackArrows = (timestamp) => {
+const generateFeedbackArrows = (timestamp, frameIndex = 0) => {
   const arrows = [];
   
-  // Only add feedback at certain timestamps to avoid overwhelming the user
-  if (timestamp > 1 && Math.sin(timestamp * 3) > 0.7) {
+  // Calculate values that will determine our feedback
+  const kneeAngle = 90 + 40 * Math.sin(timestamp * 2);
+  const depthRatio = 0.4 + 0.2 * Math.sin(timestamp * 2);
+  const shoulderAlignment = 0.05 + 0.15 * Math.sin(timestamp);
+  
+  // Add knee alignment feedback arrow when knees are too far forward
+  if (shoulderAlignment > 0.1) {
     arrows.push({
-      start: { x: 0.5, y: 0.6 },
-      end: { x: 0.4, y: 0.5 },
+      start: { x: 0.5, y: 0.5 }, // Center of torso
+      end: { x: 0.5, y: 0.6 },   // Direction toward lower back
       color: 'yellow',
       message: 'Keep your back straight'
     });
   }
   
-  if (timestamp > 2 && Math.sin(timestamp * 2) < -0.6) {
+  // Add knee alignment feedback when appropriate
+  if (frameIndex % 3 === 0 && depthRatio < 0.3) {
     arrows.push({
-      start: { x: 0.7, y: 0.7 },
-      end: { x: 0.6, y: 0.6 },
+      start: { x: 0.7, y: 0.7 }, // Right knee
+      end: { x: 0.8, y: 0.8 },   // Direction toward ankle
       color: 'red',
       message: 'Knees should align with feet'
+    });
+  }
+  
+  // Add depth feedback when the squat is not deep enough
+  if (kneeAngle > 120 && depthRatio < 0.25) {
+    arrows.push({
+      start: { x: 0.5, y: 0.7 }, // Hip area
+      end: { x: 0.5, y: 0.8 },   // Direction downward
+      color: 'yellow',
+      message: 'Try to squat deeper'
     });
   }
   

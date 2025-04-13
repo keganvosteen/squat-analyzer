@@ -65,17 +65,57 @@ const getServerStatus = () => serverStatus;
 const pingServer = async () => {
   try {
     console.log('Pinging server to keep it warm...');
-    const response = await pingApi.get('/ping');
-    console.log('Server is alive:', response.data);
-    updateServerStatus('ready');
-    return true;
+    
+    // Use fetch instead of axios to better handle CORS errors
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    
+    try {
+      const response = await fetch(`${BACKEND_URL}/ping`, {
+        method: 'GET',
+        mode: 'cors',
+        signal: controller.signal,
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        },
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        throw new Error(`Server response: ${response.status} ${response.statusText}`);
+      }
+      
+      const data = await response.json();
+      console.log('Server is alive:', data);
+      updateServerStatus('ready');
+      return true;
+    } catch (fetchError) {
+      clearTimeout(timeoutId);
+      
+      // Check for CORS error (which appears as TypeError or AbortError)
+      if (fetchError instanceof TypeError || fetchError.name === 'AbortError') {
+        console.warn('Server ping failed with possible CORS error:', fetchError.message);
+        
+        // If server is unavailable, switch to local analysis more quickly
+        updateServerStatus('error');
+        return false;
+      }
+      
+      throw fetchError; // Rethrow for the outer catch
+    }
   } catch (error) {
     console.warn('Server ping failed:', error.message);
     
     // If the error is a timeout or network error, the server is probably starting up
-    if (error.code === 'ECONNABORTED' || error.message.includes('timeout') || error.message.includes('Network Error')) {
+    if (error.code === 'ECONNABORTED' || 
+        error.name === 'AbortError' || 
+        error.message.includes('timeout') || 
+        error.message.includes('Network Error')) {
       updateServerStatus('starting');
     } else {
+      // For other errors, assume the server is unavailable
       updateServerStatus('error');
     }
     
