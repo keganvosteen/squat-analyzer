@@ -1,6 +1,6 @@
 // src/components/ExercisePlayback.jsx
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { Play, Pause, SkipForward, SkipBack, AlertTriangle, CheckCircle, Info, Maximize2, Minimize2 } from 'lucide-react';
+import { Play, Pause, SkipForward, SkipBack, AlertTriangle, CheckCircle, Info, Maximize2, Minimize2, ArrowLeft } from 'lucide-react';
 import styled from 'styled-components';
 
 // Styled components
@@ -22,9 +22,19 @@ const VideoContainer = styled.div`
   overflow: hidden;
   border-radius: 8px;
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  ${(props) =>
+    props.$isFullscreen &&
+    `
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 1000;
+  `}
 `;
 
-const StyledVideo = styled.video`
+const Video = styled.video`
   width: 100%;
   height: auto;
   display: block;
@@ -162,13 +172,35 @@ const DebugInfo = styled.pre`
   display: ${props => props.$show ? 'block' : 'none'};
 `;
 
-const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }) => {
+const BackButton = styled.button`
+  padding: 0.5rem 1rem;
+  border: none;
+  border-radius: 4px;
+  background: #007bff;
+  color: white;
+  cursor: pointer;
+  transition: background 0.2s;
+  margin-bottom: 1rem;
+
+  &:hover {
+    background: #0056b3;
+  }
+
+  &:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+  }
+`;
+
+const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysis = false, isLoading = false, error: externalError = null, onBack }) => {
   console.log("ExercisePlayback Component");
   console.log("Video URL:", videoUrl);
+  console.log("Video Blob type:", videoBlob?.type);
   console.log("Analysis data:", analysisData);
   console.log("Using local analysis:", usingLocalAnalysis);
   
   const containerRef = useRef(null);
+  const videoContainerRef = useRef(null);
   const videoRef = useRef(null);
   const timelineRef = useRef(null);
   const canvasRef = useRef(null);
@@ -180,7 +212,7 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [hoverPosition, setHoverPosition] = useState(null);
   const [isDraggingTimeline, setIsDraggingTimeline] = useState(false);
-  const [error, setError] = useState(null);
+  const [error, setError] = useState(externalError);
   const [debugInfo, setDebugInfo] = useState({});
   const [showDebug, setShowDebug] = useState(false);
   const [videoOrientation, setVideoOrientation] = useState(null);
@@ -188,6 +220,9 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
   // Track canvas dimensions for debugging
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 0, height: 0 });
   const [videoDimensions, setVideoDimensions] = useState({ width: 0, height: 0 });
+  
+  // Track if we're using an image instead of a video for playback
+  const [isImagePlayback, setIsImagePlayback] = useState(false);
   
   // Toggle debug display with double-click
   const toggleDebug = () => {
@@ -219,51 +254,106 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
     }
   }, [videoUrl]);
 
-  // Handle video metadata loading
-  const handleLoadedMetadata = () => {
-    if (videoRef.current) {
-      const video = videoRef.current;
-      setDuration(video.duration);
-
-      const videoWidth = video.videoWidth;
-      const videoHeight = video.videoHeight;
+  // Add logic to detect image vs video URLs
+  useEffect(() => {
+    if (videoUrl) {
+      // Try to determine if this is an image or video URL
+      const isImageUrl = videoUrl.startsWith('blob:') && (
+        videoUrl.includes('image/') || 
+        (videoBlob && (videoBlob.type.startsWith('image/') || videoBlob._recordingType === 'image'))
+      );
       
-      // Use our enhanced rotation detection
-      const orientation = detectVideoRotation(video);
-      setVideoOrientation(orientation);
+      console.log(`Playback URL detected as: ${isImageUrl ? 'image' : 'video'}`);
       
-      console.log(`Video loaded: ${videoWidth}x${videoHeight}, duration: ${video.duration}s, orientation: ${orientation}`);
-      setVideoDimensions({ width: videoWidth, height: videoHeight });
-      
-      // Update debugging info
-      setDebugInfo(prev => ({
-        ...prev,
-        videoMetadata: {
-          width: videoWidth,
-          height: videoHeight,
-          duration: video.duration,
-          orientation: orientation,
-          aspectRatio: (videoWidth / videoHeight).toFixed(2)
-        }
-      }));
-      
-      // Initialize canvas size to match video dimensions exactly
-      if (canvasRef.current) {
-        const canvas = canvasRef.current;
-        canvas.width = videoWidth;
-        canvas.height = videoHeight;
-        setCanvasDimensions({ width: canvas.width, height: canvas.height });
+      if (isImageUrl) {
+        // For image URLs, load as an image instead
+        const img = new Image();
+        img.onload = () => {
+          console.log('Image loaded successfully for playback');
+          
+          // Create a canvas to display the image
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0);
+          
+          // Replace video element with the image
+          if (videoContainerRef.current) {
+            // Create styled image element
+            const imgElement = document.createElement('img');
+            imgElement.src = videoUrl;
+            imgElement.alt = 'Exercise snapshot';
+            imgElement.style.width = '100%';
+            imgElement.style.height = 'auto';
+            imgElement.style.borderRadius = '8px';
+            imgElement.style.display = 'block';
+            
+            // Clear container and append image
+            videoContainerRef.current.innerHTML = '';
+            videoContainerRef.current.appendChild(imgElement);
+          }
+        };
         
-        // Initial render of overlays
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          // Clear any previous drawings
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
-          drawOverlays(ctx, 0);
+        img.onerror = (err) => {
+          console.error('Error loading image for playback:', err);
+          setError('Failed to load image. Please try again.');
+        };
+        
+        img.src = videoUrl;
+      } else {
+        // Handle as regular video URL
+        if (videoRef.current) {
+          videoRef.current.src = videoUrl;
+          
+          videoRef.current.onloadedmetadata = () => {
+            console.log('Video metadata loaded successfully');
+            setDuration(videoRef.current.duration);
+            setVideoDimensions({ width: videoRef.current.videoWidth, height: videoRef.current.videoHeight });
+            
+            // Use our enhanced rotation detection
+            const orientation = detectVideoRotation(videoRef.current);
+            setVideoOrientation(orientation);
+            
+            console.log(`Video loaded: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}, duration: ${videoRef.current.duration}s, orientation: ${orientation}`);
+            
+            // Update debugging info
+            setDebugInfo(prev => ({
+              ...prev,
+              videoMetadata: {
+                width: videoRef.current.videoWidth,
+                height: videoRef.current.videoHeight,
+                duration: videoRef.current.duration,
+                orientation: orientation,
+                aspectRatio: (videoRef.current.videoWidth / videoRef.current.videoHeight).toFixed(2)
+              }
+            }));
+            
+            // Initialize canvas size to match video dimensions exactly
+            if (canvasRef.current) {
+              const canvas = canvasRef.current;
+              canvas.width = videoRef.current.videoWidth;
+              canvas.height = videoRef.current.videoHeight;
+              setCanvasDimensions({ width: canvas.width, height: canvas.height });
+              
+              // Initial render of overlays
+              const ctx = canvas.getContext('2d');
+              if (ctx) {
+                // Clear any previous drawings
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                drawOverlays(ctx, 0);
+              }
+            }
+          };
+          
+          videoRef.current.onerror = (err) => {
+            console.error('Video error:', err);
+            setError('Failed to load video. Please try again.');
+          };
         }
       }
     }
-  };
+  }, [videoUrl, videoBlob, analysisData]);
 
   // Transform coordinates based on video orientation and apply scaling
   const transformCoordinates = useCallback((x, y, canvasWidth, canvasHeight, isPortrait = false) => {
@@ -668,6 +758,10 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
 
   return (
     <Container ref={containerRef}>
+      <BackButton onClick={onBack}>
+        <ArrowLeft size={20} /> Back
+      </BackButton>
+      
       <h2>Exercise Playback {usingLocalAnalysis && <span className="text-sm text-yellow-600">(Local Analysis Mode)</span>}</h2>
       
       {error && (
@@ -677,18 +771,27 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
         </ErrorMessage>
       )}
       
-      <VideoContainer onDoubleClick={toggleDebug}>
-        <StyledVideo
-          ref={videoRef}
-          src={videoUrl}
-          controls={true}
-          onError={handleError}
-          playsInline
-        >
-          <source src={videoUrl} type="video/webm" />
-          Your browser does not support the video tag.
-        </StyledVideo>
-        <CanvasOverlay ref={canvasRef} />
+      <VideoContainer 
+        $isFullscreen={isFullscreen} 
+        ref={containerRef} 
+        onDoubleClick={toggleDebug}
+      >
+        <div ref={videoContainerRef}>
+          <Video
+            ref={videoRef}
+            src={videoUrl}
+            controls={true}
+            onLoadedMetadata={handleLoadedMetadata}
+            onTimeUpdate={handleTimeUpdate}
+            onError={handleError}
+            $rotate={videoOrientation || 0}
+            playsInline
+          />
+        </div>
+        
+        <OverlayCanvas
+          ref={canvasRef}
+        />
       </VideoContainer>
       
       {/* Add video orientation badge for debugging */}
@@ -766,7 +869,7 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
                     <div key={key} className="w-1/3 mb-2">
                       <StatLabel>{key}</StatLabel>
                       <StatValue>{typeof value === 'number' ? value.toFixed(1) : value}</StatValue>
-            </div>
+                    </div>
                   ))
                 )}
               </div>
@@ -807,8 +910,8 @@ const ExercisePlayback = ({ videoUrl, analysisData, usingLocalAnalysis = false }
             <p className="text-sm text-gray-600">
               Tip: Try recording a shorter video (5-10 seconds) for better processing success.
             </p>
-            </div>
-          )}
+          </div>
+        )}
       </AnalysisPanel>
     </Container>
   );

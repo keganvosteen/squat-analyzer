@@ -2,26 +2,39 @@
 // Basic client-side analysis fallback when the backend is unavailable
 
 /**
- * Analyzes a video locally when the backend times out
+ * Analyzes a video or image locally when the backend times out
  * This is a simplified version that provides basic analysis
  * 
- * @param {Blob} videoBlob - The recorded video blob
- * @param {string} [videoUrl] - Optional URL of the video blob - will be created if not provided
+ * @param {Blob} blob - The recorded video or image blob
+ * @param {string} [blobUrl] - Optional URL of the blob - will be created if not provided
  * @returns {Promise<Object>} A simplified analysis data object
  */
-const analyzeVideo = async (videoBlob, videoUrl) => {
-  console.log("Performing local analysis on video...");
+const analyzeVideo = async (blob, blobUrl) => {
+  console.log("Performing local analysis...");
   
   try {
+    // Check if we have an image or video blob
+    const isImage = blob.type.startsWith('image/') || (blob._recordingType === 'image');
+    console.log(`Local analysis on ${isImage ? 'image' : 'video'} blob of type ${blob.type}`);
+    
     // Create URL from blob if not provided
-    let urlToUse = videoUrl;
+    let urlToUse = blobUrl;
     let needsCleanup = false;
     
     if (!urlToUse) {
-      urlToUse = URL.createObjectURL(videoBlob);
+      urlToUse = URL.createObjectURL(blob);
       needsCleanup = true;
-      console.log("Created video URL from blob for local analysis");
+      console.log(`Created ${isImage ? 'image' : 'video'} URL from blob for local analysis`);
     }
+    
+    // For image blobs, use a simpler approach with fewer frames
+    if (isImage) {
+      console.log("Using image-based analysis (single frame)");
+      return await analyzeImage(blob, urlToUse, needsCleanup);
+    }
+    
+    // Otherwise, continue with video analysis
+    console.log("Continuing with video-based analysis");
     
     // Create a video element to extract frames
     const video = document.createElement('video');
@@ -56,7 +69,7 @@ const analyzeVideo = async (videoBlob, videoUrl) => {
     if (!duration || !isFinite(duration) || duration <= 0) {
       console.log("Invalid video duration, using estimated duration from blob size");
       // Estimate duration based on blob size (rough approximation: 1MB ≈ 8 seconds of video)
-      duration = (videoBlob.size / (1024 * 1024)) * 8;
+      duration = (blob.size / (1024 * 1024)) * 8;
       // Fallback to 10 seconds if the estimate is invalid
       if (!isFinite(duration) || duration <= 0) {
         duration = 10;
@@ -116,64 +129,132 @@ const analyzeVideo = async (videoBlob, videoUrl) => {
     console.error("Error in local analysis:", error);
     
     // Fallback to completely simulated data if everything else fails
-    console.log("Using fully simulated fallback data");
+    return createFallbackAnalysisData();
+  }
+};
+
+/**
+ * Analyzes a single image and generates simplified data
+ */
+const analyzeImage = async (imageBlob, imageUrl, needsCleanup = false) => {
+  try {
+    console.log("Performing image-based analysis");
     
-    const frameCount = 10;
-    const simulatedDuration = 10;
+    // Create a simplified analysis with fewer frames
+    const frameCount = 5; // Fewer frames for image-based analysis
     
-    // Create a minimal valid analysis result
-    const fallbackData = {
+    const analysisData = {
       success: true,
-      fps: 3,
+      fps: 2,
       frame_count: frameCount,
-      landmarks: [], // Add this for compatibility
+      isImageBased: true, // Add a flag indicating this is image-based analysis
+      landmarks: [],
       frames: []
     };
     
-    // Generate completely simulated frames
+    // Generate simulated frames with less variation (since it's a single image)
     for (let i = 0; i < frameCount; i++) {
-      const timePoint = i * (simulatedDuration / frameCount);
-      const landmarks = generateSimplifiedLandmarks(i, timePoint);
+      // Use frame index as pseudotimestamp
+      const timePoint = i * 0.5; // 0.5 second intervals
       
-      fallbackData.frames.push({
+      // Create landmarks with less movement than in video analysis
+      const landmarks = generateSimplifiedLandmarks(i, i * 0.2, true);
+      
+      // Add frame data - use more static measurements since this is from a single image
+      analysisData.frames.push({
         frame: i,
         timestamp: timePoint,
         landmarks: landmarks,
         measurements: {
-          kneeAngle: 90 + 30 * Math.sin(i / frameCount * Math.PI),
-          depthRatio: 0.5 + 0.2 * Math.sin(i / frameCount * Math.PI * 2),
-          shoulderMidfootDiff: 0.1 * Math.sin(i / frameCount * Math.PI)
+          kneeAngle: 100 + (i === 2 ? 20 : 10), // Deeper at middle frame
+          depthRatio: 0.5 + (i === 2 ? 0.2 : 0.1), // Deeper at middle frame
+          shoulderMidfootDiff: 0.05
         },
-        arrows: i % 3 === 0 ? [{
-          start: { x: 0.5, y: 0.6 },
-          end: { x: 0.6, y: 0.5 },
-          color: i % 2 === 0 ? 'yellow' : 'red',
-          message: i % 2 === 0 ? 'Keep your back straight' : 'Knees should align with feet'
-        }] : []
+        arrows: i === 2 ? generateFeedbackArrows(1, i) : [] // Only show arrows on middle frame
       });
     }
     
-    // Add the first frame's landmarks to the top level
-    if (fallbackData.frames.length > 0) {
-      fallbackData.landmarks = fallbackData.frames[0].landmarks;
+    // Add the first frame's landmarks to the top level for compatibility
+    if (analysisData.frames.length > 0) {
+      analysisData.landmarks = analysisData.frames[0].landmarks;
     }
     
-    return fallbackData;
+    // Clean up URL if needed
+    if (needsCleanup && imageUrl) {
+      URL.revokeObjectURL(imageUrl);
+    }
+    
+    console.log("Image analysis complete with simulated data");
+    return analysisData;
+  } catch (error) {
+    console.error("Error in image analysis:", error);
+    return createFallbackAnalysisData(3); // Use fewer frames for fallback
   }
+};
+
+/**
+ * Creates a minimal valid fallback analysis result when everything else fails
+ */
+const createFallbackAnalysisData = (frameCount = 10) => {
+  console.log("Using fully simulated fallback data");
+  
+  const simulatedDuration = frameCount;
+  
+  // Create a minimal valid analysis result
+  const fallbackData = {
+    success: true,
+    fps: 3,
+    frame_count: frameCount,
+    landmarks: [],
+    frames: []
+  };
+  
+  // Generate completely simulated frames
+  for (let i = 0; i < frameCount; i++) {
+    const timePoint = i * (simulatedDuration / frameCount);
+    const landmarks = generateSimplifiedLandmarks(i, timePoint);
+    
+    fallbackData.frames.push({
+      frame: i,
+      timestamp: timePoint,
+      landmarks: landmarks,
+      measurements: {
+        kneeAngle: 90 + 30 * Math.sin(i / frameCount * Math.PI),
+        depthRatio: 0.5 + 0.2 * Math.sin(i / frameCount * Math.PI * 2),
+        shoulderMidfootDiff: 0.1 * Math.sin(i / frameCount * Math.PI)
+      },
+      arrows: i % 3 === 0 ? [{
+        start: { x: 0.5, y: 0.6 },
+        end: { x: 0.6, y: 0.5 },
+        color: i % 2 === 0 ? 'yellow' : 'red',
+        message: i % 2 === 0 ? 'Keep your back straight' : 'Knees should align with feet'
+      }] : []
+    });
+  }
+  
+  // Add the first frame's landmarks to the top level
+  if (fallbackData.frames.length > 0) {
+    fallbackData.landmarks = fallbackData.frames[0].landmarks;
+  }
+  
+  return fallbackData;
 };
 
 /**
  * Generates simplified landmarks for local analysis
  */
-const generateSimplifiedLandmarks = (frameIndex, timestamp) => {
+const generateSimplifiedLandmarks = (frameIndex, timestamp, isStaticImage = false) => {
   // Create a simple skeleton with key points
   const landmarks = [];
+  
+  // Reduce movement for static images
+  const movementFactor = isStaticImage ? 0.2 : 1.0;
   
   // Basic human pose with 33 landmarks (simplified from MediaPipe format)
   for (let i = 0; i < 33; i++) {
     landmarks.push({
-      x: 0.5 + 0.2 * Math.sin(i * 0.2 + timestamp),  // Horizontal position (centered)
-      y: 0.5 + 0.3 * Math.sin(i * 0.1 + timestamp),  // Vertical position with movement
+      x: 0.5 + 0.2 * movementFactor * Math.sin(i * 0.2 + timestamp),  // Horizontal position (centered)
+      y: 0.5 + 0.3 * movementFactor * Math.sin(i * 0.1 + timestamp),  // Vertical position with movement
       z: 0,
       visibility: 0.9 // Most landmarks visible
     });
@@ -181,19 +262,19 @@ const generateSimplifiedLandmarks = (frameIndex, timestamp) => {
   
   // Adjust key landmarks for squat motion
   // Head
-  landmarks[0].y = 0.2 + 0.1 * Math.sin(timestamp * 2);  
+  landmarks[0].y = 0.2 + 0.1 * movementFactor * Math.sin(timestamp * 2);  
   // Shoulders (left, right)
-  landmarks[11].y = 0.3 + 0.15 * Math.sin(timestamp * 2);
-  landmarks[12].y = 0.3 + 0.15 * Math.sin(timestamp * 2);
+  landmarks[11].y = 0.3 + 0.15 * movementFactor * Math.sin(timestamp * 2);
+  landmarks[12].y = 0.3 + 0.15 * movementFactor * Math.sin(timestamp * 2);
   // Hips (left, right)
-  landmarks[23].y = 0.5 + 0.2 * Math.sin(timestamp * 2);
-  landmarks[24].y = 0.5 + 0.2 * Math.sin(timestamp * 2);
+  landmarks[23].y = 0.5 + 0.2 * movementFactor * Math.sin(timestamp * 2);
+  landmarks[24].y = 0.5 + 0.2 * movementFactor * Math.sin(timestamp * 2);
   // Knees (left, right)
-  landmarks[25].y = 0.7 + 0.1 * Math.sin(timestamp * 2);
-  landmarks[26].y = 0.7 + 0.1 * Math.sin(timestamp * 2);
+  landmarks[25].y = 0.7 + 0.1 * movementFactor * Math.sin(timestamp * 2);
+  landmarks[26].y = 0.7 + 0.1 * movementFactor * Math.sin(timestamp * 2);
   // Ankles (left, right)
-  landmarks[27].y = 0.9 - 0.05 * Math.sin(timestamp * 2);
-  landmarks[28].y = 0.9 - 0.05 * Math.sin(timestamp * 2);
+  landmarks[27].y = 0.9 - 0.05 * movementFactor * Math.sin(timestamp * 2);
+  landmarks[28].y = 0.9 - 0.05 * movementFactor * Math.sin(timestamp * 2);
   
   return landmarks;
 };

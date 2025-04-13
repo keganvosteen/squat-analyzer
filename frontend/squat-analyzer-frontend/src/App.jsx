@@ -402,22 +402,12 @@ const App = () => {
         ) : (
           <ExercisePlayback 
             videoUrl={videoUrl}
+            videoBlob={videoBlob}
             analysisData={analysisData}
+            usingLocalAnalysis={usingLocalAnalysis}
             isLoading={isAnalyzing || loading}
             error={error}
-            onBack={() => {
-              setShowPlayback(false);
-              setVideoUrl(null);
-              setVideoBlob(null);
-              setAnalysisData(null);
-              setError(null);
-              setIsAnalyzing(false);
-              
-              if (videoUrl) {
-                URL.revokeObjectURL(videoUrl);
-              }
-            }}
-            usingLocalAnalysis={usingLocalAnalysis}
+            onBack={handleBackToRecord}
           />
         )}
       </Container>

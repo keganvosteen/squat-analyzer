@@ -438,13 +438,30 @@ const LoadingOverlay = styled.div`
   left: 0;
   right: 0;
   bottom: 0;
-  background-color: rgba(0, 0, 0, 0.7);
+  background-color: rgba(0, 0, 0, 0.5); /* Semi-transparent background */
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   color: white;
   z-index: 20;
+  pointer-events: auto; /* Allow interaction with the overlay */
+  
+  button {
+    margin-top: 15px;
+    padding: 8px 16px;
+    background-color: #2196f3;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: background-color 0.2s;
+    
+    &:hover {
+      background-color: #0d8bf2;
+    }
+  }
 `;
 
 const LoadingSpinner = styled.div`
@@ -522,6 +539,65 @@ const DebugPanel = styled.div`
     &:hover {
       background-color: #5a6268;
     }
+  }
+`;
+
+const Controls = styled.div`
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 15px;
+  width: 100%;
+  
+  @media (max-width: 600px) {
+    gap: 8px;
+  }
+  
+  @media (max-width: 400px) {
+    gap: 5px;
+  }
+`;
+
+// Add Button styling component
+const Button = styled.button`
+  padding: 10px 15px;
+  background-color: #0077cc;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 1rem;
+  min-width: 120px;
+  cursor: pointer;
+  transition: all 0.2s ease-in-out;
+  
+  &:hover:not(:disabled) {
+    background-color: #0055aa;
+    transform: translateY(-2px);
+  }
+  
+  &:disabled {
+    background-color: #cccccc;
+    color: #666666;
+    cursor: not-allowed;
+  }
+  
+  &.recording {
+    background-color: #cc0000;
+    box-shadow: 0 0 8px rgba(255, 0, 0, 0.5);
+    animation: pulse 1.5s infinite;
+  }
+  
+  @media (max-width: 600px) {
+    font-size: 0.9rem;
+    padding: 8px 12px;
+    min-width: 100px;
+  }
+  
+  @media (max-width: 400px) {
+    font-size: 0.8rem;
+    padding: 6px 10px;
+    min-width: 80px;
   }
 `;
 
@@ -750,11 +826,27 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           await new Promise((resolve) => {
             videoRef.current.onloadedmetadata = () => {
               addDebugLog(`Video loaded: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`);
+              
+              // Immediately update states here to ensure UI is updated
+              setStreamReady(true);
+              setIsInitialized(true);
+              setIsInitializing(false);
+              setIsCameraReady(true);
+              setIsLoading(false);
+              
               resolve();
             };
             
             // Safety timeout in case the event never fires
-            setTimeout(resolve, 2000);
+            setTimeout(() => {
+              addDebugLog("Video metadata loading timeout - forcing state update");
+              setStreamReady(true);
+              setIsInitialized(true);
+              setIsInitializing(false);
+              setIsCameraReady(true);
+              setIsLoading(false);
+              resolve();
+            }, 2000);
           });
           
           // Make sure video is actually playing
@@ -786,17 +878,50 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           
           if (videoRef.current) {
             videoRef.current.srcObject = fallbackStream;
-            await videoRef.current.play();
+            
+            // Update state first before playing to ensure UI updates
+            setStreamReady(true);
+            setIsInitialized(true);
+            setIsInitializing(false);
+            
+            try {
+              await videoRef.current.play();
+              addDebugLog('Fallback video playback started successfully');
+              setIsCameraReady(true);
+              setIsLoading(false);
+            } catch (playError) {
+              addDebugLog(`Fallback video play error: ${playError.message}`);
+              throw playError;
+            }
           }
         } catch (secondError) {
           // As a last resort, try with just { video: true }
           addDebugLog("Fallback constraints failed. Trying basic video access.");
-          const basicStream = await navigator.mediaDevices.getUserMedia({ video: true });
-          streamRef.current = basicStream;
-          
-          if (videoRef.current) {
-            videoRef.current.srcObject = basicStream;
-            await videoRef.current.play();
+          try {
+            const basicStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            streamRef.current = basicStream;
+            
+            if (videoRef.current) {
+              videoRef.current.srcObject = basicStream;
+              
+              // Update state first before playing
+              setStreamReady(true);
+              setIsInitialized(true);
+              setIsInitializing(false);
+              
+              try {
+                await videoRef.current.play();
+                addDebugLog('Basic video playback started successfully');
+                setIsCameraReady(true);
+                setIsLoading(false);
+              } catch (playError) {
+                addDebugLog(`Basic video play error: ${playError.message}`);
+                throw playError;
+              }
+            }
+          } catch (finalError) {
+            addDebugLog(`All fallback attempts failed: ${finalError.message}`);
+            throw finalError;
           }
         }
       }
@@ -948,15 +1073,33 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       if (!detectorRef.current) {
         // Load the MoveNet model with more explicit error handling
         const model = poseDetection.SupportedModels.MoveNet;
+        
+        // Use a mobile-optimized configuration
         const detectorConfig = {
-          modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
-          enableSmoothing: true
+          modelType: isMobile ? 
+            poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING : 
+            poseDetection.movenet.modelType.SINGLEPOSE_THUNDER,
+          enableSmoothing: true,
+          // Use reduced scoring threshold on mobile for better detection
+          scoreThreshold: isMobile ? 0.25 : 0.3,
+          // Mobile-specific optimization
+          multiPoseMaxDimension: isMobile ? 256 : 320
         };
         
-        addDebugLog("Creating new pose detector with MoveNet model");
-        detectorRef.current = await poseDetection.createDetector(model, detectorConfig);
-        console.log("Pose detector initialized successfully");
-        addDebugLog("Pose detector created successfully");
+        addDebugLog(`Creating new pose detector with model type: ${isMobile ? 'LIGHTNING (mobile)' : 'THUNDER'}`);
+        
+        try {
+          detectorRef.current = await poseDetection.createDetector(model, detectorConfig);
+          console.log("Pose detector initialized successfully");
+          addDebugLog("Pose detector created successfully");
+        } catch (modelError) {
+          // Fallback to lightning model if thunder fails
+          console.warn("Thunder model failed, falling back to lightning:", modelError);
+          addDebugLog("Falling back to lightning model");
+          
+          detectorConfig.modelType = poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING;
+          detectorRef.current = await poseDetection.createDetector(model, detectorConfig);
+        }
       }
       
       // Store canvas context for drawing
@@ -989,15 +1132,44 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           const videoHeight = video.videoHeight;
           
           // Detect poses
-          const poses = await detectorRef.current.estimatePoses(video);
+          const poses = await detectorRef.current.estimatePoses(video, {
+            flipHorizontal: isFrontFacing // Flip detection results if using front camera
+          });
           
-          if (poses.length > 0) {
+          if (poses && poses.length > 0) {
             const pose = poses[0]; // MoveNet detects a single pose
+            
+            // Log pose format if in debug mode to help identify structure
+            if (debugMode && pose && pose.keypoints && pose.keypoints.length > 0) {
+              const sampleKeypoint = pose.keypoints[0];
+              console.debug('Keypoint sample format:', sampleKeypoint);
+            }
+            
+            // Standardize keypoint format if needed
+            if (pose.keypoints) {
+              // Normalize the keypoint format to ensure consistency
+              pose.keypoints = pose.keypoints.map(kp => {
+                // Add position object if only x,y are available directly
+                if (kp.x !== undefined && kp.y !== undefined && !kp.position) {
+                  kp.position = { x: kp.x, y: kp.y };
+                }
+                // Make sure we have part/name information
+                if (!kp.part && kp.name) {
+                  kp.part = kp.name;
+                } else if (!kp.name && kp.part) {
+                  kp.name = kp.part;
+                }
+                return kp;
+              });
+            }
+            
             drawPose(pose, canvas, ctx);
           }
         } catch (error) {
           console.error('Error in pose detection:', error);
           addDebugLog(`Pose detection error: ${error.message}`);
+          
+          // Don't stop the loop on errors, just continue to next frame
         }
         
         // Schedule next frame using the ref
@@ -1077,24 +1249,33 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     }
   };
 
-  // Toggle pose tracking function
-  const togglePoseTracking = async () => {
-    addDebugLog(`Toggling pose tracking: current state ${isPoseTracking ? 'on' : 'off'}`);
+  // Update togglePoseTracking function to match new variable names
+  const togglePoseTracking = () => {
+    if (isLoading || !isCameraReady) return;
+    
+    addDebugLog(`togglePoseTracking called, current state: isPoseTracking=${isPoseTracking}, tfInitialized=${tfInitialized}`);
     
     if (!tfInitialized) {
-      addDebugLog("TensorFlow not initialized, attempting to initialize");
-      await initializeTensorFlow();
+      addDebugLog("TensorFlow not initialized yet");
+      initializeTensorFlow().then(success => {
+        if (success) {
+          setTfInitialized(true);
+          // Try to start pose tracking after initialization
+          setTimeout(() => startPoseDetection(), 500);
+        }
+      });
+      return;
     }
     
     if (isPoseTracking) {
-      // Stop pose tracking
+      addDebugLog("Stopping pose tracking");
       stopPoseDetection();
-      addDebugLog("Pose tracking stopped");
     } else {
-      // Start pose tracking
       addDebugLog("Starting pose tracking");
-      await startPoseDetection();
+      startPoseDetection();
     }
+    
+    setIsPoseTracking(!isPoseTracking);
   };
 
   // Function to format recording time
@@ -1104,222 +1285,649 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
   };
 
+  // Separate function to handle stopping frame-based recording (when MediaRecorder is not available)
+  const stopFrameCapture = async () => {
+    console.debug('[Squat] Stopping frame-based recording');
+    
+    // Get a reference to the most recent capture timeout
+    const frameCapture = mediaRecorderRef.current?.frameCapture;
+    const captureFrames = mediaRecorderRef.current?.captureFrames || [];
+    
+    // Clear any running capture timeout
+    if (frameCapture && frameCapture.current) {
+      clearTimeout(frameCapture.current);
+      console.debug('[Squat] Frame capture loop stopped');
+    }
+    
+    if (captureFrames.length === 0) {
+      console.warn('[Squat] No frames were captured during recording');
+      // Try one last capture
+      const lastFrameBlob = await createFallbackRecording();
+      
+      if (lastFrameBlob && typeof onRecordingComplete === 'function') {
+        console.debug('[Squat] Using emergency last frame capture');
+        onRecordingComplete(lastFrameBlob);
+      } else {
+        setError('Recording failed: No frames were captured.');
+      }
+    } else {
+      console.debug(`[Squat] Collected ${captureFrames.length} frames during recording`);
+      
+      // Use the last frame as the recording output
+      const lastFrame = captureFrames[captureFrames.length - 1];
+      
+      if (lastFrame && lastFrame.blob && typeof onRecordingComplete === 'function') {
+        console.debug('[Squat] Using last captured frame as recording output');
+        onRecordingComplete(lastFrame.blob);
+      } else {
+        setError('Failed to process captured frames.');
+      }
+    }
+    
+    // Reset UI state
+    setIsRecording(false);
+    stopTimer();
+  };
+
   // Unified function to toggle recording
   const toggleRecording = () => {
-    if (isRecording) {
-      handleStopRecording();
-    } else {
-      handleStartRecording();
+    try {
+      console.debug('[Squat] Toggle recording. Current state:', isRecording);
+      
+      if (isRecording) {
+        // If we're using MediaRecorder
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+          handleStopRecording();
+        } 
+        // If we're using frame capture only
+        else if (mediaRecorderRef.current && mediaRecorderRef.current.frameCapture) {
+          stopFrameCapture();
+        }
+        // Fallback case
+        else {
+          setIsRecording(false);
+          stopTimer();
+        }
+      } else {
+        // Check if tracking is enabled before recording
+        if (!isPoseTracking) {
+          // Auto-enable pose tracking when starting recording
+          console.debug('[Squat] Auto-enabling pose tracking for recording');
+          startPoseDetection();
+          setIsPoseTracking(true);
+          
+          // Small delay to ensure pose tracking is initialized
+          setTimeout(() => {
+            handleStartRecording();
+          }, 1000);
+        } else {
+          handleStartRecording();
+        }
+      }
+    } catch (error) {
+      console.error('[Squat] Error in toggleRecording:', error);
+      setError(`Recording error: ${error.message}`);
     }
   };
 
   // Handle start recording function
-  const handleStartRecording = async () => {
+  const handleStartRecording = () => {
     try {
-      // Check if camera is ready and stream exists
-      if (!isCameraReady || !streamRef.current) {
-        addDebugLog("Cannot start recording: camera not ready");
-        setError("Camera not ready. Please ensure camera access is granted.");
+      console.debug('[Squat] Starting recording...');
+      
+      // Check if camera is ready
+      if (!videoRef.current || !videoRef.current.srcObject) {
+        console.warn('[Squat] Camera not ready for recording');
+        setError('Camera not ready. Please ensure camera access is enabled.');
         return;
       }
       
-      // Save the current camera state to preserve it after recording completes
-      const currentFacingMode = isFrontFacing;
-      addDebugLog(`Current camera facing mode before recording: ${currentFacingMode ? 'front' : 'back'}`);
-      
-      // Get the video stream tracks
-      const videoTracks = streamRef.current.getVideoTracks();
+      // Get video tracks and verify they exist
+      const videoTracks = videoRef.current.srcObject.getVideoTracks();
       if (!videoTracks || videoTracks.length === 0) {
-        addDebugLog("Cannot start recording: no video tracks available");
-        setError("No video stream available for recording.");
+        console.warn('[Squat] No video tracks available');
+        setError('No video source available for recording.');
         return;
       }
       
-      // Reset the recorded chunks array
-      chunksRef.current = [];
+      // Reset recording chunks and set up frame capture as backup
+      recordedChunksRef.current = [];
+      const captureStartTime = Date.now();
       
-      // Mobile device specific handling
-      if (isMobile) {
-        addDebugLog("Mobile device detected, using optimized recording settings");
-      }
+      // Start a manual frame capture as backup
+      let frameCounter = 0;
+      const manualFrameCaptureRef = { current: null };
+      const captureFrames = [];
       
-      // Determine supported MIME types first
-      const supportedMimeTypes = [
-        'video/webm',
-        'video/webm;codecs=vp8',
-        'video/webm;codecs=h264',
-        'video/mp4'
-      ].filter(mimeType => {
+      // Create a function to manually capture frames as fallback
+      const captureFrame = async () => {
+        if (!isRecording || !videoRef.current) return;
+        
         try {
-          return MediaRecorder.isTypeSupported(mimeType);
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d');
+          canvas.width = videoRef.current.videoWidth;
+          canvas.height = videoRef.current.videoHeight;
+          
+          // Draw video frame
+          ctx.drawImage(videoRef.current, 0, 0);
+          
+          // Draw pose data if available
+          if (canvasRef.current && isPoseTracking) {
+            ctx.drawImage(canvasRef.current, 0, 0);
+          }
+          
+          // Store the frame
+          canvas.toBlob((blob) => {
+            if (blob) {
+              frameCounter++;
+              if (frameCounter % 10 === 0) {
+                console.debug(`[Squat] Backup frame capture: ${frameCounter} frames`);
+              }
+              captureFrames.push({
+                blob,
+                timestamp: Date.now() - captureStartTime
+              });
+            }
+          }, 'image/jpeg', 0.8);
+          
+          // Continue capture if still recording
+          if (isRecording) {
+            manualFrameCaptureRef.current = setTimeout(captureFrame, 200); // Capture at ~5fps
+          }
         } catch (e) {
-          addDebugLog(`Error checking MIME type support for ${mimeType}: ${e.message}`);
-          return false;
-        }
-      });
-      
-      addDebugLog(`Supported MIME types: ${supportedMimeTypes.join(', ') || 'None found!'}`);
-      
-      // Try to create MediaRecorder with appropriate options based on device
-      try {
-        if (supportedMimeTypes.length > 0) {
-          // Use the first supported mimetype
-          const options = { 
-            mimeType: supportedMimeTypes[0],
-            videoBitsPerSecond: isMobile ? 1000000 : 2500000 // Lower bitrate for mobile
-          };
-          addDebugLog(`Using mimetype: ${options.mimeType} with bitrate: ${options.videoBitsPerSecond}`);
-          mediaRecorderRef.current = new MediaRecorder(streamRef.current, options);
-        } else {
-          // Fallback to default options
-          addDebugLog("No supported MIME types found, using default MediaRecorder options");
-          mediaRecorderRef.current = new MediaRecorder(streamRef.current);
-        }
-      } catch (e) {
-        addDebugLog(`MediaRecorder initialization failed: ${e.message}, trying with minimal options`);
-        // Last resort attempt with minimal options
-        mediaRecorderRef.current = new MediaRecorder(streamRef.current);
-      }
-
-      // Setup event handlers and continue with recording
-      mediaRecorderRef.current.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
-          chunksRef.current.push(event.data);
-          addDebugLog(`Received data chunk: ${event.data.size} bytes`);
+          console.warn('[Squat] Error in manual frame capture:', e);
         }
       };
       
-      mediaRecorderRef.current.onstop = async () => {
-        addDebugLog("MediaRecorder stopped, processing recording...");
-        
-        if (chunksRef.current.length === 0) {
-          addDebugLog("No data chunks recorded");
-          setError("No video data was recorded. Please try again.");
-          setIsRecording(false);
-          stopTimer();
+      // Add debugging for data availability
+      let chunkCount = 0;
+      let lastChunkTime = Date.now();
+      
+      // Determine supported mime types - prioritize mobile-compatible formats
+      const mobileDevice = isMobile || isMobileDevice();
+      console.debug(`[Squat] Device type: ${mobileDevice ? 'Mobile' : 'Desktop'}`);
+      
+      // Check if MediaRecorder is supported at all
+      if (typeof MediaRecorder === 'undefined') {
+        console.warn('[Squat] MediaRecorder not supported, using fallback capture');
+        // Start fallback capture immediately
+        setIsRecording(true);
+        startTimer();
+        captureFrame();
+        return;
+      }
+      
+      // Different mime type priorities based on platform
+      const mimeTypes = mobileDevice ? [
+        'video/mp4',
+        'video/mp4;codecs=h264,aac',
+        'video/webm',
+        'video/webm;codecs=vp8,opus',
+        'video/webm;codecs=vp9,opus'
+      ] : [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm;codecs=h264,opus',
+        'video/mp4;codecs=h264,aac',
+        'video/webm',
+        'video/mp4'
+      ];
+      
+      let selectedMimeType = null;
+      for (const type of mimeTypes) {
+        if (MediaRecorder.isTypeSupported(type)) {
+          selectedMimeType = type;
+          console.debug(`[Squat] Using mime type: ${type}`);
+          break;
+        }
+      }
+      
+      if (!selectedMimeType) {
+        console.warn('[Squat] No supported mime types found, using fallback capture');
+        // Start fallback capture
+        setIsRecording(true);
+        startTimer();
+        captureFrame();
+        return;
+      }
+      
+      // Create options with appropriate bitrate for mobile (lower for better reliability)
+      const options = {
+        mimeType: selectedMimeType,
+        videoBitsPerSecond: mobileDevice ? 1000000 : 2500000 // Even lower bitrate for reliability
+      };
+      
+      try {
+        // Create and configure the MediaRecorder
+        mediaRecorderRef.current = new MediaRecorder(videoRef.current.srcObject, options);
+        console.debug('[Squat] MediaRecorder created with options:', options);
+      } catch (recorderError) {
+        console.warn('[Squat] Error creating MediaRecorder with options, trying without options:', recorderError);
+        // Try again with no options as fallback
+        try {
+          mediaRecorderRef.current = new MediaRecorder(videoRef.current.srcObject);
+        } catch (basicError) {
+          console.error('[Squat] Failed to create MediaRecorder even without options:', basicError);
+          // Use fallback frame capture
+          setIsRecording(true);
+          startTimer();
+          captureFrame();
           return;
         }
-        
-        try {
-          // Create a blob from the chunks
-          let recordingMimeType = 'video/webm';
+      }
+      
+      // Store the frame capture reference for cleanup
+      mediaRecorderRef.current.frameCapture = manualFrameCaptureRef;
+      mediaRecorderRef.current.captureFrames = captureFrames;
+      
+      mediaRecorderRef.current.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          const now = Date.now();
+          const timeSinceLastChunk = now - lastChunkTime;
+          lastChunkTime = now;
           
-          // On iOS Safari, we may need to use a different mime type
-          if (/iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream) {
-            recordingMimeType = 'video/mp4';
+          chunkCount++;
+          console.debug(`[Squat] Data chunk ${chunkCount} available: ${event.data.size} bytes (${timeSinceLastChunk}ms since last chunk)`);
+          recordedChunksRef.current.push(event.data);
+          
+          // Add progress indicator update if recording for a while
+          if (chunkCount % 5 === 0) {
+            console.debug(`[Squat] Recording progress: ${recordedChunksRef.current.length} chunks collected`);
           }
-          
-          const blob = new Blob(chunksRef.current, { type: recordingMimeType });
-          addDebugLog(`Recording complete: ${blob.size} bytes, mime type: ${recordingMimeType}`);
-          
-          // Create a URL for the blob
-          const url = URL.createObjectURL(blob);
-          setRecordedVideo({
-            url,
-            blob,
-            mimeType: recordingMimeType,
-            timestamp: new Date().toISOString()
-          });
-          
-          // Call the callback with the recorded blob if provided
-          if (onRecordingComplete) {
-            // Create a metadata object with information about the recording
-            const metadata = {
-              cameraFacing: currentFacingMode ? 'front' : 'back',
-              recordingTime: recordingTimerRef.current,
-              deviceType: isMobile ? 'mobile' : 'desktop'
-            };
-            
-            // Pass both the blob and metadata
-            onRecordingComplete(blob, metadata);
-          }
-        } catch (error) {
-          console.error("Error processing recording:", error);
-          addDebugLog(`Error processing recording: ${error.message}`);
-          setError(`Recording processing failed: ${error.message}`);
-        } finally {
-          setIsRecording(false);
-          stopTimer();
+        } else {
+          console.warn('[Squat] Empty data received in ondataavailable event');
         }
       };
       
-      // Add error handlers for MediaRecorder
       mediaRecorderRef.current.onerror = (event) => {
-        console.error("MediaRecorder error:", event);
-        addDebugLog(`MediaRecorder error: ${event.error ? (event.error.name + ' - ' + event.error.message) : 'Unknown error'}`);
-        setError(`Recording error: ${event.error ? event.error.message : 'Unknown error'}`);
+        console.error('[Squat] MediaRecorder error:', event);
+        setError('Recording error occurred. Please try again.');
         
-        // Try to recover by stopping the recording
-        try {
-          if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-            mediaRecorderRef.current.stop();
-          }
-        } catch (e) {
-          addDebugLog(`Error while trying to recover from MediaRecorder error: ${e.message}`);
+        // If we have frame captures, we can still recover
+        if (captureFrames.length > 0) {
+          console.debug(`[Squat] Will try to recover using ${captureFrames.length} captured frames`);
+        }
+        
+        // Stop the capture loop and clean up
+        if (manualFrameCaptureRef.current) {
+          clearTimeout(manualFrameCaptureRef.current);
         }
         
         setIsRecording(false);
         stopTimer();
       };
       
-      // Start the recording with a smaller timeslice for more frequent chunks
-      // Use a larger timeslice for mobile to reduce processing overhead
-      const timeslice = isMobile ? 1000 : 500;
-      mediaRecorderRef.current.start(timeslice);
-      addDebugLog(`MediaRecorder started with timeslice: ${timeslice}ms`);
+      mediaRecorderRef.current.onstop = () => {
+        console.debug('[Squat] MediaRecorder stopped, processing recording...');
+        
+        // Stop the backup frame capture if running
+        if (manualFrameCaptureRef.current) {
+          clearTimeout(manualFrameCaptureRef.current);
+        }
+        
+        if (recordedChunksRef.current.length === 0) {
+          console.warn('[Squat] No recorded data available from MediaRecorder');
+          
+          // If we have backup frames, convert them to a video or still image
+          if (captureFrames.length > 0) {
+            console.debug(`[Squat] Using ${captureFrames.length} backup frames`);
+            
+            // For simplicity, just use the last frame as a fallback image
+            const lastFrame = captureFrames[captureFrames.length - 1];
+            
+            if (lastFrame && lastFrame.blob) {
+              console.debug('[Squat] Using last captured frame as fallback');
+              if (typeof onRecordingComplete === 'function') {
+                onRecordingComplete(lastFrame.blob);
+              }
+            } else {
+              setError('Recording failed to capture any usable data.');
+            }
+          } else {
+            setError('No recorded data available.');
+          }
+          
+          setIsRecording(false);
+          return;
+        }
+        
+        // Determine output format based on browser support
+        const outputType = selectedMimeType.split(';')[0]; // Get base mime type without codecs
+        console.debug(`[Squat] Using output type: ${outputType} with ${recordedChunksRef.current.length} chunks`);
+        
+        // Create blob from recorded chunks
+        const blob = new Blob(recordedChunksRef.current, { type: outputType });
+        console.debug(`[Squat] Created blob size: ${blob.size} bytes`);
+        
+        // Call the onRecordingComplete callback if available
+        if (typeof onRecordingComplete === 'function') {
+          console.debug('[Squat] Calling onRecordingComplete with blob');
+          onRecordingComplete(blob);
+        } else {
+          console.warn('[Squat] No onRecordingComplete handler available');
+        }
+        
+        // Reset recording state
+        setIsRecording(false);
+        recordedChunksRef.current = [];
+      };
       
-      // Update state
-      setIsRecording(true);
-      setRecordingStartTime(Date.now());
-      
-      // Start the timer
-      startTimer();
-      
-      // Ensure pose tracking is active during recording
-      if (!isPoseTracking && tfInitialized) {
-        addDebugLog("Starting pose tracking for recording");
-        await startPoseDetection();
-      } else if (isPoseTracking) {
-        addDebugLog("Keeping pose tracking active during recording");
+      // Start recording with more frequent data callbacks for more reliable recording
+      try {
+        console.debug('[Squat] Starting MediaRecorder');
+        // Use very frequent chunks on mobile for better reliability (every 100ms)
+        mediaRecorderRef.current.start(mobileDevice ? 100 : 250);
+        
+        // Also start the fallback frame capture as a safety measure
+        captureFrame();
+      } catch (startError) {
+        console.error('[Squat] Error starting MediaRecorder:', startError);
+        setError(`Could not start recording: ${startError.message}`);
+        setIsRecording(false);
+        return;
       }
       
-      addDebugLog("Recording started successfully");
+      // Update recording state and start timer
+      setIsRecording(true);
+      startTimer();
       
+      // Set a safety timeout to ensure we get at least some data
+      setTimeout(() => {
+        if (isRecording && recordedChunksRef.current.length === 0) {
+          console.warn('[Squat] No chunks recorded after 1 second, requesting data');
+          try {
+            if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+              mediaRecorderRef.current.requestData();
+            }
+          } catch (e) {
+            console.warn('[Squat] Error requesting initial data:', e);
+          }
+        }
+      }, 1000);
+      
+      console.debug('[Squat] Recording started successfully');
     } catch (error) {
-      console.error("Error starting recording:", error);
-      addDebugLog(`Recording start error: ${error.message}`);
+      console.error('[Squat] Error starting recording:', error);
       setError(`Failed to start recording: ${error.message}`);
       setIsRecording(false);
     }
   };
 
-  // Handle stop recording
-  const handleStopRecording = () => {
-    addDebugLog("Stopping recording...");
-    
-    if (!mediaRecorderRef.current) {
-      addDebugLog("No MediaRecorder instance exists");
-      setIsRecording(false);
-      stopTimer();
-      return;
+  // Create a fallback recording using canvas capture when MediaRecorder fails to collect chunks for recording
+  const createFallbackRecording = () => {
+    console.debug('[Squat] Creating fallback recording from canvas frames');
+    if (!videoRef.current || !canvasRef.current) {
+      console.warn('[Squat] Cannot create fallback - no video or canvas ref');
+      return null;
     }
     
-    if (mediaRecorderRef.current.state === 'recording') {
-      try {
-        addDebugLog("Attempting to stop MediaRecorder");
-        mediaRecorderRef.current.stop();
-        addDebugLog("MediaRecorder stopped successfully");
-      } catch (error) {
-        console.error("Error stopping MediaRecorder:", error);
-        addDebugLog(`Error stopping MediaRecorder: ${error.message}`);
-        setError(`Failed to stop recording properly: ${error.message}`);
-        
-        // Reset recording state anyway
+    try {
+      // Create a temporary canvas to capture the current frame
+      const tempCanvas = document.createElement('canvas');
+      const tempCtx = tempCanvas.getContext('2d');
+      
+      // Set dimensions to match the video
+      tempCanvas.width = videoRef.current.videoWidth || 640;
+      tempCanvas.height = videoRef.current.videoHeight || 480;
+      
+      // Draw the current video frame
+      tempCtx.drawImage(videoRef.current, 0, 0, tempCanvas.width, tempCanvas.height);
+      
+      // If we have pose data, draw it on the canvas too
+      if (canvasRef.current) {
+        tempCtx.drawImage(canvasRef.current, 0, 0, tempCanvas.width, tempCanvas.height);
+      }
+      
+      // Convert the canvas to a Blob using toBlob - use PNG format instead of JPEG
+      // PNG is more widely supported for analysis
+      return new Promise((resolve) => {
+        tempCanvas.toBlob((blob) => {
+          if (blob) {
+            console.debug(`[Squat] Created fallback image blob: ${blob.size} bytes with type ${blob.type}`);
+            
+            // Create a new blob with explicit video MIME type to avoid playback issues
+            // This is necessary because the browser expects a video format, not an image
+            try {
+              // For analysis purposes, just keep the PNG data
+              const analysisBlob = blob;
+              
+              // Store the original type in case we need it later
+              analysisBlob._originalType = blob.type;
+              
+              resolve(analysisBlob);
+            } catch (blobError) {
+              console.warn('[Squat] Error creating video blob:', blobError);
+              resolve(blob); // Return original blob as fallback
+            }
+          } else {
+            console.warn('[Squat] Failed to create fallback image blob');
+            resolve(null);
+          }
+        }, 'image/png', 0.95);
+      });
+    } catch (error) {
+      console.error('[Squat] Error creating fallback recording:', error);
+      return null;
+    }
+  };
+
+  // Handle stop recording with better mobile support
+  const handleStopRecording = () => {
+    try {
+      console.debug('[Squat] In handleStopRecording');
+      
+      // If no media recorder, check if we were using frame capture only
+      if (!mediaRecorderRef.current) {
+        console.warn('[Squat] No media recorder found to stop');
         setIsRecording(false);
         stopTimer();
+        return;
       }
-    } else {
-      addDebugLog(`MediaRecorder not in recording state: ${mediaRecorderRef.current.state}`);
+      
+      // Capture any frames if they exist for potential fallback
+      const captureFrames = mediaRecorderRef.current.captureFrames || [];
+      const frameCapture = mediaRecorderRef.current.frameCapture;
+      
+      // Stop the frame capture if it's running
+      if (frameCapture && frameCapture.current) {
+        clearTimeout(frameCapture.current);
+        console.debug('[Squat] Stopped backup frame capture');
+      }
+      
+      // Check if recorder is already inactive
+      if (mediaRecorderRef.current.state === 'inactive') {
+        console.warn('[Squat] MediaRecorder already inactive');
+        
+        // If we have frame captures but no chunks, use the frame captures
+        if (captureFrames && captureFrames.length > 0 && recordedChunksRef.current.length === 0) {
+          console.debug(`[Squat] Using ${captureFrames.length} backup frames since recorder is inactive`);
+          const lastFrame = captureFrames[captureFrames.length - 1];
+          
+          if (lastFrame && lastFrame.blob && typeof onRecordingComplete === 'function') {
+            console.debug('[Squat] Using last captured frame for inactive recorder');
+            const processedBlob = processRecordingForAnalysis(lastFrame.blob);
+            onRecordingComplete(processedBlob);
+          }
+        }
+        
+        setIsRecording(false);
+        stopTimer();
+        return;
+      }
+      
+      console.debug(`[Squat] Stopping MediaRecorder (current state: ${mediaRecorderRef.current.state})`);
+      
+      // Create a copy of the current chunks before stopping
+      const currentChunks = [...recordedChunksRef.current];
+      
+      // Create a manual cleanup function that can be called if onstop doesn't fire
+      const manualCleanup = async () => {
+        console.warn('[Squat] Performing manual cleanup');
+        
+        // Only proceed if we are still in recording state
+        if (isRecording) {
+          console.debug(`[Squat] Manual cleanup with ${currentChunks.length} chunks`);
+          
+          try {
+            // Try using the chunks we have
+            if (currentChunks.length > 0) {
+              // Determine mime type (use a common fallback)
+              const mimeType = 'video/webm';
+              
+              // Create blob manually from the copy of chunks we made
+              const blob = new Blob(currentChunks, { type: mimeType });
+              console.debug(`[Squat] Created blob manually: ${blob.size} bytes`);
+              
+              // Call the callback
+              if (typeof onRecordingComplete === 'function') {
+                console.debug('[Squat] Calling onRecordingComplete with manually created blob');
+                const processedBlob = processRecordingForAnalysis(blob);
+                onRecordingComplete(processedBlob);
+              }
+            } 
+            // Try using captured frames if available
+            else if (captureFrames && captureFrames.length > 0) {
+              console.debug(`[Squat] Using ${captureFrames.length} backup frames in manual cleanup`);
+              const lastFrame = captureFrames[captureFrames.length - 1];
+              
+              if (lastFrame && lastFrame.blob && typeof onRecordingComplete === 'function') {
+                console.debug('[Squat] Using last captured frame in manual cleanup');
+                const processedBlob = processRecordingForAnalysis(lastFrame.blob);
+                onRecordingComplete(processedBlob);
+              }
+            }
+            // Last resort: try to create a fallback image from current video frame
+            else {
+              console.warn('[Squat] No chunks or frames available, attempting to create fallback image');
+              
+              // Try to create a fallback image as a last resort
+              const fallbackBlob = await createFallbackRecording();
+              
+              if (fallbackBlob && typeof onRecordingComplete === 'function') {
+                console.debug('[Squat] Calling onRecordingComplete with fallback image');
+                const processedBlob = processRecordingForAnalysis(fallbackBlob);
+                onRecordingComplete(processedBlob);
+              } else {
+                console.error('[Squat] Failed to create any recording data');
+                setError('Recording failed. Please try again or check your browser compatibility.');
+              }
+            }
+          } catch (blobError) {
+            console.error('[Squat] Error creating blob manually:', blobError);
+            setError('Failed to process recording. Please try again.');
+          }
+        } else {
+          console.warn('[Squat] Already stopped');
+        }
+        
+        // Reset recording state regardless
+        setIsRecording(false);
+        stopTimer();
+      };
+      
+      // Ensure we have some data before stopping
+      if (recordedChunksRef.current.length === 0) {
+        console.debug('[Squat] No chunks recorded yet, triggering final ondataavailable');
+        // Force a final data available event
+        if (mediaRecorderRef.current.state === 'recording') {
+          // Some mobile browsers need this extra request for data
+          try {
+            mediaRecorderRef.current.requestData();
+            // Short delay to allow data to be processed
+            setTimeout(() => {
+              if (recordedChunksRef.current.length === 0) {
+                console.warn('[Squat] Still no data after requestData()');
+              }
+            }, 100);
+          } catch (e) {
+            console.warn('[Squat] Error requesting final data chunk:', e);
+          }
+        }
+      }
+      
+      // Replace original onstop handler with improved version that uses our current chunks
+      const originalOnStop = mediaRecorderRef.current.onstop;
+      mediaRecorderRef.current.onstop = (event) => {
+        console.debug('[Squat] MediaRecorder.onstop fired');
+        
+        if (originalOnStop) {
+          try {
+            // Call the original handler first
+            originalOnStop(event);
+          } catch (e) {
+            console.warn('[Squat] Error in original onstop handler:', e);
+          }
+        }
+        
+        // Check if the normal processing left us with no chunks
+        if (recordedChunksRef.current.length === 0 && currentChunks.length > 0) {
+          console.warn('[Squat] Original handler produced no chunks, using our backup');
+          // Use our copy of the chunks
+          recordedChunksRef.current = currentChunks;
+          
+          // Create blob from backup chunks
+          try {
+            const mimeType = 'video/webm';
+            const blob = new Blob(currentChunks, { type: mimeType });
+            console.debug(`[Squat] Created blob from backup: ${blob.size} bytes`);
+            
+            // Call the callback
+            if (typeof onRecordingComplete === 'function') {
+              console.debug('[Squat] Calling onRecordingComplete with backup blob');
+              onRecordingComplete(blob);
+            }
+          } catch (blobError) {
+            console.error('[Squat] Error creating backup blob:', blobError);
+          }
+        }
+        
+        // Always update the UI
+        setIsRecording(false);
+      };
+      
+      // Set a timeout to ensure we eventually clean up if onstop never fires
+      const cleanupTimeout = setTimeout(() => {
+        console.warn('[Squat] MediaRecorder.onstop did not fire, forcing cleanup');
+        manualCleanup();
+      }, 2000);  // Shorter timeout for better UX
+      
+      // Keep track of this timeout so we can clear it if onstop works
+      mediaRecorderRef.current.cleanupTimeoutId = cleanupTimeout;
+      
+      // Wrap the stop in a try/catch as it sometimes fails on mobile
+      try {
+        mediaRecorderRef.current.stop();
+        console.debug('[Squat] MediaRecorder.stop() called successfully');
+        
+        // Mobile Safari sometimes doesn't fire onstop event but does stop recording
+        // Add a redundancy check after a short delay
+        setTimeout(() => {
+          if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'inactive') {
+            console.debug('[Squat] MediaRecorder is now inactive, ensuring cleanup');
+            // Clear the timeout if it's still active
+            if (mediaRecorderRef.current.cleanupTimeoutId) {
+              clearTimeout(mediaRecorderRef.current.cleanupTimeoutId);
+            }
+            // Check if we're still in recording state
+            if (isRecording) {
+              console.warn('[Squat] Still in recording state despite inactive recorder, forcing cleanup');
+              manualCleanup();
+            }
+          }
+        }, 500);
+      } catch (stopError) {
+        console.error('[Squat] Error stopping MediaRecorder:', stopError);
+        // Clear the timeout and manually clean up
+        clearTimeout(cleanupTimeout);
+        manualCleanup();
+      }
+      
+      // Stop the timer immediately for better UX
+      stopTimer();
+    } catch (error) {
+      console.error('[Squat] Error in handleStopRecording:', error);
+      setError(`Failed to stop recording: ${error.message}`);
       setIsRecording(false);
       stopTimer();
     }
@@ -1392,7 +2000,22 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Draw the keypoints
       pose.keypoints.forEach(keypoint => {
         if (keypoint.score > 0.3) { // Only draw keypoints with confidence above threshold
-          const { x, y } = keypoint.position;
+          // Handle both position formats (direct x,y or nested in position object)
+          let x, y;
+          
+          if (keypoint.position) {
+            // Original format with position object
+            x = keypoint.position.x;
+            y = keypoint.position.y;
+          } else if (keypoint.x !== undefined && keypoint.y !== undefined) {
+            // Alternative format with direct x,y properties
+            x = keypoint.x;
+            y = keypoint.y;
+          } else {
+            // Skip this keypoint if no valid coordinates
+            console.debug(`[Squat] Skipping keypoint with missing position: ${keypoint.part || 'unknown'}`);
+            return;
+          }
           
           // Scale coordinates to match display size
           const scaledX = x * scaleX;
@@ -1401,14 +2024,14 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           // Draw landmark
           ctx.beginPath();
           ctx.arc(scaledX, scaledY, 5, 0, 2 * Math.PI);
-          ctx.fillStyle = getKeypointColor(keypoint.part);
+          ctx.fillStyle = getKeypointColor(keypoint.part || keypoint.name);
           ctx.fill();
           
           // Optionally draw keypoint name for debugging
           if (debugMode) {
             ctx.fillStyle = 'white';
             ctx.font = '12px Arial';
-            ctx.fillText(`${keypoint.part} (${Math.round(keypoint.score * 100)}%)`, scaledX + 7, scaledY);
+            ctx.fillText(`${keypoint.part || keypoint.name} (${Math.round(keypoint.score * 100)}%)`, scaledX + 7, scaledY);
           }
         }
       });
@@ -1416,7 +2039,13 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Draw the skeleton
       const adjacentKeyPoints = getAdjacentKeyPoints(pose.keypoints);
       adjacentKeyPoints.forEach(keypoints => {
-        drawSegment(keypoints[0].position, keypoints[1].position, ctx, scaleX, scaleY);
+        if (keypoints && keypoints.length === 2) {
+          drawSegment(
+            keypoints[0], 
+            keypoints[1], 
+            ctx, scaleX, scaleY
+          );
+        }
       });
     }
   };
@@ -1425,11 +2054,30 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const drawSegment = (start, end, ctx, scaleX, scaleY) => {
     if (!start || !end) return;
     
+    // Get coordinates, handling both position object and direct x,y properties
+    let startX, startY, endX, endY;
+    
+    if (start.position) {
+      startX = start.position.x;
+      startY = start.position.y;
+    } else {
+      startX = start.x;
+      startY = start.y;
+    }
+    
+    if (end.position) {
+      endX = end.position.x;
+      endY = end.position.y;
+    } else {
+      endX = end.x;
+      endY = end.y;
+    }
+    
     // Scale coordinates
-    const scaledStartX = start.x * scaleX;
-    const scaledStartY = start.y * scaleY;
-    const scaledEndX = end.x * scaleX;
-    const scaledEndY = end.y * scaleY;
+    const scaledStartX = startX * scaleX;
+    const scaledStartY = startY * scaleY;
+    const scaledEndX = endX * scaleX;
+    const scaledEndY = endY * scaleY;
     
     ctx.beginPath();
     ctx.moveTo(scaledStartX, scaledStartY);
@@ -1442,8 +2090,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   // Get adjacent keypoints for skeleton drawing
   const getAdjacentKeyPoints = (keypoints) => {
     return poseConnections.map(([a, b]) => {
-      const keyPointA = keypoints.find(kp => kp.part === a);
-      const keyPointB = keypoints.find(kp => kp.part === b);
+      // Find keypoints by part name, handling both naming conventions
+      const keyPointA = keypoints.find(kp => (kp.part === a) || (kp.name === a));
+      const keyPointB = keypoints.find(kp => (kp.part === b) || (kp.name === b));
       
       if (keyPointA && keyPointB && keyPointA.score > 0.3 && keyPointB.score > 0.3) {
         return [keyPointA, keyPointB];
@@ -1454,39 +2103,91 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
 
   // Define connections between keypoints for drawing skeleton
   const poseConnections = [
-    ['nose', 'leftEye'], ['leftEye', 'leftEar'], ['nose', 'rightEye'],
-    ['rightEye', 'rightEar'], ['leftShoulder', 'rightShoulder'],
-    ['leftShoulder', 'leftElbow'], ['leftElbow', 'leftWrist'],
-    ['rightShoulder', 'rightElbow'], ['rightElbow', 'rightWrist'],
-    ['leftShoulder', 'leftHip'], ['rightShoulder', 'rightHip'],
-    ['leftHip', 'rightHip'], ['leftHip', 'leftKnee'],
-    ['leftKnee', 'leftAnkle'], ['rightHip', 'rightKnee'],
-    ['rightKnee', 'rightAnkle']
+    // Face connections
+    ['nose', 'left_eye'], ['left_eye', 'left_ear'], ['nose', 'right_eye'],
+    ['right_eye', 'right_ear'], 
+    
+    // Torso
+    ['left_shoulder', 'right_shoulder'],
+    ['left_shoulder', 'left_hip'], ['right_shoulder', 'right_hip'],
+    ['left_hip', 'right_hip'],
+    
+    // Arms
+    ['left_shoulder', 'left_elbow'], ['left_elbow', 'left_wrist'],
+    ['right_shoulder', 'right_elbow'], ['right_elbow', 'right_wrist'],
+    
+    // Legs
+    ['left_hip', 'left_knee'], ['left_knee', 'left_ankle'],
+    ['right_hip', 'right_knee'], ['right_knee', 'right_ankle']
   ];
 
   // Get color based on keypoint type
   const getKeypointColor = (part) => {
+    // Standardize the part name
+    const standardizedPart = part ? part.toLowerCase() : '';
+    
+    // Map of keypoint names to colors (including potential alternative names)
     const colors = {
-      nose: 'red',
-      leftEye: 'yellow',
-      rightEye: 'yellow',
-      leftEar: 'yellow',
-      rightEar: 'yellow',
-      leftShoulder: 'green',
-      rightShoulder: 'green',
-      leftElbow: 'green',
-      rightElbow: 'green',
-      leftWrist: 'green',
-      rightWrist: 'green',
-      leftHip: 'blue',
-      rightHip: 'blue',
-      leftKnee: 'blue',
-      rightKnee: 'blue',
-      leftAnkle: 'blue',
-      rightAnkle: 'blue'
+      // Face
+      'nose': 'red',
+      'left_eye': 'yellow',
+      'lefteye': 'yellow',
+      'right_eye': 'yellow',
+      'righteye': 'yellow',
+      'left_ear': 'yellow',
+      'leftear': 'yellow',
+      'right_ear': 'yellow',
+      'rightear': 'yellow',
+      
+      // Upper body
+      'left_shoulder': 'green',
+      'leftshoulder': 'green',
+      'right_shoulder': 'green',
+      'rightshoulder': 'green',
+      'left_elbow': 'green',
+      'leftelbow': 'green',
+      'right_elbow': 'green',
+      'rightelbow': 'green',
+      'left_wrist': 'green',
+      'leftwrist': 'green',
+      'right_wrist': 'green',
+      'rightwrist': 'green',
+      
+      // Lower body
+      'left_hip': 'blue',
+      'lefthip': 'blue',
+      'right_hip': 'blue',
+      'righthip': 'blue',
+      'left_knee': 'blue',
+      'leftknee': 'blue',
+      'right_knee': 'blue',
+      'rightknee': 'blue',
+      'left_ankle': 'blue',
+      'leftankle': 'blue',
+      'right_ankle': 'blue',
+      'rightankle': 'blue',
+      
+      // Legacy format
+      'lefteye': 'yellow',
+      'righteye': 'yellow',
+      'leftear': 'yellow',
+      'rightear': 'yellow',
+      'leftshoulder': 'green',
+      'rightshoulder': 'green',
+      'leftelbow': 'green',
+      'rightelbow': 'green',
+      'leftwrist': 'green',
+      'rightwrist': 'green',
+      'lefthip': 'blue',
+      'righthip': 'blue',
+      'leftknee': 'blue',
+      'rightknee': 'blue',
+      'leftankle': 'blue',
+      'rightankle': 'blue'
     };
     
-    return colors[part] || 'white';
+    // Return the color for the standardized part name or white as default
+    return colors[standardizedPart] || 'white';
   };
 
   // Add a useEffect cleanup to ensure proper camera reset when component mounts/unmounts
@@ -1525,6 +2226,52 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     localStorage.setItem('preferredCameraFacing', isFrontFacing ? 'front' : 'back');
   }, [isFrontFacing]);
 
+  // Add a setTimeout to ensure loading state is always cleared
+  useEffect(() => {
+    // Set a safety timeout to ensure loading state is cleared
+    const safetyTimeout = setTimeout(() => {
+      if (isInitializing) {
+        console.log("Safety timeout triggered - forcing initialization completion");
+        setIsInitializing(false);
+        setIsLoading(false);
+        
+        // If the video element has content but UI is still loading, update streamReady state
+        if (videoRef.current && videoRef.current.readyState >= 2) {
+          setStreamReady(true);
+          setIsCameraReady(true);
+        }
+      }
+    }, 8000); // 8 seconds should be more than enough for camera initialization
+    
+    return () => clearTimeout(safetyTimeout);
+  }, [isInitializing]);
+
+  // Handle when a recording is complete - add meta information
+  const processRecordingForAnalysis = (blob) => {
+    // Return early if blob is null
+    if (!blob) {
+      console.error('[Squat] Cannot process null blob');
+      return null;
+    }
+    
+    // Add metadata to help with analysis
+    const processedBlob = blob;
+    
+    // Add metadata properties
+    processedBlob._isImageFallback = blob.type.startsWith('image/');
+    processedBlob._recordingType = blob.type.startsWith('image/') ? 'image' : 'video';
+    processedBlob._captureTime = new Date().toISOString();
+    processedBlob._deviceInfo = {
+      isMobile: isMobileDevice(),
+      browser: detectBrowser(),
+      userAgent: navigator.userAgent
+    };
+    
+    console.debug(`[Squat] Processed blob for analysis: ${processedBlob.type}, size: ${processedBlob.size} bytes, isImageFallback: ${processedBlob._isImageFallback}`);
+    
+    return processedBlob;
+  };
+
   return (
     <div className={`video-container ${darkMode ? 'dark-mode' : ''}`} ref={containerRef}>
       {error && (
@@ -1538,6 +2285,21 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         <LoadingOverlay>
           <LoadingSpinner />
           <p>Initializing camera... Please wait.</p>
+          <button onClick={() => {
+            // Force clear initialization state
+            setIsInitializing(false);
+            setIsLoading(false);
+            if (videoRef.current && videoRef.current.srcObject) {
+              setStreamReady(true);
+              setIsCameraReady(true);
+              // If video already has content, ensure it's marked as ready
+              if (videoRef.current.readyState >= 2) {
+                setIsInitialized(true);
+              }
+            }
+          }}>
+            Camera Looks Ready? Click Here
+          </button>
         </LoadingOverlay>
       )}
       
@@ -1557,54 +2319,38 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         {isRecording && (
           <RecordingIndicator>
             <RecordingDot />
-            <span style={{ color: 'white', fontWeight: '500' }}>Recording {recordingTime}</span>
+            Recording {formatRecordingTime(recordingTime)}
           </RecordingIndicator>
         )}
       </CameraContainer>
       
-      <ControlsContainer>
-        <ControlButton
+      <Controls>
+        <Button
           onClick={toggleCamera}
-          disabled={isRecording || !isCameraReady}
-          style={{
-            backgroundColor: isFrontFacing ? '#4caf50' : '#2196f3'
-          }}
+          disabled={isLoading || isRecording}
         >
-          <i className="fas fa-camera-rotate"></i>
-          {isMobile ? (isFrontFacing ? 'Front' : 'Back') : (isFrontFacing ? 'Front Camera' : 'Back Camera')}
-        </ControlButton>
+          {window.innerWidth < 400 ? 'Camera' : 'Switch Camera'}
+        </Button>
         
-        <ControlButton
+        <Button
           onClick={togglePoseTracking}
-          disabled={!streamReady || !tfInitialized}
-          style={{
-            backgroundColor: isPoseTracking ? '#ff9800' : '#9c27b0'
-          }}
+          disabled={isLoading || !isCameraReady}
         >
-          <i className={`fas fa-${isPoseTracking ? 'stop' : 'play'}`}></i>
-          {isPoseTracking ? 'Tracking On' : 'Start Track'}
-        </ControlButton>
-      </ControlsContainer>
-      
-      <RecordButtonContainer>
-        <RecordButton
-          $isRecording={isRecording}
+          {isPoseTracking ? 
+            (window.innerWidth < 400 ? 'Stop' : 'Stop Tracking') : 
+            (window.innerWidth < 400 ? 'Track' : 'Start Tracking')}
+        </Button>
+        
+        <Button
           onClick={toggleRecording}
-          disabled={!streamReady || isLoading}
-          aria-label={isRecording ? 'Stop Recording' : 'Start Recording'}
-          style={{ 
-            touchAction: 'manipulation',
-            userSelect: 'none'
-          }}
-          onTouchStart={(e) => {
-            // Prevent double-tap zoom on mobile
-            e.preventDefault();
-          }}
-        />
-        {isMobile && <div style={{ marginTop: '8px', fontSize: '14px', textAlign: 'center' }}>
-          {isRecording ? 'Tap to Stop' : 'Tap to Record'}
-        </div>}
-      </RecordButtonContainer>
+          disabled={isLoading || !isCameraReady}
+          className={isRecording ? 'recording' : ''}
+        >
+          {isRecording ? 
+            (window.innerWidth < 400 ? 'Stop' : 'Stop Recording') : 
+            (window.innerWidth < 400 ? 'Record' : 'Start Recording')}
+        </Button>
+      </Controls>
       
       {!tfInitialized && showTFWarning && (
         <WarningMessage>
