@@ -1837,9 +1837,16 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Create a manual cleanup function that can be called if onstop doesn't fire
       const manualCleanup = async () => {
         console.warn('[Squat] Performing manual cleanup');
-        
+
+        // Clear the associated timeout
+        if (mediaRecorderRef.current && mediaRecorderRef.current.cleanupTimeoutId) {
+          clearTimeout(mediaRecorderRef.current.cleanupTimeoutId);
+          mediaRecorderRef.current.cleanupTimeoutId = null;
+        }
+
         // Only proceed if we are still in recording state
         if (isRecording) {
+          let finalBlob = null;
           try {
             // Try using the chunks we have
             if (recordedChunksRef.current.length > 0) {
@@ -1854,6 +1861,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
               if (typeof onRecordingComplete === 'function') {
                 console.debug('[Squat] Calling onRecordingComplete with manually created blob');
                 const processedBlob = processRecordingForAnalysis(blob);
+                // Store the blob before calling the handler
+                finalBlob = processedBlob; 
                 onRecordingComplete(processedBlob);
               }
             } 
@@ -1865,6 +1874,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
               if (lastFrame && lastFrame.blob && typeof onRecordingComplete === 'function') {
                 console.debug('[Squat] Using last captured frame in manual cleanup');
                 const processedBlob = processRecordingForAnalysis(lastFrame.blob);
+                // Store the blob before calling the handler
+                finalBlob = processedBlob;
                 onRecordingComplete(processedBlob);
               }
             }
@@ -1878,15 +1889,21 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
               if (fallbackBlob && typeof onRecordingComplete === 'function') {
                 console.debug('[Squat] Calling onRecordingComplete with fallback image');
                 const processedBlob = processRecordingForAnalysis(fallbackBlob);
+                // Store the blob before calling the handler
+                finalBlob = processedBlob;
                 onRecordingComplete(processedBlob);
               } else {
                 console.error('[Squat] Failed to create any recording data');
                 setError('Recording failed. Please try again or check your browser compatibility.');
+                 // *** Do not call onRecordingComplete ***
+                 // Ensure finalBlob remains null
+                 finalBlob = null;
               }
             }
           } catch (blobError) {
             console.error('[Squat] Error creating blob manually:', blobError);
             setError('Failed to process recording. Please try again.');
+            finalBlob = null; // Ensure finalBlob is null on error
           }
         } else {
           console.warn('[Squat] Already stopped');
@@ -1899,8 +1916,15 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       // Set a timeout to ensure we eventually clean up if onstop never fires (use a longer timeout)
       const cleanupTimeout = setTimeout(() => {
-        console.warn('[Squat] MediaRecorder.onstop did not fire after 3 seconds, forcing cleanup');
-        manualCleanup();
+        // Check if the recorder is still potentially recording or paused
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+           console.warn('[Squat] MediaRecorder.onstop did not fire after 3 seconds, forcing cleanup');
+           manualCleanup(); // Call the async cleanup function
+         } else {
+          // If onstop didn't fire, force cleanup
+          console.warn('[Squat] MediaRecorder.onstop did not fire, forcing cleanup');
+          manualCleanup();
+        }
       }, 3000);  
       
       // Keep track of this timeout so we can clear it if onstop works
@@ -1949,9 +1973,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   // Timer utility functions
   const startTimer = () => {
     // Initialize recording time and start interval
-    setRecordingTime('00:00');
-    let seconds = 0;
-    recordingTimerRef.current = 0;
+    setRecordingTime('00:00'); // Keep this for initial display reset
+    setRecordingDuration(0); // Reset raw duration state
+    recordingTimerRef.current = 0; // Reset ref as well
     
     // Clear any existing interval first
     if (recordingInterval.current) {
@@ -1960,9 +1984,15 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     
     // Create new interval that increments seconds and updates display
     recordingInterval.current = setInterval(() => {
-      seconds++;
-      recordingTimerRef.current = seconds;
-      setRecordingTime(formatRecordingTime(seconds));
+      // Use functional update for recordingDuration state
+      setRecordingDuration(prevDuration => {
+        const newDuration = prevDuration + 1;
+        // Update the ref as well
+        recordingTimerRef.current = newDuration;
+        // Update the formatted time string state for display
+        setRecordingTime(formatRecordingTime(newDuration)); 
+        return newDuration;
+      });
     }, 1000);
   };
 
@@ -1975,6 +2005,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     
     // Reset recording time display
     setRecordingTime('00:00');
+    setRecordingDuration(0); // Reset raw duration state
+    recordingTimerRef.current = 0; // Reset ref
   };
 
   // Function to draw pose landmarks on canvas with proper scaling
@@ -2306,7 +2338,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       {isRecording && (
           <RecordingIndicator>
             <RecordingDot />
-            Recording {formatRecordingTime(recordingTime)}
+            {/* Use the formatted recordingTime state directly */}
+            Recording {recordingTime}
           </RecordingIndicator>
         )}
       </CameraContainer>

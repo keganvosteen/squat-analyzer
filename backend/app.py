@@ -21,31 +21,23 @@ import multiprocessing
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Configure CORS to allow all origins
+# Configure CORS correctly
 CORS(app, 
      resources={r"/*": {
-         "origins": "*",
+         "origins": ["https://squat-analyzer-frontend.onrender.com", "http://localhost:5173", "*"],
+         "supports_credentials": True,
          "allow_headers": ["Content-Type", "Authorization"],
          "methods": ["GET", "POST", "OPTIONS"]
      }}
 )
 
-# Add CORS headers to all responses 
+# Add CORS headers to all responses manually as well
 @app.after_request
 def after_request(response):
-    # Always allow all origins - more permissive approach to fix CORS issues
-    response.headers.set('Access-Control-Allow-Origin', '*')
-    response.headers.set('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-    
-    # Don't use credentials with wildcard origin since browsers block it
-    # response.headers.set('Access-Control-Allow-Credentials', 'true') 
-    
-    # Cache preflight requests for 1 hour to reduce OPTIONS requests
-    response.headers.set('Access-Control-Max-Age', '3600')
-    
-    # Add vary header for proper caching
-    response.headers.set('Vary', 'Origin')
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
     return response
 
 # Initialize MediaPipe Pose
@@ -353,33 +345,20 @@ def get_session_data():
 def analyze_video():
     # Handle preflight OPTIONS request
     if request.method == 'OPTIONS':
-        app.logger.info("Received OPTIONS preflight request for /analyze endpoint")
         return '', 204
         
     app.logger.info("Analyze endpoint called")
-    app.logger.info(f"Request headers: {dict(request.headers)}")
     
     if 'video' not in request.files:
         app.logger.error("No video file in request")
-        return jsonify({'error': 'No video file provided. Please ensure you are sending a valid video recording.'}), 400
+        return jsonify({'error': 'No video file provided'}), 400
     
     video_file = request.files['video']
     if not video_file:
         app.logger.error("Empty video file")
-        return jsonify({'error': 'Empty video file. Please try recording again.'}), 400
+        return jsonify({'error': 'Empty video file'}), 400
     
-    # Log video details for debugging
     app.logger.info(f"Received video: {video_file.filename}, size: {video_file.content_length}, type: {video_file.content_type}")
-    
-    # Validate content type
-    if video_file.content_type not in ['video/webm', 'video/mp4', 'image/jpeg', 'image/png', 'video/quicktime']:
-        app.logger.error(f"Unsupported content type: {video_file.content_type}")
-        return jsonify({'error': f'Unsupported content type: {video_file.content_type}. Please use a supported format (webm, mp4).'}), 400
-    
-    # Check file size - limit to 15MB
-    if video_file.content_length > 15 * 1024 * 1024:  # 15MB in bytes
-        app.logger.error(f"File too large: {video_file.content_length} bytes")
-        return jsonify({'error': 'File too large. Please record a shorter video (under 15MB).'}), 413
     
     # Save the uploaded video temporarily
     temp_path = os.path.join(os.path.dirname(__file__), 'temp_video.webm')
@@ -403,30 +382,56 @@ def analyze_video():
         # Detect if video is rotated (mobile portrait mode)
         is_portrait_video = height > width
         app.logger.info(f"Video dimensions: {width}x{height}, orientation: {'portrait' if is_portrait_video else 'landscape'}")
+
+        # --- Improved Metadata Validation ---
+        duration_msec = cap.get(cv2.CAP_PROP_POS_MSEC) # Get duration in milliseconds
+        if duration_msec <= 0:
+           cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 1) # Seek to end if needed
+           duration_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+           cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0) # Reset to beginning
+           
+        duration_sec = duration_msec / 1000.0 if duration_msec > 0 else 0.0
+        app.logger.info(f"Raw metadata: FPS={fps}, FrameCount={frame_count}, Duration={duration_sec:.2f}s")
+
+        # Validate FPS
+        if fps <= 0 or fps > 120 or fps == 1000: # 1000 is an invalid value often seen
+            app.logger.warning(f"Invalid FPS: {fps}. Attempting recalculation or using default.")
+            if duration_sec > 0 and frame_count > 0 and frame_count < 100000:
+                calculated_fps = frame_count / duration_sec
+                if calculated_fps > 0 and calculated_fps <= 120:
+                    fps = round(calculated_fps)
+                    app.logger.warning(f"Recalculated FPS based on duration/frameCount: {fps}")
+                else:
+                   fps = 30 # Default FPS
+                   app.logger.warning(f"Recalculation failed, defaulting FPS to {fps}")
+            else:
+                fps = 30 # Default FPS
+                app.logger.warning(f"Cannot recalculate, defaulting FPS to {fps}")
         
-        # Validate video properties to prevent overflow/invalid values
-        if fps <= 0 or fps > 120 or fps == 1000:  # 1000 is an invalid value often seen
-            app.logger.warning(f"Invalid FPS: {fps}, defaulting to 30")
-            fps = 30
+        # Validate Frame Count - recalculate if invalid or inconsistent with duration
+        expected_frame_count = int(duration_sec * fps) if duration_sec > 0 and fps > 0 else 0
+        # Check for large negative numbers or zero/small counts if duration is reasonable
+        is_frame_count_invalid = frame_count < 0 or (duration_sec > 0.5 and frame_count <= 1)
+        # Check for significant mismatch with duration
+        is_frame_count_mismatch = expected_frame_count > 0 and abs(frame_count - expected_frame_count) > (expected_frame_count * 0.5) # Allow 50% diff
         
-        # Handle invalid or extremely large/negative frame count
-        if frame_count <= 0 or frame_count > 100000 or frame_count < -1000:
-            # Get video duration directly
-            cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 1)  # Seek to end
-            duration = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000  # Get duration in seconds
-            cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0)  # Reset to beginning
-            
-            if duration <= 0 or duration > 300:  # If duration is also invalid
-                app.logger.warning(f"Invalid duration: {duration}, estimating as 10 seconds")
-                duration = 10  # Assume 10 second video
-            
-            app.logger.warning(f"Invalid frame count: {frame_count}, estimating from duration: {duration}s")
-            frame_count = int(duration * fps)
-        
-        # Ensure frame_count is reasonable 
-        frame_count = max(10, min(frame_count, 1000))  # Between 10 and 1000 frames
-        
-        app.logger.info(f"Video properties: FPS={fps}, frame_count={frame_count}, duration={frame_count/fps:.2f}s")
+        if is_frame_count_invalid or is_frame_count_mismatch:
+            app.logger.warning(f"Invalid/mismatched frame count: {frame_count}. Expected based on duration: ~{expected_frame_count}")
+            if expected_frame_count > 0:
+                frame_count = expected_frame_count
+                app.logger.warning(f"Using frame count calculated from duration: {frame_count}")
+            else:
+                 # If duration is also zero, estimate based on file size (rough)
+                 file_size_mb = video_file.content_length / (1024 * 1024)
+                 estimated_duration = max(1, file_size_mb * 8) # Assume ~8s per MB, min 1s
+                 frame_count = int(estimated_duration * fps)
+                 app.logger.warning(f"Estimating frame count based on file size: {frame_count}")
+
+        # Ensure frame_count is reasonable after all calculations
+        frame_count = max(10, min(frame_count, 1500)) # Allow slightly more frames, up to 1500
+        # --- End Improved Metadata Validation ---
+
+        app.logger.info(f"Validated video properties: FPS={fps}, frame_count={frame_count}, duration={duration_sec:.2f}s")
         
         # Calculate frame skip rate based on video length to reduce processing time
         # Process fewer frames for longer videos to stay within timeout limits

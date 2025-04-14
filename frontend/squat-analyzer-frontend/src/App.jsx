@@ -325,7 +325,18 @@ const App = () => {
     
     // Force local analysis off - always disabled
     setUsingLocalAnalysis(false);
-    
+
+    // *** Add check for invalid fallback blob ***
+    if (blob.type === 'text/plain' && blob._isEmptyFallback) {
+      console.error("Received invalid fallback blob from VideoCapture. Aborting analysis.");
+      setError("Recording failed to capture usable video data. Please try again.");
+      setLoading(false);
+      // Don't proceed to show playback for an invalid blob
+      // Reset relevant states if needed (handleBackToRecord does this)
+      handleBackToRecord(); 
+      return;
+    }
+
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     console.log(`Device detected as ${isMobile ? 'mobile' : 'desktop'}`);
     
