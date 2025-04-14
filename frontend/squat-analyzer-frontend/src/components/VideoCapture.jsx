@@ -1431,7 +1431,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Configure MediaRecorder
       const mediaRecorderOptions = {
         mimeType: selectedMimeType,
-        videoBitsPerSecond: mobileDevice ? 1000000 : 2500000, // Lower bitrate for mobile
+        videoBitsPerSecond: isMobile ? 1000000 : 2500000, // Lower bitrate for mobile
       };
       
       // Create MediaRecorder
@@ -1551,7 +1551,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       try {
         console.debug('[Squat] Starting MediaRecorder');
         // Use very frequent chunks on mobile for better reliability (every 100ms)
-        mediaRecorderRef.current.start(mobileDevice ? 100 : 250);
+        mediaRecorderRef.current.start(isMobile ? 100 : 250);
         
         // Also start the fallback frame capture as a safety measure
         captureFrame();
