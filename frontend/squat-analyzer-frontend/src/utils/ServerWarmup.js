@@ -8,12 +8,26 @@ import axios from 'axios';
 // Get the backend URL from environment or use default
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://squat-analyzer-backend.onrender.com';
 
+// Determine if we're in development mode
+const isDevelopment = import.meta.env.DEV;
+
+// Create a URL that uses the local proxy in development
+const getApiUrl = (endpoint) => {
+  if (isDevelopment) {
+    // In development, use the Vite proxy (relative URL)
+    return endpoint; // e.g., '/ping' will be proxied by Vite
+  } else {
+    // In production, use the full URL
+    return `${BACKEND_URL}${endpoint}`;
+  }
+};
+
 // Flag to determine if we should use local analysis instead of server
 let useLocalAnalysis = false;
 
 // Create an axios instance with shorter timeout for pings
 const pingApi = axios.create({
-  baseURL: BACKEND_URL,
+  baseURL: isDevelopment ? '' : BACKEND_URL, // In dev mode, use relative URLs for proxy
   timeout: 5000, // 5 seconds is enough for a ping
 });
 
@@ -83,8 +97,31 @@ const switchToLocalAnalysis = () => {
  * Uses multiple methods to attempt to circumvent CORS issues
  */
 const corsRequest = async (endpoint) => {
-  const url = `${BACKEND_URL}${endpoint}`;
+  const url = getApiUrl(endpoint);
   
+  // For development mode with the proxy, we can use a simpler approach
+  if (isDevelopment) {
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (response.ok) {
+        return response.json();
+      }
+      
+      throw new Error(`Server response: ${response.status} ${response.statusText}`);
+    } catch (error) {
+      console.warn(`Local proxy request failed: ${error.message}`);
+      throw error;
+    }
+  }
+  
+  // For production without proxy, try multiple CORS methods
   // First try with standard fetch with CORS mode
   try {
     const response = await fetch(url, {
@@ -214,6 +251,71 @@ const warmupServer = async (url = BACKEND_URL) => {
     console.log(`Warming up server at ${url}...`);
     updateServerStatus('starting');
     
+    // For Render.com servers, we need to make multiple ping attempts
+    // as their free tier can take 30-60 seconds to spin up
+    const isRenderServer = url.includes('render.com');
+    
+    if (isRenderServer) {
+      console.log('Detected Render.com hosted backend, initiating aggressive warmup');
+      
+      // For Render, make an initial ping, then start the ping service
+      // This helps prevent 502 errors on the first request
+      const pingPromise = new Promise(async (resolve) => {
+        // Try an initial ping
+        try {
+          const result = await pingServer();
+          if (result) {
+            console.log('Server is ready on first ping');
+            resolve(true);
+            return;
+          }
+        } catch (e) {
+          console.log('Initial ping failed, starting ping interval');
+        }
+        
+        // Start a more aggressive ping schedule for Render servers
+        let pingAttempts = 0;
+        const maxPingAttempts = 5;
+        const pingIntervalId = setInterval(async () => {
+          pingAttempts++;
+          console.log(`Warmup ping attempt ${pingAttempts}/${maxPingAttempts}`);
+          
+          try {
+            const result = await pingServer();
+            if (result) {
+              clearInterval(pingIntervalId);
+              resolve(true);
+              return;
+            }
+          } catch (error) {
+            console.warn(`Warmup ping ${pingAttempts} failed:`, error);
+          }
+          
+          if (pingAttempts >= maxPingAttempts) {
+            clearInterval(pingIntervalId);
+            console.warn('Server warmup failed after maximum attempts');
+            resolve(false);
+          }
+        }, 3000); // Ping every 3 seconds
+        
+        // Set a timeout to resolve regardless after 20 seconds
+        setTimeout(() => {
+          clearInterval(pingIntervalId);
+          console.log('Server warmup timeout reached, resolving anyway');
+          resolve(false);
+        }, 20000);
+      });
+      
+      const isReady = await pingPromise;
+      updateServerStatus(isReady ? 'ready' : 'error');
+      
+      // In either case, start the normal warmup service for continued pings
+      startWarmupService();
+      
+      return isReady;
+    }
+    
+    // For non-Render servers, use the normal approach
     // Start the warmup service in the background
     startWarmupService();
     
@@ -289,12 +391,13 @@ const forceLocalAnalysis = () => {
 };
 
 export default {
+  warmupServer,
   pingServer,
   startWarmupService,
   stopWarmupService,
-  warmupServer,
   onServerStatusChange,
   getServerStatus,
   isUsingLocalAnalysis,
-  forceLocalAnalysis
+  forceLocalAnalysis,
+  updateServerStatus
 }; 

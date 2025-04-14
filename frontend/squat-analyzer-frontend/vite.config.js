@@ -14,6 +14,27 @@ export default defineConfig({
         target: 'https://squat-analyzer-backend.onrender.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, '')
+      },
+      // Specific proxy for analyze endpoint to avoid CORS issues
+      '/analyze': {
+        target: 'https://squat-analyzer-backend.onrender.com',
+        changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path,
+        configure: (proxy, _options) => {
+          proxy.on('error', (err, _req, _res) => {
+            console.log('Proxy error:', err);
+          });
+          proxy.on('proxyReq', (proxyReq, req, _res) => {
+            console.log('Proxying:', req.method, req.url);
+          });
+        }
+      },
+      // Proxy for ping endpoint
+      '/ping': {
+        target: 'https://squat-analyzer-backend.onrender.com',
+        changeOrigin: true,
+        secure: false
       }
     }
   },

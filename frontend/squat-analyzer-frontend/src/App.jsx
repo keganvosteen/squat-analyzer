@@ -9,16 +9,30 @@ import ServerWarmup from './utils/ServerWarmup'; // Import server warmup utility
 // Import logo images 
 import './App.css';
 // Import logos directly
-import cbsLogo from '/public/CBSLogo.png';
-import seasLogo from '/public/SEASLogo.png';
-import crownIcon from './assets/crown-icon.png';
+import cbsLogo from '/CBSLogo.png';
+import seasLogo from '/SEASLogo.png';
+import crownIcon from '/ColumbiaCrown.png';
 
 // Define the backend URL with a fallback
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://squat-analyzer-backend.onrender.com';
 
+// Determine if we're in development mode
+const isDevelopment = import.meta.env.DEV;
+
+// Create an API URL that uses the local proxy in development
+const getApiUrl = (endpoint) => {
+  if (isDevelopment) {
+    // In development, use the Vite proxy
+    return endpoint; // e.g., '/analyze' will be proxied by Vite
+  } else {
+    // In production, use the full URL
+    return `${BACKEND_URL}${endpoint}`;
+  }
+};
+
 // Create a configured instance of axios with better CORS handling
 const api = axios.create({
-  baseURL: BACKEND_URL,
+  baseURL: isDevelopment ? '' : BACKEND_URL, // In dev mode, use relative URLs for proxy
   timeout: 30000, // 30 second default timeout
   withCredentials: false, // Important for CORS
   headers: {
@@ -31,7 +45,11 @@ api.interceptors.response.use(
   response => response,
   error => {
     // Check if the error is related to CORS
-    if (error.code === 'ERR_NETWORK') {
+    const isCorsError = error.code === 'ERR_NETWORK' && 
+                       (error.message?.includes('Network Error') || 
+                        error.message?.includes('CORS'));
+    
+    if (isCorsError) {
       console.log('CORS or network error detected:', error);
       // Force local analysis mode on CORS errors
       ServerWarmup.forceLocalAnalysis();
@@ -98,6 +116,29 @@ const ServerStatusMessage = styled.div`
   font-weight: ${props => props.$status === 'ready' ? 'normal' : 'bold'};
   transition: all 0.3s ease;
   display: ${props => props.$status === 'unknown' ? 'none' : 'block'};
+`;
+
+const ServerAction = styled.button`
+  background-color: var(--accent-color);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 14px;
+  margin-left: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  
+  &:hover {
+    background-color: #005ea8;
+  }
+`;
+
+const ServerStatusContainer = styled.div`
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 1rem;
 `;
 
 const App = () => {
@@ -229,6 +270,12 @@ const App = () => {
     }
   };
 
+  // Handle forcing local analysis mode
+  const forceLocalMode = () => {
+    ServerWarmup.forceLocalAnalysis();
+    setUsingLocalAnalysis(true);
+  };
+
   // Handle when a recording is completed
   const handleRecordingComplete = async (blob, metadata = {}) => {
     if (!blob || blob.size === 0) {
@@ -249,6 +296,14 @@ const App = () => {
     
     // Check if we should use local analysis based on server status or blob type
     const isImageBlob = blob.type?.startsWith('image/') || blob._recordingType === 'image';
+    const isRenderServer = BACKEND_URL.includes('render.com');
+    
+    // Determine if we should use local analysis
+    // Use local analysis if:
+    // 1. It's already set as the preference
+    // 2. Server is not in "ready" state
+    // 3. It's an image blob (not a video)
+    // 4. URL has local=true parameter
     const shouldUseLocalAnalysis = ServerWarmup.isUsingLocalAnalysis() || 
                                    serverStatus !== 'ready' || 
                                    isImageBlob; // Always use local analysis for images
@@ -277,13 +332,19 @@ const App = () => {
       const extension = blob.type.includes('mp4') ? 'mp4' : 'webm';
       formData.append('video', blob, `squat_recording_${timestamp}.${extension}`);
       
+      // For Render servers, we may need a longer timeout
+      const timeoutDuration = isRenderServer ? 60000 : 30000; // 1 minute for Render, 30 seconds otherwise
+      
+      // Use the correct URL (proxy in development or full URL in production)
+      const analyzeEndpoint = isDevelopment ? '/analyze' : `${BACKEND_URL}/analyze`;
+      
       // Use a clean request configuration - don't inherit from api default headers
-      const response = await api.post('/analyze', formData, {
+      const response = await axios.post(analyzeEndpoint, formData, {
         headers: {
           // Let the browser set the Content-Type with boundary for FormData
           'Content-Type': undefined
         },
-        timeout: 30000, // 30 second timeout
+        timeout: timeoutDuration,
         validateStatus: function (status) {
           return status < 500; // Only reject if status code is 5xx
         }
@@ -305,13 +366,34 @@ const App = () => {
     } catch (apiError) {
       console.error("API Error:", apiError);
       
+      // Detect specific Render.com 502 errors
+      const isRender502 = apiError.response?.status === 502 && 
+                         (apiError.response?.headers?.['x-render-origin-server'] === 'Render' ||
+                          apiError.response?.headers?.['server'] === 'cloudflare' ||
+                          apiError.response?.headers?.['x-render-routing']?.includes('502'));
+      
+      // Check if this is a CORS error
+      const isCorsError = apiError.code === 'ERR_NETWORK' && 
+                         (apiError.message?.includes('Network Error') || 
+                          error?.toString().includes('CORS'));
+      
       // Update server status if we got a network error or 502 bad gateway
       if (apiError.code === 'ECONNABORTED' || 
-          apiError.code === 'ERR_NETWORK' ||
-          apiError.message?.includes('Network Error') ||
-          apiError.response?.status === 502) {
-        console.log("Network error or 502 Bad Gateway, switching to local analysis mode");
-        ServerWarmup.forceLocalAnalysis();
+          isCorsError ||
+          isRender502) {
+        
+        if (isRender502) {
+          console.log("Detected Render.com 502 error - server likely still spinning up");
+          // Update server status to starting
+          ServerWarmup.updateServerStatus('starting');
+        } else if (isCorsError) {
+          console.log("CORS error detected - backend may not have correct CORS headers");
+          ServerWarmup.forceLocalAnalysis();
+        } else {
+          console.log("Network error or timeout, switching to local analysis mode");
+          ServerWarmup.forceLocalAnalysis();
+        }
+        
         setUsingLocalAnalysis(true);
       }
       
@@ -322,8 +404,10 @@ const App = () => {
       } else if (apiError.message?.includes('Using local analysis')) {
         // This is expected when we choose to use local analysis
         errorMessage = '';
-      } else if (apiError.code === 'ERR_NETWORK' || apiError.message?.includes('Network Error')) {
-        errorMessage = "Network error. Using local analysis instead.";
+      } else if (isCorsError) {
+        errorMessage = "CORS error: Backend unavailable. Using local analysis instead.";
+      } else if (isRender502) {
+        errorMessage = "Server is still starting up (502). Using local analysis for now.";
       } else if (apiError.response?.status === 502) {
         errorMessage = "Server unavailable (502). Using local analysis instead.";
       } else {
@@ -394,9 +478,17 @@ const App = () => {
         
         <Title>SmartSquat</Title>
         
-        <ServerStatusMessage $status={serverStatus}>
-          {getServerStatusMessage()}
-        </ServerStatusMessage>
+        <ServerStatusContainer>
+          <ServerStatusMessage $status={serverStatus}>
+            {getServerStatusMessage()}
+          </ServerStatusMessage>
+          
+          {(serverStatus === 'starting' || serverStatus === 'error') && (
+            <ServerAction onClick={forceLocalMode}>
+              Force Local Mode
+            </ServerAction>
+          )}
+        </ServerStatusContainer>
         
         {!showPlayback ? (
               <VideoCapture 
