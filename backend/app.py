@@ -21,28 +21,31 @@ import multiprocessing
 from concurrent.futures import ThreadPoolExecutor
 
 app = Flask(__name__)
-# Configure CORS correctly
+# Configure CORS to allow all origins
 CORS(app, 
      resources={r"/*": {
-         "origins": ["https://squat-analyzer-frontend.onrender.com", "http://localhost:5173", "*"],
-         "supports_credentials": True,
+         "origins": "*",
          "allow_headers": ["Content-Type", "Authorization"],
          "methods": ["GET", "POST", "OPTIONS"]
      }}
 )
 
-# Add CORS headers to all responses manually as well
+# Add CORS headers to all responses 
 @app.after_request
 def after_request(response):
-    # Allow requests from anywhere to handle deployed and local development
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-    response.headers.add('Access-Control-Allow-Credentials', 'true')
-    # Add header to prevent CORS preflight cache problems
-    response.headers.add('Access-Control-Max-Age', '3600')
-    # Vary origin ensures browsers won't reuse CORS responses incorrectly
-    response.headers.add('Vary', 'Origin')
+    # Always allow all origins - more permissive approach to fix CORS issues
+    response.headers.set('Access-Control-Allow-Origin', '*')
+    response.headers.set('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+    
+    # Don't use credentials with wildcard origin since browsers block it
+    # response.headers.set('Access-Control-Allow-Credentials', 'true') 
+    
+    # Cache preflight requests for 1 hour to reduce OPTIONS requests
+    response.headers.set('Access-Control-Max-Age', '3600')
+    
+    # Add vary header for proper caching
+    response.headers.set('Vary', 'Origin')
     return response
 
 # Initialize MediaPipe Pose
@@ -350,20 +353,33 @@ def get_session_data():
 def analyze_video():
     # Handle preflight OPTIONS request
     if request.method == 'OPTIONS':
+        app.logger.info("Received OPTIONS preflight request for /analyze endpoint")
         return '', 204
         
     app.logger.info("Analyze endpoint called")
+    app.logger.info(f"Request headers: {dict(request.headers)}")
     
     if 'video' not in request.files:
         app.logger.error("No video file in request")
-        return jsonify({'error': 'No video file provided'}), 400
+        return jsonify({'error': 'No video file provided. Please ensure you are sending a valid video recording.'}), 400
     
     video_file = request.files['video']
     if not video_file:
         app.logger.error("Empty video file")
-        return jsonify({'error': 'Empty video file'}), 400
+        return jsonify({'error': 'Empty video file. Please try recording again.'}), 400
     
+    # Log video details for debugging
     app.logger.info(f"Received video: {video_file.filename}, size: {video_file.content_length}, type: {video_file.content_type}")
+    
+    # Validate content type
+    if video_file.content_type not in ['video/webm', 'video/mp4', 'image/jpeg', 'image/png', 'video/quicktime']:
+        app.logger.error(f"Unsupported content type: {video_file.content_type}")
+        return jsonify({'error': f'Unsupported content type: {video_file.content_type}. Please use a supported format (webm, mp4).'}), 400
+    
+    # Check file size - limit to 15MB
+    if video_file.content_length > 15 * 1024 * 1024:  # 15MB in bytes
+        app.logger.error(f"File too large: {video_file.content_length} bytes")
+        return jsonify({'error': 'File too large. Please record a shorter video (under 15MB).'}), 413
     
     # Save the uploaded video temporarily
     temp_path = os.path.join(os.path.dirname(__file__), 'temp_video.webm')

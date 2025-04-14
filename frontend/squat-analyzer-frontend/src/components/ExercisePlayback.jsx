@@ -806,7 +806,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
         <ArrowLeft size={20} /> Back
       </BackButton>
       
-      <h2>Exercise Playback {usingLocalAnalysis && <span className="text-sm text-yellow-600">(Local Analysis Mode)</span>}</h2>
+      <h2>Exercise Playback</h2>
       
       {error && (
         <ErrorMessage>

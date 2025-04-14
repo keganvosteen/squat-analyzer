@@ -279,8 +279,12 @@ const App = () => {
 
   // Handle forcing local analysis mode
   const forceLocalMode = () => {
-    ServerWarmup.forceLocalAnalysis();
-    setUsingLocalAnalysis(true);
+    // Despite the function name, we won't enable local analysis
+    // Just update the UI to show the server is unavailable
+    setServerStatus('error');
+    setError("Server is unavailable. Please try again later.");
+    
+    // We don't call ServerWarmup.forceLocalAnalysis() to keep local analysis disabled
   };
 
   // Function to directly check server status before sending analysis
@@ -304,275 +308,82 @@ const App = () => {
   };
 
   // Handle when a recording is completed
-  const handleRecordingComplete = async (blob, metadata = {}) => {
-    // Keep local analysis disabled for backend-only analysis
-    const DISABLE_LOCAL_ANALYSIS = true;
+  const handleRecordingComplete = (blob) => {
+    console.log("Recording complete, blob received:", blob);
     
-    // Check for missing blob or empty blob
-    if (!blob || blob.size === 0) {
-      setError("Recording failed - no data captured");
+    if (!blob) {
+      console.error("No blob received from recording");
+      setError("Recording failed: No video data received");
+      setLoading(false);
       return;
     }
-    
-    // Check for fallback or minimal emergency blob
-    if (blob._isEmptyFallback) {
-      setError("Recording failed to capture video data. Please check your camera permissions and try again.");
-      return;
-    }
-    
+
     setLoading(true);
-    setVideoBlob(blob);
-    const url = URL.createObjectURL(blob);
-    setVideoUrl(url);
     setShowPlayback(true);
-    setIsAnalyzing(true);
+    setVideoBlob(blob);
     setError(null);
     
-    // Store recording metadata (like camera facing mode) for later use
-    console.log("Recording metadata:", metadata);
+    // Force local analysis off - always disabled
+    setUsingLocalAnalysis(false);
     
-    // Check if we should use local analysis based on server status or blob type
-    const isImageBlob = blob.type?.startsWith('image/') || blob._recordingType === 'image';
-    const isRenderServer = BACKEND_URL.includes('render.com');
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    console.log(`Device detected as ${isMobile ? 'mobile' : 'desktop'}`);
     
-    // Directly check server availability regardless of stored status
-    const serverDirectlyAvailable = await checkServerDirectly();
-    console.log(`Direct server check result: ${serverDirectlyAvailable ? "Available" : "Unavailable"}`);
+    // Always send to server
+    console.log("Sending video to server for analysis");
+    const formData = new FormData();
+    const timestamp = Date.now();
+    formData.append("video", blob, `squat_${timestamp}.${blob.type.includes('image') ? 'jpg' : 'webm'}`);
     
-    // Update server status based on direct check
-    if (serverDirectlyAvailable && serverStatus !== 'ready') {
-      console.log("Server is actually available despite status indicating otherwise, updating status");
-      ServerWarmup.updateServerStatus('ready');
-    } else if (!serverDirectlyAvailable && serverStatus === 'ready') {
-      console.log("Server is not available despite status indicating otherwise, updating status");
-      ServerWarmup.updateServerStatus('error');
-    }
-    
-    // Determine if we should use local analysis
-    // Use local analysis if:
-    // 1. It's already set as the preference
-    // 2. Server is not in "ready" state
-    // 3. It's an image blob (not a video)
-    // 4. URL has local=true parameter
-    const shouldUseLocalAnalysis = !DISABLE_LOCAL_ANALYSIS && (
-      ServerWarmup.isUsingLocalAnalysis() || 
-      !serverDirectlyAvailable ||
-      serverStatus !== 'ready' || 
-      isImageBlob
-    );
-    
-    setUsingLocalAnalysis(shouldUseLocalAnalysis);
-    
-    try {
-      // If server is not ready or has errors, skip the API call and go straight to local analysis
-      if (shouldUseLocalAnalysis) {
-        console.log(`Using local analysis due to: ${isImageBlob ? 'image blob' : 
-                                                   !serverDirectlyAvailable ? 'server not directly available' :
-                                                   serverStatus !== 'ready' ? 'server not ready' : 
-                                                   'local analysis preference'}`);
-        throw new Error("Using local analysis mode");
+    fetch(`${BACKEND_URL}/analyze`, {
+      method: "POST",
+      body: formData,
+    })
+    .then(response => {
+      if (!response.ok) {
+        // Create a better error message for CORS issues
+        if (response.status === 0) {
+          throw new Error("Network error: This could be a CORS issue. Please make sure the server is running and CORS is configured correctly.");
+        }
+        
+        // Handle specific HTTP error codes
+        if (response.status === 413) {
+          throw new Error("Video file too large. Please record a shorter video or reduce the resolution.");
+        }
+        
+        // For other HTTP errors
+        throw new Error(`Server error: ${response.status} ${response.statusText}`);
       }
+      return response.json();
+    })
+    .then(data => {
+      console.log("Received analysis data:", data);
       
-      // Send the video to the backend for analysis
-      console.log("Sending video to backend for analysis...");
-      
-      // Create a clean FormData object
-      const formData = new FormData();
-      
-      // Add a timestamp to prevent caching
-      const timestamp = Date.now();
-      
-      // Append the blob with a filename that includes format
-      const extension = blob.type.includes('mp4') ? 'mp4' : 'webm';
-      formData.append('video', blob, `squat_recording_${timestamp}.${extension}`);
-      
-      // For Render servers, we may need a longer timeout
-      const timeoutDuration = isRenderServer ? 60000 : 30000; // 1 minute for Render, 30 seconds otherwise
-      
-      // Use the correct URL (proxy in development or full URL in production)
-      const analyzeEndpoint = isDevelopment ? '/analyze' : `${BACKEND_URL}/analyze`;
-      
-      // ADDED: Log more information about the request
-      console.log(`Sending request to ${analyzeEndpoint} with timeout ${timeoutDuration}ms`);
-      console.log(`Request headers: Content-Type undefined to let browser set boundary`);
-      console.log(`Video blob info: size=${blob.size}, type=${blob.type}`);
-      
-      // ADDED: Create an axios instance with interceptors for debugging
-      const debugAxios = axios.create({
-        timeout: timeoutDuration,
-        validateStatus: function (status) {
-          return status < 500; // Only reject if status code is 5xx
-        }
-      });
-      
-      // Add request interceptor for debugging
-      debugAxios.interceptors.request.use(
-        config => {
-          console.log('Sending request with config:', {
-            url: config.url,
-            method: config.method,
-            headers: config.headers,
-            timeout: config.timeout,
-            data: 'FormData (binary data)'
-          });
-          return config;
-        },
-        error => {
-          console.error('Request interceptor error:', error);
-          return Promise.reject(error);
-        }
-      );
-      
-      // Add response interceptor for debugging
-      debugAxios.interceptors.response.use(
-        response => {
-          console.log('Response received:', {
-            status: response.status,
-            statusText: response.statusText,
-            headers: response.headers,
-            data: response.data ? 'Data received (see full response separately)' : 'No data'
-          });
-          return response;
-        },
-        error => {
-          console.error('Response interceptor error:', {
-            message: error.message,
-            code: error.code,
-            response: error.response ? {
-              status: error.response.status,
-              statusText: error.response.statusText,
-              headers: error.response.headers,
-              data: error.response.data
-            } : 'No response'
-          });
-          return Promise.reject(error);
-        }
-      );
-      
-      // Use a clean request configuration - don't inherit from api default headers
-      const response = await debugAxios.post(analyzeEndpoint, formData, {
-        headers: {
-          // Let the browser set the Content-Type with boundary for FormData
-          'Content-Type': undefined
-          // Don't manually set restricted headers like Origin or Access-Control-Request-Method
-          // The browser will set these automatically
-        }
-      });
-      
-      console.log("Analysis response:", response.data);
-      
-      // More robust response validation
-      if (response.data && 
-          typeof response.data === 'object' && 
-          Array.isArray(response.data.frames) && 
-          response.data.frames.length > 0) {
-        setAnalysisData(response.data);
-      } else {
-        console.error("Invalid server response format:", response.data);
+      // Validate the response data
+      if (!data || !data.results) {
         throw new Error("Invalid response format from server");
       }
       
-    } catch (apiError) {
-      console.error("API Error:", apiError);
-      
-      // Detect specific Render.com 502 errors
-      const isRender502 = apiError.response?.status === 502 && 
-                         (apiError.response?.headers?.['x-render-origin-server'] === 'Render' ||
-                          apiError.response?.headers?.['server'] === 'cloudflare' ||
-                          apiError.response?.headers?.['x-render-routing']?.includes('502'));
-      
-      // Check if this is a CORS error
-      const isCorsError = apiError.code === 'ERR_NETWORK' && 
-                         (apiError.message?.includes('Network Error') || 
-                          error?.toString().includes('CORS'));
-      
-      // Update server status if we got a network error or 502 bad gateway
-      if (apiError.code === 'ECONNABORTED' || 
-          isCorsError ||
-          isRender502) {
-        
-        if (isRender502) {
-          console.log("Detected Render.com 502 error - server likely still spinning up");
-          // Update server status to starting
-          ServerWarmup.updateServerStatus('starting');
-        } else if (isCorsError) {
-          console.log("CORS error detected - backend may not have correct CORS headers");
-          ServerWarmup.forceLocalAnalysis();
-        } else {
-          console.log("Network error or timeout, switching to local analysis mode");
-          ServerWarmup.forceLocalAnalysis();
-        }
-        
-        // MODIFIED: Only set this if we're not disabling local analysis
-        if (!DISABLE_LOCAL_ANALYSIS) {
-          setUsingLocalAnalysis(true);
-        }
-      }
-      
-      // ADDED: More detailed error logging
-      console.error(`API Error details:`, {
-        status: apiError.response?.status,
-        statusText: apiError.response?.statusText,
-        message: apiError.message,
-        code: apiError.code,
-        headers: apiError.response?.headers,
-        data: apiError.response?.data
-      });
-      
-      // For user-facing error message
-      let errorMessage = '';
-      if (apiError.code === 'ECONNABORTED') {
-        errorMessage = "Analysis took too long. Using local analysis instead.";
-      } else if (apiError.message?.includes('Using local analysis')) {
-        // This is expected when we choose to use local analysis
-        errorMessage = '';
-      } else if (isCorsError) {
-        errorMessage = "CORS error: Backend unavailable. Using local analysis instead.";
-      } else if (isRender502) {
-        errorMessage = "Server is still starting up (502). Using local analysis for now.";
-      } else if (apiError.response?.status === 502) {
-        errorMessage = "Server unavailable (502). Using local analysis instead.";
-      } else {
-        errorMessage = `Server analysis failed: ${apiError.message}`;
-      }
-      
-      // Only set the error if we'll need to show it
-      if (errorMessage) {
-        // MODIFIED: Update error message if local analysis is disabled
-        if (DISABLE_LOCAL_ANALYSIS) {
-          errorMessage = `Server analysis failed: ${apiError.message} (Local analysis disabled for debugging)`;
-        }
-        setError(errorMessage);
-      }
-      
-      // Try local analysis as a fallback
-      // MODIFIED: Skip local analysis if DISABLE_LOCAL_ANALYSIS is true
-      if (!DISABLE_LOCAL_ANALYSIS) {
-        try {
-          console.log("Running local analysis...");
-          
-          // Process the video locally
-          const localResults = await LocalAnalysis.analyzeVideo(blob, url);
-          
-          if (localResults && Array.isArray(localResults.frames) && localResults.frames.length > 0) {
-            console.log("Local analysis successful with", localResults.frames.length, "frames");
-            setAnalysisData(localResults);
-          } else {
-            throw new Error("Local analysis failed to generate valid results");
-          }
-        } catch (localError) {
-          console.error("Local analysis failed:", localError);
-          setError(`Analysis failed: ${localError.message || 'Unknown error'}`);
-          setAnalysisData(null);
-        }
-      } else {
-        console.log("Local analysis disabled for debugging - stopping here");
-        setAnalysisData(null);
-      }
-    } finally {
-      setIsAnalyzing(false);
+      setAnalysisData(data);
       setLoading(false);
-    }
+    })
+    .catch(err => {
+      console.error("Error during analysis:", err);
+      const errorMessage = err.message || "Unknown error occurred";
+      
+      // Enhanced error message that's more user-friendly
+      let userErrorMessage = errorMessage;
+      
+      if (errorMessage.includes("CORS")) {
+        userErrorMessage = "Connection to analysis server failed. This may be due to network security settings.";
+      } else if (errorMessage.includes("Failed to fetch") || errorMessage.includes("Network error")) {
+        userErrorMessage = "Unable to connect to the analysis server. Please check your internet connection and try again.";
+      }
+      
+      setError(userErrorMessage);
+      setAnalysisData(null);
+      setLoading(false);
+    });
   };
 
   // Handle going back to the recording screen
@@ -588,8 +399,7 @@ const App = () => {
     setAnalysisData(null);
     setShowPlayback(false);
     setError(null);
-    setIsAnalyzing(false);
-    setUsingLocalAnalysis(false);
+    setLoading(false);
   };
 
   return (
@@ -632,7 +442,7 @@ const App = () => {
             videoBlob={videoBlob}
             analysisData={analysisData}
             usingLocalAnalysis={usingLocalAnalysis}
-            isLoading={isAnalyzing || loading}
+            isLoading={loading}
             error={error}
             onBack={handleBackToRecord}
           />
