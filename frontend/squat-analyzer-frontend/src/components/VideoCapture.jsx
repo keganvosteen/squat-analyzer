@@ -759,7 +759,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     
     try {
       // Stop any existing stream
-      if (streamRef.current) {
+        if (streamRef.current) {
         streamRef.current.getTracks().forEach(track => {
           addDebugLog(`Stopping existing track: ${track.kind}`);
           track.stop();
@@ -778,7 +778,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Start with basic constraints
       let constraints = {
         audio: false,
-        video: {
+          video: { 
           facingMode,
           width: { ideal: isMobile ? 720 : 1280 },
           height: { ideal: isMobile ? 1280 : 720 }
@@ -1334,7 +1334,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     try {
       console.debug('[Squat] Toggle recording. Current state:', isRecording);
       
-      if (isRecording) {
+    if (isRecording) {
         // If we're using MediaRecorder
         if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
           handleStopRecording();
@@ -1391,7 +1391,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       }
       
       // Reset recording chunks and set up frame capture as backup
-      recordedChunksRef.current = [];
+        recordedChunksRef.current = [];
       const captureStartTime = Date.now();
       
       // Start a manual frame capture as backup
@@ -1588,10 +1588,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             setError('No recorded data available.');
           }
           
-          setIsRecording(false);
-          return;
-        }
-        
+        setIsRecording(false);
+        return;
+      }
+      
         // Determine output format based on browser support
         const outputType = selectedMimeType.split(';')[0]; // Get base mime type without codecs
         console.debug(`[Squat] Using output type: ${outputType} with ${recordedChunksRef.current.length} chunks`);
@@ -1604,7 +1604,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         if (typeof onRecordingComplete === 'function') {
           console.debug('[Squat] Calling onRecordingComplete with blob');
           onRecordingComplete(blob);
-        } else {
+    } else {
           console.warn('[Squat] No onRecordingComplete handler available');
         }
         
@@ -1647,7 +1647,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       }, 1000);
       
       console.debug('[Squat] Recording started successfully');
-    } catch (error) {
+        } catch (error) {
       console.error('[Squat] Error starting recording:', error);
       setError(`Failed to start recording: ${error.message}`);
       setIsRecording(false);
@@ -2014,9 +2014,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           } else {
             // Skip this keypoint if no valid coordinates
             console.debug(`[Squat] Skipping keypoint with missing position: ${keypoint.part || 'unknown'}`);
-            return;
-          }
-          
+        return;
+      }
+      
           // Scale coordinates to match display size
           const scaledX = x * scaleX;
           const scaledY = y * scaleY;
@@ -2305,10 +2305,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       <CameraContainer>
         <Video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
+        ref={videoRef} 
+        autoPlay 
+        playsInline 
+        muted
           style={{ display: streamReady ? 'block' : 'none' }}
         />
         <PoseCanvas 
@@ -2316,7 +2316,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           style={{ display: isPoseTracking ? 'block' : 'none' }}
         />
         
-        {isRecording && (
+      {isRecording && (
           <RecordingIndicator>
             <RecordingDot />
             Recording {formatRecordingTime(recordingTime)}

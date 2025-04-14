@@ -400,7 +400,7 @@ const App = () => {
                 onRecordingComplete={handleRecordingComplete}
               />
         ) : (
-          <ExercisePlayback 
+              <ExercisePlayback 
             videoUrl={videoUrl}
             videoBlob={videoBlob}
             analysisData={analysisData}

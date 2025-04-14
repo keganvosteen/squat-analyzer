@@ -301,7 +301,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
         };
         
         img.src = videoUrl;
-      } else {
+    } else {
         // Handle as regular video URL
         if (videoRef.current) {
           videoRef.current.src = videoUrl;
@@ -536,7 +536,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
           ctx.fillStyle = 'green';
         } else if (idx === 27 || idx === 28 || idx === 31 || idx === 32) { // Ankles and feet
           ctx.fillStyle = 'yellow';
-        } else {
+      } else {
           ctx.fillStyle = 'white';
         }
         
@@ -787,8 +787,8 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
             $rotate={videoOrientation || 0}
             playsInline
           />
-        </div>
-        
+          </div>
+          
         <OverlayCanvas
           ref={canvasRef}
         />
@@ -869,7 +869,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
                     <div key={key} className="w-1/3 mb-2">
                       <StatLabel>{key}</StatLabel>
                       <StatValue>{typeof value === 'number' ? value.toFixed(1) : value}</StatValue>
-                    </div>
+            </div>
                   ))
                 )}
               </div>
@@ -910,8 +910,8 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
             <p className="text-sm text-gray-600">
               Tip: Try recording a shorter video (5-10 seconds) for better processing success.
             </p>
-          </div>
-        )}
+            </div>
+          )}
       </AnalysisPanel>
     </Container>
   );
