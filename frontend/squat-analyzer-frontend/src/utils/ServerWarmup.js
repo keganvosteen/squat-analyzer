@@ -128,27 +128,48 @@ const corsRequest = async (endpoint) => {
     }
   }
   
-  // For production without proxy, try multiple CORS methods
-  // First try with standard fetch with CORS mode
+  // For production without proxy, try with no-cors mode first (most reliable)
   try {
-    const response = await fetch(url, {
+    // First attempt with mode: 'no-cors' - this may not return useful data
+    // but will tell us if the server is accessible at all
+    const preflightResponse = await fetch(url, {
       method: 'GET',
-      mode: 'cors', // Let the browser handle CORS
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json'
-        // Don't set Origin or Access-Control headers manually
-      }
+      mode: 'no-cors',
+      cache: 'no-cache'
     });
     
-    if (response.ok) {
-      return response.json();
-    }
+    console.debug('[ServerWarmup] Preflight no-cors request succeeded');
     
-    // If we got a response but it wasn't ok, throw an error
-    throw new Error(`Server response: ${response.status} ${response.statusText}`);
+    // If we get here, the server is reachable but we might not be able
+    // to get the actual data due to CORS. Try a regular request now.
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        mode: 'cors',
+        cache: 'no-cache',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (response.ok) {
+        return response.json();
+      }
+      
+      throw new Error(`Server response: ${response.status} ${response.statusText}`);
+    } catch (corsError) {
+      console.debug(`[ServerWarmup] Standard CORS request failed after successful preflight: ${corsError.message}`);
+      
+      // The server is reachable but CORS is blocking us
+      // We'll count this as a "starting" state rather than an error
+      updateServerStatus('starting');
+      
+      // Still throw an error to trigger the caller's fallback logic
+      throw new Error('Server is accessible but CORS is blocking JSON response');
+    }
   } catch (fetchError) {
-    console.warn(`Direct CORS request failed: ${fetchError.message}`);
+    console.warn(`[ServerWarmup] Direct CORS request failed: ${fetchError.message}`);
     
     // If CORS error, try using a CORS proxy
     try {
@@ -169,7 +190,17 @@ const corsRequest = async (endpoint) => {
       
       throw new Error(`Proxy response: ${proxyResponse.status} ${proxyResponse.statusText}`);
     } catch (proxyError) {
-      console.warn(`CORS proxy request failed: ${proxyError.message}`);
+      console.warn(`[ServerWarmup] CORS proxy request failed: ${proxyError.message}`);
+      
+      // If the server is hosted on render.com, it might be in a startup state
+      if (BACKEND_URL.includes('render.com')) {
+        // Check if this looks like a cold start issue
+        if (fetchError.message.includes('Failed to fetch') || 
+            fetchError.message.includes('Network Error')) {
+          console.log('[ServerWarmup] Render server appears to be in cold start mode');
+          updateServerStatus('starting');
+        }
+      }
       
       // All methods failed, throw error
       throw new Error('All CORS request methods failed');

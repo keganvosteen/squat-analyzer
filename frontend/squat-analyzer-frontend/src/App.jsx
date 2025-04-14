@@ -33,7 +33,7 @@ const getApiUrl = (endpoint) => {
 // Create a configured instance of axios with better CORS handling
 const api = axios.create({
   baseURL: isDevelopment ? '' : BACKEND_URL, // In dev mode, use relative URLs for proxy
-  timeout: 30000, // 30 second default timeout
+  timeout: 45000, // 45 seconds default timeout for longer videos
   withCredentials: false, // Important for CORS
   headers: {
     'Content-Type': 'application/json',
@@ -305,8 +305,8 @@ const App = () => {
 
   // Handle when a recording is completed
   const handleRecordingComplete = async (blob, metadata = {}) => {
-    // TEMPORARY DEBUG FLAG - Disable local analysis for troubleshooting
-    const DISABLE_LOCAL_ANALYSIS = true;
+    // Set to false to enable local analysis as fallback
+    const DISABLE_LOCAL_ANALYSIS = false;
     
     if (!blob || blob.size === 0) {
       setError("Recording failed - no data captured");
@@ -347,7 +347,6 @@ const App = () => {
     // 2. Server is not in "ready" state
     // 3. It's an image blob (not a video)
     // 4. URL has local=true parameter
-    // MODIFIED: Respect the DISABLE_LOCAL_ANALYSIS flag and direct server check
     const shouldUseLocalAnalysis = !DISABLE_LOCAL_ANALYSIS && (
       ServerWarmup.isUsingLocalAnalysis() || 
       !serverDirectlyAvailable ||
