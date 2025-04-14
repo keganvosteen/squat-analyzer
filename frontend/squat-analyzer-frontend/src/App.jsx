@@ -305,8 +305,8 @@ const App = () => {
 
   // Handle when a recording is completed
   const handleRecordingComplete = async (blob, metadata = {}) => {
-    // Set to false to enable local analysis as fallback
-    const DISABLE_LOCAL_ANALYSIS = false;
+    // Keep local analysis disabled for backend-only analysis
+    const DISABLE_LOCAL_ANALYSIS = true;
     
     if (!blob || blob.size === 0) {
       setError("Recording failed - no data captured");
