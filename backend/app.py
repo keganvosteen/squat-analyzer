@@ -343,11 +343,24 @@ def get_session_data():
 
 @app.route('/analyze', methods=['POST', 'OPTIONS'])
 def analyze_video():
-    # Handle preflight OPTIONS request
+    # Handle preflight OPTIONS request with more detailed logging
     if request.method == 'OPTIONS':
-        return '', 204
+        app.logger.info("Received OPTIONS preflight request for /analyze endpoint")
+        app.logger.info(f"Request headers: {dict(request.headers)}")
         
-    app.logger.info("Analyze endpoint called")
+        # Create a response with appropriate CORS headers
+        response = app.make_response('')
+        response.status_code = 204
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        response.headers['Access-Control-Max-Age'] = '3600'
+        
+        app.logger.info(f"Responding to OPTIONS with headers: {dict(response.headers)}")
+        return response
+        
+    app.logger.info("Analyze endpoint called (POST method)")
+    app.logger.info(f"Request headers: {dict(request.headers)}")
     
     if 'video' not in request.files:
         app.logger.error("No video file in request")

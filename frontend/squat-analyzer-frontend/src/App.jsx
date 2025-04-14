@@ -283,8 +283,31 @@ const App = () => {
     setUsingLocalAnalysis(true);
   };
 
+  // Function to directly check server status before sending analysis
+  const checkServerDirectly = async () => {
+    console.log("Performing direct server status check before analysis...");
+    try {
+      const analyzeEndpoint = isDevelopment ? '/ping' : `${BACKEND_URL}/ping`;
+      const response = await axios.get(analyzeEndpoint, { 
+        timeout: 5000,
+        validateStatus: function (status) {
+          return status < 500;
+        }
+      });
+      
+      console.log("Direct server check response:", response.data);
+      return response.status === 200 && response.data && response.data.status === "alive";
+    } catch (error) {
+      console.error("Direct server check failed:", error.message);
+      return false;
+    }
+  };
+
   // Handle when a recording is completed
   const handleRecordingComplete = async (blob, metadata = {}) => {
+    // TEMPORARY DEBUG FLAG - Disable local analysis for troubleshooting
+    const DISABLE_LOCAL_ANALYSIS = true;
+    
     if (!blob || blob.size === 0) {
       setError("Recording failed - no data captured");
       return;
@@ -305,15 +328,32 @@ const App = () => {
     const isImageBlob = blob.type?.startsWith('image/') || blob._recordingType === 'image';
     const isRenderServer = BACKEND_URL.includes('render.com');
     
+    // Directly check server availability regardless of stored status
+    const serverDirectlyAvailable = await checkServerDirectly();
+    console.log(`Direct server check result: ${serverDirectlyAvailable ? "Available" : "Unavailable"}`);
+    
+    // Update server status based on direct check
+    if (serverDirectlyAvailable && serverStatus !== 'ready') {
+      console.log("Server is actually available despite status indicating otherwise, updating status");
+      ServerWarmup.updateServerStatus('ready');
+    } else if (!serverDirectlyAvailable && serverStatus === 'ready') {
+      console.log("Server is not available despite status indicating otherwise, updating status");
+      ServerWarmup.updateServerStatus('error');
+    }
+    
     // Determine if we should use local analysis
     // Use local analysis if:
     // 1. It's already set as the preference
     // 2. Server is not in "ready" state
     // 3. It's an image blob (not a video)
     // 4. URL has local=true parameter
-    const shouldUseLocalAnalysis = ServerWarmup.isUsingLocalAnalysis() || 
-                                   serverStatus !== 'ready' || 
-                                   isImageBlob; // Always use local analysis for images
+    // MODIFIED: Respect the DISABLE_LOCAL_ANALYSIS flag and direct server check
+    const shouldUseLocalAnalysis = !DISABLE_LOCAL_ANALYSIS && (
+      ServerWarmup.isUsingLocalAnalysis() || 
+      !serverDirectlyAvailable ||
+      serverStatus !== 'ready' || 
+      isImageBlob
+    );
     
     setUsingLocalAnalysis(shouldUseLocalAnalysis);
     
@@ -321,8 +361,9 @@ const App = () => {
       // If server is not ready or has errors, skip the API call and go straight to local analysis
       if (shouldUseLocalAnalysis) {
         console.log(`Using local analysis due to: ${isImageBlob ? 'image blob' : 
-                                                    serverStatus !== 'ready' ? 'server not ready' : 
-                                                    'local analysis preference'}`);
+                                                   !serverDirectlyAvailable ? 'server not directly available' :
+                                                   serverStatus !== 'ready' ? 'server not ready' : 
+                                                   'local analysis preference'}`);
         throw new Error("Using local analysis mode");
       }
       
@@ -345,17 +386,70 @@ const App = () => {
       // Use the correct URL (proxy in development or full URL in production)
       const analyzeEndpoint = isDevelopment ? '/analyze' : `${BACKEND_URL}/analyze`;
       
+      // ADDED: Log more information about the request
+      console.log(`Sending request to ${analyzeEndpoint} with timeout ${timeoutDuration}ms`);
+      console.log(`Request headers: Content-Type undefined to let browser set boundary`);
+      console.log(`Video blob info: size=${blob.size}, type=${blob.type}`);
+      
+      // ADDED: Create an axios instance with interceptors for debugging
+      const debugAxios = axios.create({
+        timeout: timeoutDuration,
+        validateStatus: function (status) {
+          return status < 500; // Only reject if status code is 5xx
+        }
+      });
+      
+      // Add request interceptor for debugging
+      debugAxios.interceptors.request.use(
+        config => {
+          console.log('Sending request with config:', {
+            url: config.url,
+            method: config.method,
+            headers: config.headers,
+            timeout: config.timeout,
+            data: 'FormData (binary data)'
+          });
+          return config;
+        },
+        error => {
+          console.error('Request interceptor error:', error);
+          return Promise.reject(error);
+        }
+      );
+      
+      // Add response interceptor for debugging
+      debugAxios.interceptors.response.use(
+        response => {
+          console.log('Response received:', {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+            data: response.data ? 'Data received (see full response separately)' : 'No data'
+          });
+          return response;
+        },
+        error => {
+          console.error('Response interceptor error:', {
+            message: error.message,
+            code: error.code,
+            response: error.response ? {
+              status: error.response.status,
+              statusText: error.response.statusText,
+              headers: error.response.headers,
+              data: error.response.data
+            } : 'No response'
+          });
+          return Promise.reject(error);
+        }
+      );
+      
       // Use a clean request configuration - don't inherit from api default headers
-      const response = await axios.post(analyzeEndpoint, formData, {
+      const response = await debugAxios.post(analyzeEndpoint, formData, {
         headers: {
           // Let the browser set the Content-Type with boundary for FormData
           'Content-Type': undefined
           // Don't manually set restricted headers like Origin or Access-Control-Request-Method
           // The browser will set these automatically
-        },
-        timeout: timeoutDuration,
-        validateStatus: function (status) {
-          return status < 500; // Only reject if status code is 5xx
         }
       });
       
@@ -403,8 +497,21 @@ const App = () => {
           ServerWarmup.forceLocalAnalysis();
         }
         
-        setUsingLocalAnalysis(true);
+        // MODIFIED: Only set this if we're not disabling local analysis
+        if (!DISABLE_LOCAL_ANALYSIS) {
+          setUsingLocalAnalysis(true);
+        }
       }
+      
+      // ADDED: More detailed error logging
+      console.error(`API Error details:`, {
+        status: apiError.response?.status,
+        statusText: apiError.response?.statusText,
+        message: apiError.message,
+        code: apiError.code,
+        headers: apiError.response?.headers,
+        data: apiError.response?.data
+      });
       
       // For user-facing error message
       let errorMessage = '';
@@ -425,25 +532,35 @@ const App = () => {
       
       // Only set the error if we'll need to show it
       if (errorMessage) {
+        // MODIFIED: Update error message if local analysis is disabled
+        if (DISABLE_LOCAL_ANALYSIS) {
+          errorMessage = `Server analysis failed: ${apiError.message} (Local analysis disabled for debugging)`;
+        }
         setError(errorMessage);
       }
       
       // Try local analysis as a fallback
-      try {
-        console.log("Running local analysis...");
-        
-        // Process the video locally
-        const localResults = await LocalAnalysis.analyzeVideo(blob, url);
-        
-        if (localResults && Array.isArray(localResults.frames) && localResults.frames.length > 0) {
-          console.log("Local analysis successful with", localResults.frames.length, "frames");
-          setAnalysisData(localResults);
-        } else {
-          throw new Error("Local analysis failed to generate valid results");
+      // MODIFIED: Skip local analysis if DISABLE_LOCAL_ANALYSIS is true
+      if (!DISABLE_LOCAL_ANALYSIS) {
+        try {
+          console.log("Running local analysis...");
+          
+          // Process the video locally
+          const localResults = await LocalAnalysis.analyzeVideo(blob, url);
+          
+          if (localResults && Array.isArray(localResults.frames) && localResults.frames.length > 0) {
+            console.log("Local analysis successful with", localResults.frames.length, "frames");
+            setAnalysisData(localResults);
+          } else {
+            throw new Error("Local analysis failed to generate valid results");
+          }
+        } catch (localError) {
+          console.error("Local analysis failed:", localError);
+          setError(`Analysis failed: ${localError.message || 'Unknown error'}`);
+          setAnalysisData(null);
         }
-      } catch (localError) {
-        console.error("Local analysis failed:", localError);
-        setError(`Analysis failed: ${localError.message || 'Unknown error'}`);
+      } else {
+        console.log("Local analysis disabled for debugging - stopping here");
         setAnalysisData(null);
       }
     } finally {

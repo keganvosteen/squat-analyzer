@@ -43,7 +43,9 @@ const MAX_RETRY_COUNT = 3;
  * @param {string} status The new status
  */
 const updateServerStatus = (status) => {
+  const oldStatus = serverStatus;
   serverStatus = status;
+  console.debug(`[ServerWarmup] Server status changed: ${oldStatus} → ${status}`);
   notifyStatusListeners();
 };
 
@@ -81,7 +83,11 @@ const getServerStatus = () => serverStatus;
  * Check if we're using local analysis mode
  * @returns {boolean} True if using local analysis
  */
-const isUsingLocalAnalysis = () => useLocalAnalysis;
+const isUsingLocalAnalysis = () => {
+  // Add debugging info
+  console.debug(`[ServerWarmup] isUsingLocalAnalysis check. Current value: ${useLocalAnalysis}, Server status: ${serverStatus}`);
+  return useLocalAnalysis;
+};
 
 /**
  * Switch to local analysis mode
@@ -242,6 +248,8 @@ const pingServer = async () => {
  * @returns {Promise<boolean>} True if server is ready
  */
 const warmupServer = async (url = BACKEND_URL) => {
+  console.debug(`[ServerWarmup] Starting warmup for server at ${url}. Current local analysis: ${useLocalAnalysis}`);
+  
   if (useLocalAnalysis) {
     console.log('Using local analysis mode, skipping server warmup');
     return false;
@@ -307,6 +315,7 @@ const warmupServer = async (url = BACKEND_URL) => {
       });
       
       const isReady = await pingPromise;
+      console.debug(`[ServerWarmup] Server warmup result: ${isReady ? 'ready' : 'not ready'}`);
       updateServerStatus(isReady ? 'ready' : 'error');
       
       // In either case, start the normal warmup service for continued pings
@@ -323,6 +332,7 @@ const warmupServer = async (url = BACKEND_URL) => {
     const isReady = await pingServer();
     
     // Update status based on ping result
+    console.debug(`[ServerWarmup] Server warmup result (non-Render): ${isReady ? 'ready' : 'not ready'}`);
     updateServerStatus(isReady ? 'ready' : 'starting');
     
     return isReady;

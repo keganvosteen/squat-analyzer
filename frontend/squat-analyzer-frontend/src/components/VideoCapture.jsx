@@ -1250,7 +1250,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         addDebugLog('Reinitializing camera after toggle');
         initializeCamera();
       }, 800);
-    } catch (error) {
+      } catch (error) {
       console.error('Camera toggle error:', error);
       addDebugLog(`Camera toggle error: ${error.message}`);
       setError('Failed to toggle camera. Please try again later.');
@@ -1274,9 +1274,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           setTimeout(() => startPoseDetection(), 500);
         }
       });
-      return;
-    }
-    
+        return;
+      }
+      
     if (isPoseTracking) {
       addDebugLog("Stopping pose tracking");
       stopPoseDetection();
@@ -1317,7 +1317,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       if (lastFrameBlob && typeof onRecordingComplete === 'function') {
         console.debug('[Squat] Using emergency last frame capture');
         onRecordingComplete(lastFrameBlob);
-      } else {
+    } else {
         setError('Recording failed: No frames were captured.');
       }
     } else {
@@ -1420,7 +1420,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         
         try {
           const canvas = document.createElement('canvas');
-          const ctx = canvas.getContext('2d');
+      const ctx = canvas.getContext('2d');
           canvas.width = videoRef.current.videoWidth;
           canvas.height = videoRef.current.videoHeight;
           
@@ -1554,14 +1554,14 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       mediaRecorderRef.current.captureFrames = captureFrames;
       
       mediaRecorderRef.current.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
+    if (event.data && event.data.size > 0) {
           const now = Date.now();
           const timeSinceLastChunk = now - lastChunkTime;
           lastChunkTime = now;
           
           chunkCount++;
           console.debug(`[Squat] Data chunk ${chunkCount} available: ${event.data.size} bytes (${timeSinceLastChunk}ms since last chunk)`);
-          recordedChunksRef.current.push(event.data);
+      recordedChunksRef.current.push(event.data);
           
           // Add progress indicator update if recording for a while
           if (chunkCount % 5 === 0) {
@@ -1622,9 +1622,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           }
           
           setIsRecording(false);
-          return;
-        }
-        
+      return;
+    }
+    
         // Determine output format based on browser support
         const outputType = selectedMimeType.split(';')[0]; // Get base mime type without codecs
         console.debug(`[Squat] Using output type: ${outputType} with ${recordedChunksRef.current.length} chunks`);
@@ -1976,7 +1976,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
               clearTimeout(mediaRecorderRef.current.cleanupTimeoutId);
             }
             // Check if we're still in recording state
-            if (isRecording) {
+    if (isRecording) {
               console.warn('[Squat] Still in recording state despite inactive recorder, forcing cleanup');
               manualCleanup();
             }
@@ -2077,7 +2077,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             // Alternative format with direct x,y properties
             x = keypoint.x;
             y = keypoint.y;
-          } else {
+    } else {
             // Skip this keypoint if no valid coordinates
             console.debug(`[Squat] Skipping keypoint with missing position: ${keypoint.part || 'unknown'}`);
         return;
