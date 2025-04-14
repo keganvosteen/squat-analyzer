@@ -308,8 +308,15 @@ const App = () => {
     // Keep local analysis disabled for backend-only analysis
     const DISABLE_LOCAL_ANALYSIS = true;
     
+    // Check for missing blob or empty blob
     if (!blob || blob.size === 0) {
       setError("Recording failed - no data captured");
+      return;
+    }
+    
+    // Check for fallback or minimal emergency blob
+    if (blob._isEmptyFallback) {
+      setError("Recording failed to capture video data. Please check your camera permissions and try again.");
       return;
     }
     
