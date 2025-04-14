@@ -13,9 +13,19 @@ import '@tensorflow/tfjs-backend-cpu';
 // API URL with fallback for local development
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://squat-analyzer-backend.onrender.com';
 
-// Detect if device is mobile (for optimizations)
+// Detect if browser is Firefox
+const isFirefox = () => navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
+
+// Detect if browser is Safari
+const isSafari = () => {
+  const ua = navigator.userAgent.toLowerCase();
+  return ua.indexOf('safari') !== -1 && ua.indexOf('chrome') === -1;
+};
+
+// Utility function to detect mobile browsers
 const isMobileDevice = () => {
-  return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+  const userAgent = navigator.userAgent.toLowerCase();
+  return /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini|mobile/i.test(userAgent);
 };
 
 // Initialize TensorFlow backend explicitly with improved mobile handling
@@ -1375,6 +1385,11 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     try {
       console.debug('[Squat] Starting recording...');
       
+      // Check if we're in Firefox - Firefox often has issues with MediaRecorder
+      if (isFirefox()) {
+        console.debug('[Squat] Firefox detected - using frame capture with higher frequency as primary recording method');
+      }
+      
       // Check if camera is ready
       if (!videoRef.current || !videoRef.current.srcObject) {
         console.warn('[Squat] Camera not ready for recording');
@@ -1391,7 +1406,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       }
       
       // Reset recording chunks and set up frame capture as backup
-        recordedChunksRef.current = [];
+      recordedChunksRef.current = [];
       const captureStartTime = Date.now();
       
       // Start a manual frame capture as backup
@@ -1417,6 +1432,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             ctx.drawImage(canvasRef.current, 0, 0);
           }
           
+          // Determine capture quality and frequency based on browser
+          const quality = isFirefox() ? 0.9 : 0.8;  // Higher quality for Firefox
+          const captureInterval = isFirefox() ? 100 : 200; // More frequent captures for Firefox (10fps vs 5fps)
+          
           // Store the frame
           canvas.toBlob((blob) => {
             if (blob) {
@@ -1429,11 +1448,11 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
                 timestamp: Date.now() - captureStartTime
               });
             }
-          }, 'image/jpeg', 0.8);
+          }, 'image/jpeg', quality);
           
           // Continue capture if still recording
           if (isRecording) {
-            manualFrameCaptureRef.current = setTimeout(captureFrame, 200); // Capture at ~5fps
+            manualFrameCaptureRef.current = setTimeout(captureFrame, captureInterval);
           }
         } catch (e) {
           console.warn('[Squat] Error in manual frame capture:', e);
@@ -1446,7 +1465,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       // Determine supported mime types - prioritize mobile-compatible formats
       const mobileDevice = isMobile || isMobileDevice();
-      console.debug(`[Squat] Device type: ${mobileDevice ? 'Mobile' : 'Desktop'}`);
+      console.debug(`[Squat] Device type: ${mobileDevice ? 'Mobile' : 'Desktop'}, Browser: ${isFirefox() ? 'Firefox' : 'Other'}`);
       
       // Check if MediaRecorder is supported at all
       if (typeof MediaRecorder === 'undefined') {
@@ -1458,21 +1477,34 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         return;
       }
       
-      // Different mime type priorities based on platform
-      const mimeTypes = mobileDevice ? [
-        'video/mp4',
-        'video/mp4;codecs=h264,aac',
-        'video/webm',
-        'video/webm;codecs=vp8,opus',
-        'video/webm;codecs=vp9,opus'
-      ] : [
-        'video/webm;codecs=vp9,opus',
-        'video/webm;codecs=vp8,opus',
-        'video/webm;codecs=h264,opus',
-        'video/mp4;codecs=h264,aac',
-        'video/webm',
-        'video/mp4'
-      ];
+      // Different mime type priorities based on platform and browser
+      let mimeTypes = [];
+      
+      if (isFirefox()) {
+        // Firefox-specific MIME types (Firefox has better support for these)
+        mimeTypes = [
+          'video/webm',
+          'video/webm;codecs=vp8,opus',
+          'video/mp4'
+        ];
+      } else if (mobileDevice) {
+        mimeTypes = [
+          'video/mp4',
+          'video/mp4;codecs=h264,aac',
+          'video/webm',
+          'video/webm;codecs=vp8,opus',
+          'video/webm;codecs=vp9,opus'
+        ];
+      } else {
+        mimeTypes = [
+          'video/webm;codecs=vp9,opus',
+          'video/webm;codecs=vp8,opus',
+          'video/webm;codecs=h264,opus',
+          'video/mp4;codecs=h264,aac',
+          'video/webm',
+          'video/mp4'
+        ];
+      }
       
       let selectedMimeType = null;
       for (const type of mimeTypes) {
@@ -1492,10 +1524,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         return;
       }
       
-      // Create options with appropriate bitrate for mobile (lower for better reliability)
+      // Create options with appropriate bitrate for the browser/device
       const options = {
         mimeType: selectedMimeType,
-        videoBitsPerSecond: mobileDevice ? 1000000 : 2500000 // Even lower bitrate for reliability
+        videoBitsPerSecond: isFirefox() ? 2000000 : (mobileDevice ? 1000000 : 2500000)
       };
       
       try {
@@ -1567,7 +1599,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         }
         
         if (recordedChunksRef.current.length === 0) {
-          console.warn('[Squat] No recorded data available from MediaRecorder');
+          console.warn('[Squat] No recorded data available from MediaRecorder - this is a common issue in Firefox');
           
           // If we have backup frames, convert them to a video or still image
           if (captureFrames.length > 0) {
@@ -1579,7 +1611,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             if (lastFrame && lastFrame.blob) {
               console.debug('[Squat] Using last captured frame as fallback');
               if (typeof onRecordingComplete === 'function') {
-                onRecordingComplete(lastFrame.blob);
+                const processedBlob = processRecordingForAnalysis(lastFrame.blob);
+                onRecordingComplete(processedBlob);
               }
             } else {
               setError('Recording failed to capture any usable data.');
@@ -1588,10 +1621,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             setError('No recorded data available.');
           }
           
-        setIsRecording(false);
-        return;
-      }
-      
+          setIsRecording(false);
+          return;
+        }
+        
         // Determine output format based on browser support
         const outputType = selectedMimeType.split(';')[0]; // Get base mime type without codecs
         console.debug(`[Squat] Using output type: ${outputType} with ${recordedChunksRef.current.length} chunks`);
@@ -1603,8 +1636,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         // Call the onRecordingComplete callback if available
         if (typeof onRecordingComplete === 'function') {
           console.debug('[Squat] Calling onRecordingComplete with blob');
-          onRecordingComplete(blob);
-    } else {
+          const processedBlob = processRecordingForAnalysis(blob);
+          onRecordingComplete(processedBlob);
+        } else {
           console.warn('[Squat] No onRecordingComplete handler available');
         }
         
@@ -1654,6 +1688,36 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     }
   };
 
+  // Process recording blob for analysis, applying browser-specific fixes
+  const processRecordingForAnalysis = (blob) => {
+    if (!blob) return null;
+    
+    console.debug(`[Squat] Processing ${blob.type} blob (${blob.size} bytes) for analysis, Firefox: ${isFirefox()}`);
+    
+    try {
+      // For Firefox, we need to ensure the blob has appropriate properties
+      if (isFirefox()) {
+        // If it's an image blob (from fallback), mark it as such
+        if (blob.type.startsWith('image/')) {
+          const processedBlob = blob;
+          processedBlob._recordingType = 'image';
+          console.debug('[Squat] Marked blob as image for Firefox');
+          return processedBlob;
+        }
+      }
+      
+      // For image blobs from other browsers
+      if (blob._originalType && blob._originalType.startsWith('image/')) {
+        blob._recordingType = 'image';
+      }
+      
+      return blob;
+    } catch (error) {
+      console.warn('[Squat] Error processing blob:', error);
+      return blob; // Return original if processing fails
+    }
+  };
+
   // Create a fallback recording using canvas capture when MediaRecorder fails to collect chunks for recording
   const createFallbackRecording = () => {
     console.debug('[Squat] Creating fallback recording from canvas frames');
@@ -1694,6 +1758,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
               
               // Store the original type in case we need it later
               analysisBlob._originalType = blob.type;
+              // Explicitly mark this as an image for analysis detection
+              analysisBlob._recordingType = 'image';
               
               resolve(analysisBlob);
             } catch (blobError) {
@@ -2245,32 +2311,6 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     
     return () => clearTimeout(safetyTimeout);
   }, [isInitializing]);
-
-  // Handle when a recording is complete - add meta information
-  const processRecordingForAnalysis = (blob) => {
-    // Return early if blob is null
-    if (!blob) {
-      console.error('[Squat] Cannot process null blob');
-      return null;
-    }
-    
-    // Add metadata to help with analysis
-    const processedBlob = blob;
-    
-    // Add metadata properties
-    processedBlob._isImageFallback = blob.type.startsWith('image/');
-    processedBlob._recordingType = blob.type.startsWith('image/') ? 'image' : 'video';
-    processedBlob._captureTime = new Date().toISOString();
-    processedBlob._deviceInfo = {
-      isMobile: isMobileDevice(),
-      browser: detectBrowser(),
-      userAgent: navigator.userAgent
-    };
-    
-    console.debug(`[Squat] Processed blob for analysis: ${processedBlob.type}, size: ${processedBlob.size} bytes, isImageFallback: ${processedBlob._isImageFallback}`);
-    
-    return processedBlob;
-  };
 
   return (
     <div className={`video-container ${darkMode ? 'dark-mode' : ''}`} ref={containerRef}>

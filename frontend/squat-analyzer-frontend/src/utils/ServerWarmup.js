@@ -107,6 +107,7 @@ const corsRequest = async (endpoint) => {
         headers: {
           'Accept': 'application/json',
           'Content-Type': 'application/json'
+          // Don't manually set restricted headers
         }
       });
       
@@ -126,12 +127,11 @@ const corsRequest = async (endpoint) => {
   try {
     const response = await fetch(url, {
       method: 'GET',
-      mode: 'cors',
+      mode: 'cors', // Let the browser handle CORS
       headers: {
         'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Access-Control-Request-Method': 'GET',
-        'Origin': window.location.origin
+        'Content-Type': 'application/json'
+        // Don't set Origin or Access-Control headers manually
       }
     });
     

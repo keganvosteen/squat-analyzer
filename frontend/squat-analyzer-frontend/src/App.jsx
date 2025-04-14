@@ -44,15 +44,22 @@ const api = axios.create({
 api.interceptors.response.use(
   response => response,
   error => {
-    // Check if the error is related to CORS
+    // Check if the error is related to CORS or unsafe headers
     const isCorsError = error.code === 'ERR_NETWORK' && 
                        (error.message?.includes('Network Error') || 
                         error.message?.includes('CORS'));
     
-    if (isCorsError) {
-      console.log('CORS or network error detected:', error);
+    const isHeaderError = error.message?.includes('Refused to set unsafe header');
+    
+    if (isCorsError || isHeaderError) {
+      console.log('CORS or header error detected:', error.message);
       // Force local analysis mode on CORS errors
       ServerWarmup.forceLocalAnalysis();
+      
+      // For header errors, provide a more specific warning
+      if (isHeaderError) {
+        console.warn('Browser blocked restricted headers. This is expected behavior.');
+      }
     }
     return Promise.reject(error);
   }
@@ -343,6 +350,8 @@ const App = () => {
         headers: {
           // Let the browser set the Content-Type with boundary for FormData
           'Content-Type': undefined
+          // Don't manually set restricted headers like Origin or Access-Control-Request-Method
+          // The browser will set these automatically
         },
         timeout: timeoutDuration,
         validateStatus: function (status) {

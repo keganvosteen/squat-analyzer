@@ -21,12 +21,15 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
         rewrite: (path) => path,
+        // Don't configure custom headers that the browser manages
         configure: (proxy, _options) => {
           proxy.on('error', (err, _req, _res) => {
             console.log('Proxy error:', err);
           });
           proxy.on('proxyReq', (proxyReq, req, _res) => {
             console.log('Proxying:', req.method, req.url);
+            // Let the browser handle restricted headers
+            // Don't try to set them manually
           });
         }
       },
