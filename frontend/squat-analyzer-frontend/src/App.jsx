@@ -11,55 +11,34 @@ import './App.css';
 // Import logos directly
 import cbsLogo from '/public/CBSLogo.png';
 import seasLogo from '/public/SEASLogo.png';
+import crownIcon from './assets/crown-icon.png';
 
 // Define the backend URL with a fallback
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://squat-analyzer-backend.onrender.com';
 
-// Create an axios instance with better CORS handling and timeout for free Render tier
+// Create a configured instance of axios with better CORS handling
 const api = axios.create({
   baseURL: BACKEND_URL,
-  timeout: 45000, // 45 seconds timeout instead of 30
+  timeout: 30000, // 30 second default timeout
+  withCredentials: false, // Important for CORS
   headers: {
-    'Content-Type': 'multipart/form-data',
-    'Origin': window.location.origin,
-    'Access-Control-Request-Method': 'POST,GET,OPTIONS'
-  },
-  withCredentials: false // Don't send cookies for cross-domain requests
+    'Content-Type': 'application/json',
+  }
 });
 
-// Setup axios interceptors for better error handling
-api.interceptors.request.use(
-  (config) => {
-    // Add timestamp to prevent caching
-    config.params = {
-      ...config.params,
-      _t: Date.now()
-    };
-    return config;
-  },
-  (error) => {
-    console.error("Axios request error:", error);
-    return Promise.reject(error);
-  }
-);
-
+// Add an interceptor to handle CORS and other errors gracefully
 api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    // Check for CORS errors
-    if (error.code === 'ERR_NETWORK' || 
-        (error.response && error.response.status === 0) ||
-        error.message.includes('Network Error')) {
-      console.error("CORS or network error detected:", error);
-      // Force local analysis mode when we encounter CORS issues
+  response => response,
+  error => {
+    // Check if the error is related to CORS
+    if (error.code === 'ERR_NETWORK') {
+      console.log('CORS or network error detected:', error);
+      // Force local analysis mode on CORS errors
       ServerWarmup.forceLocalAnalysis();
     }
     return Promise.reject(error);
   }
 );
-
-// Make sure Axios is using our extended timeout globally
-axios.defaults.timeout = 45000;
 
 // Styled components with improved dark mode support
 const Container = styled.div`
@@ -268,26 +247,46 @@ const App = () => {
     // Store recording metadata (like camera facing mode) for later use
     console.log("Recording metadata:", metadata);
     
-    // Check if we should use local analysis
-    const shouldUseLocalAnalysis = ServerWarmup.isUsingLocalAnalysis() || serverStatus !== 'ready';
+    // Check if we should use local analysis based on server status or blob type
+    const isImageBlob = blob.type?.startsWith('image/') || blob._recordingType === 'image';
+    const shouldUseLocalAnalysis = ServerWarmup.isUsingLocalAnalysis() || 
+                                   serverStatus !== 'ready' || 
+                                   isImageBlob; // Always use local analysis for images
+    
     setUsingLocalAnalysis(shouldUseLocalAnalysis);
     
     try {
       // If server is not ready or has errors, skip the API call and go straight to local analysis
       if (shouldUseLocalAnalysis) {
-        console.log("Using local analysis due to server status:", serverStatus);
+        console.log(`Using local analysis due to: ${isImageBlob ? 'image blob' : 
+                                                    serverStatus !== 'ready' ? 'server not ready' : 
+                                                    'local analysis preference'}`);
         throw new Error("Using local analysis mode");
       }
       
-      const formData = new FormData();
-      formData.append('video', blob, 'squat_video.webm');
-      
       // Send the video to the backend for analysis
       console.log("Sending video to backend for analysis...");
+      
+      // Create a clean FormData object
+      const formData = new FormData();
+      
+      // Add a timestamp to prevent caching
+      const timestamp = Date.now();
+      
+      // Append the blob with a filename that includes format
+      const extension = blob.type.includes('mp4') ? 'mp4' : 'webm';
+      formData.append('video', blob, `squat_recording_${timestamp}.${extension}`);
+      
+      // Use a clean request configuration - don't inherit from api default headers
       const response = await api.post('/analyze', formData, {
         headers: {
-          'Content-Type': 'multipart/form-data',
+          // Let the browser set the Content-Type with boundary for FormData
+          'Content-Type': undefined
         },
+        timeout: 30000, // 30 second timeout
+        validateStatus: function (status) {
+          return status < 500; // Only reject if status code is 5xx
+        }
       });
       
       console.log("Analysis response:", response.data);
@@ -306,10 +305,12 @@ const App = () => {
     } catch (apiError) {
       console.error("API Error:", apiError);
       
-      // Update server status if we got a network error
+      // Update server status if we got a network error or 502 bad gateway
       if (apiError.code === 'ECONNABORTED' || 
-          apiError.message.includes('Network Error')) {
-        console.log("Network error, switching to local analysis mode");
+          apiError.code === 'ERR_NETWORK' ||
+          apiError.message?.includes('Network Error') ||
+          apiError.response?.status === 502) {
+        console.log("Network error or 502 Bad Gateway, switching to local analysis mode");
         ServerWarmup.forceLocalAnalysis();
         setUsingLocalAnalysis(true);
       }
@@ -318,11 +319,13 @@ const App = () => {
       let errorMessage = '';
       if (apiError.code === 'ECONNABORTED') {
         errorMessage = "Analysis took too long. Using local analysis instead.";
-      } else if (apiError.message.includes('Using local analysis')) {
+      } else if (apiError.message?.includes('Using local analysis')) {
         // This is expected when we choose to use local analysis
         errorMessage = '';
-      } else if (apiError.message.includes('Network Error')) {
+      } else if (apiError.code === 'ERR_NETWORK' || apiError.message?.includes('Network Error')) {
         errorMessage = "Network error. Using local analysis instead.";
+      } else if (apiError.response?.status === 502) {
+        errorMessage = "Server unavailable (502). Using local analysis instead.";
       } else {
         errorMessage = `Server analysis failed: ${apiError.message}`;
       }

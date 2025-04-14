@@ -676,6 +676,50 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     return videoOrientation === 'portrait';
   }, [videoOrientation]);
 
+  // Handle video metadata loading
+  const handleLoadedMetadata = () => {
+    if (videoRef.current) {
+      const video = videoRef.current;
+      setDuration(video.duration);
+      
+      const videoWidth = video.videoWidth;
+      const videoHeight = video.videoHeight;
+      
+      // Use our enhanced rotation detection
+      const orientation = detectVideoRotation(video);
+      setVideoOrientation(orientation);
+      
+      console.log(`Video loaded: ${videoWidth}x${videoHeight}, duration: ${video.duration}s, orientation: ${orientation}`);
+      setVideoDimensions({ width: videoWidth, height: videoHeight });
+      
+      // Update debugging info
+      setDebugInfo(prev => ({
+        ...prev,
+        videoMetadata: {
+          width: videoWidth,
+          height: videoHeight,
+          duration: video.duration,
+          orientation: orientation,
+          aspectRatio: (videoWidth / videoHeight).toFixed(2)
+        }
+      }));
+      
+      // Set up canvas with dimensions matching the video
+      if (canvasRef.current) {
+        const canvas = canvasRef.current;
+        canvas.width = videoWidth;
+        canvas.height = videoHeight;
+        setCanvasDimensions({ width: canvas.width, height: canvas.height });
+        
+        // Initial draw of overlays if we have analysis data
+        if (hasAnalysisData) {
+          const ctx = canvas.getContext('2d');
+          drawOverlays(ctx, 0);
+        }
+      }
+    }
+  };
+
   // Set up video event listeners
   useEffect(() => {
     const video = videoRef.current;
