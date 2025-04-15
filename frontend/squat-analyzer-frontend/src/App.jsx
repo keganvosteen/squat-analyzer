@@ -319,23 +319,33 @@ const App = () => {
     }
 
     setLoading(true);
-    setShowPlayback(true);
-    setVideoBlob(blob);
-    setError(null);
     
-    // Force local analysis off - always disabled
-    setUsingLocalAnalysis(false);
-
-    // *** Add check for invalid fallback blob ***
+    // Check for invalid fallback blob
     if (blob.type === 'text/plain' && blob._isEmptyFallback) {
       console.error("Received invalid fallback blob from VideoCapture. Aborting analysis.");
       setError("Recording failed to capture usable video data. Please try again.");
       setLoading(false);
-      // Don't proceed to show playback for an invalid blob
-      // Reset relevant states if needed (handleBackToRecord does this)
       handleBackToRecord(); 
       return;
     }
+
+    // For fallback images that are valid but not ideal
+    const isFallbackImage = blob._isFallback === true;
+    if (isFallbackImage) {
+      console.warn("Using fallback image for analysis. Quality may be reduced.");
+      // Show a warning but continue with analysis
+      setError("Using a snapshot image for analysis. Results may be limited.");
+    } else {
+      // Clear any previous errors for successful recordings
+      setError(null);
+    }
+    
+    // Always show playback even for fallback images - they're better than nothing
+    setShowPlayback(true);
+    setVideoBlob(blob);
+    
+    // Force local analysis off - always disabled
+    setUsingLocalAnalysis(false);
 
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     console.log(`Device detected as ${isMobile ? 'mobile' : 'desktop'}`);
@@ -344,7 +354,21 @@ const App = () => {
     console.log("Sending video to server for analysis");
     const formData = new FormData();
     const timestamp = Date.now();
-    formData.append("video", blob, `squat_${timestamp}.${blob.type.includes('image') ? 'jpg' : 'webm'}`);
+    
+    // Determine the proper file extension based on blob type
+    let fileExtension = 'webm';
+    if (blob.type.includes('image')) {
+      fileExtension = 'jpg';
+    } else if (blob.type.includes('mp4')) {
+      fileExtension = 'mp4';
+    }
+    
+    formData.append("video", blob, `squat_${timestamp}.${fileExtension}`);
+    
+    // Add metadata to help backend processing
+    if (isFallbackImage) {
+      formData.append("is_fallback", "true");
+    }
     
     fetch(`${BACKEND_URL}/analyze`, {
       method: "POST",
@@ -377,6 +401,11 @@ const App = () => {
       
       setAnalysisData(data);
       setLoading(false);
+      
+      // Clear any warning errors for fallback images that were successfully analyzed
+      if (isFallbackImage && data.success === true) {
+        setError(null);
+      }
     })
     .catch(err => {
       console.error("Error during analysis:", err);
@@ -389,6 +418,8 @@ const App = () => {
         userErrorMessage = "Connection to analysis server failed. This may be due to network security settings.";
       } else if (errorMessage.includes("Failed to fetch") || errorMessage.includes("Network error")) {
         userErrorMessage = "Unable to connect to the analysis server. Please check your internet connection and try again.";
+      } else if (errorMessage.includes("Invalid response format")) {
+        userErrorMessage = "The server returned an invalid response. This may be due to the recording quality. Please try again with a clearer recording.";
       }
       
       setError(userErrorMessage);
