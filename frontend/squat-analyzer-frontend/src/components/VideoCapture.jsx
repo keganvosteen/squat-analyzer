@@ -1122,9 +1122,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Function to detect poses and draw
       const detectAndDraw = async () => {
         if (!videoRef.current || !canvasRef.current || videoRef.current.paused || videoRef.current.ended) {
-          return;
-        }
-        
+        return;
+      }
+      
         const video = videoRef.current;
         const canvas = canvasRef.current;
         const ctx = canvas.getContext('2d');
@@ -1464,9 +1464,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       // Set up data available handler to save chunks
       mediaRecorderRef.current.ondataavailable = (event) => {
-        if (event.data && event.data.size > 0) {
+    if (event.data && event.data.size > 0) {
           console.debug(`[Squat] Received chunk: ${event.data.size} bytes`);
-          recordedChunksRef.current.push(event.data);
+      recordedChunksRef.current.push(event.data);
         } else {
           console.warn('[Squat] Empty data received from recorder');
         }
@@ -1478,10 +1478,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       const captureFrame = async () => {
         if (!isRecording || !videoRef.current) {
-          return;
-        }
-        
-        try {
+      return;
+    }
+    
+    try {
           // Create a temporary canvas to capture the video frame
           const tempCanvas = document.createElement('canvas');
           const tempCtx = tempCanvas.getContext('2d');
@@ -1560,328 +1560,43 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
                   onRecordingComplete(processedBlob);
                 }
               } else {
-                // Try final fallback image if frame and snapshot capture failed
+                // Try final fallback if snapshot fails
                 console.warn('[Squat] Canvas snapshot fallback failed, trying final fallback');
-                const fallbackBlob = await createFallbackRecording();
-                if (fallbackBlob && typeof onRecordingComplete === 'function') {
-                  console.debug('[Squat] Calling onRecordingComplete with final fallback image');
-                  onRecordingComplete(fallbackBlob);
+                const finalFallbackBlob = await createFallbackRecording();
+                if (finalFallbackBlob && typeof onRecordingComplete === 'function') {
+                  console.debug('[Squat] Using final fallback image');
+                  onRecordingComplete(finalFallbackBlob);
                 } else {
-                  console.error('[Squat] All recording and fallback attempts failed.');
+                  console.error('[Squat] All fallback methods failed');
                   setError('Recording failed: Could not capture video data.');
-                  // *** Crucially: Do not call onRecordingComplete here ***
                 }
               }
             }
-          } else {
-            // Try canvas snapshots if no frames available
-            console.warn('[Squat] No backup frames, trying canvas snapshots');
-            const snapshotBlob = await createSnapshotFallback();
-            
-            if (snapshotBlob) {
-              console.debug('[Squat] Using canvas snapshot as fallback');
-              if (typeof onRecordingComplete === 'function') {
-                const processedBlob = processRecordingForAnalysis(snapshotBlob);
-                onRecordingComplete(processedBlob);
-              }
-            } else {
-              // Try final fallback if snapshot fails
-              console.warn('[Squat] Canvas snapshot fallback failed, trying final fallback');
-        console.warn('[Squat] No valid video dimensions available, using defaults');
-      }
-
-      // Check if video ref is completely invalid
-      if (!hasValidVideoRef) {
-        console.warn('[Squat] Cannot create visual fallback - no valid video ref');
-        
-        // Create a solid color fallback - still better than nothing
-        const fallbackCanvas = document.createElement('canvas');
-        const fallbackCtx = fallbackCanvas.getContext('2d');
-        
-        fallbackCanvas.width = validWidth;
-        fallbackCanvas.height = validHeight;
-        
-        // Fill with a blue color to indicate fallback
-        fallbackCtx.fillStyle = 'blue';
-        fallbackCtx.fillRect(0, 0, fallbackCanvas.width, fallbackCanvas.height);
-        
-        // Add text to indicate this is a fallback
-        fallbackCtx.fillStyle = 'white';
-        fallbackCtx.font = '20px Arial';
-        fallbackCtx.textAlign = 'center';
-        fallbackCtx.fillText('Recording Failed - Fallback Image', fallbackCanvas.width/2, fallbackCanvas.height/2);
-        
-        // Convert to blob
-        return new Promise((resolve) => {
-          fallbackCanvas.toBlob((blob) => {
-            if (blob) {
-              console.debug('[Squat] Created solid color fallback blob');
-              const fallbackBlob = blob;
-              fallbackBlob._originalType = blob.type;
-              fallbackBlob._recordingType = 'image';
-              fallbackBlob._isFallback = true;
-              resolve(fallbackBlob);
-            } else {
-              console.warn('[Squat] Failed to create even a solid color fallback');
-              const minimalBlob = new Blob(['fallback_data'], { type: 'text/plain' });
-              minimalBlob._recordingType = 'image';
-              minimalBlob._isEmptyFallback = true;
-              resolve(minimalBlob);
-            }
-          }, 'image/png', 0.95);
-        });
-      }
-
-      const fallbackCanvas = document.createElement('canvas');
-      const fallbackCtx = fallbackCanvas.getContext('2d');
-      
-      // Set dimensions to match the video or use fallback dimensions
-      fallbackCanvas.width = validWidth;
-      fallbackCanvas.height = validHeight;
-      
-      // Try to draw the current video frame if available
-      try {
-        if (hasValidVideoRef) {
-          fallbackCtx.drawImage(videoRef.current, 0, 0, fallbackCanvas.width, fallbackCanvas.height);
-        } else {
-          // If video ref is not valid, just create a colored rectangle
-          fallbackCtx.fillStyle = 'green';
-          fallbackCtx.fillRect(0, 0, fallbackCanvas.width, fallbackCanvas.height);
-          fallbackCtx.fillStyle = 'white';
-          fallbackCtx.font = '20px Arial';
-          fallbackCtx.textAlign = 'center';
-          fallbackCtx.fillText('Video Snapshot Not Available', fallbackCanvas.width/2, fallbackCanvas.height/2);
-        }
-      } catch (drawError) {
-        console.warn('[Squat] Error drawing video to canvas:', drawError);
-        // Fill with a color to indicate failure but still provide something
-        fallbackCtx.fillStyle = 'red';
-        fallbackCtx.fillRect(0, 0, fallbackCanvas.width, fallbackCanvas.height);
-        fallbackCtx.fillStyle = 'white';
-        fallbackCtx.font = '20px Arial';
-        fallbackCtx.textAlign = 'center';
-        fallbackCtx.fillText('Error Creating Video Snapshot', fallbackCanvas.width/2, fallbackCanvas.height/2);
-      }
-      
-      // If we have pose data, try to draw it on the canvas too
-      if (canvasRef.current) {
-        try {
-          fallbackCtx.drawImage(canvasRef.current, 0, 0, fallbackCanvas.width, fallbackCanvas.height);
-        } catch (canvasError) {
-          console.warn('[Squat] Could not copy pose canvas:', canvasError);
-        }
-      }
-      
-      // Convert the canvas to a Blob using toBlob - use PNG format instead of JPEG
-      // PNG is more widely supported for analysis
-      return new Promise((resolve) => {
-        fallbackCanvas.toBlob((blob) => {
-          if (blob) {
-            console.debug(`[Squat] Created fallback image blob: ${blob.size} bytes with type ${blob.type}`);
-            
-            try {
-              // For analysis purposes, just keep the PNG data
-              const analysisBlob = blob;
-              
-              // Store the original type in case we need it later
-              analysisBlob._originalType = blob.type;
-              // Explicitly mark this as an image for analysis detection
-              analysisBlob._recordingType = 'image';
-              analysisBlob._isFallback = true;
-              
-              resolve(analysisBlob);
-            } catch (blobError) {
-              console.warn('[Squat] Error creating video blob:', blobError);
-              resolve(blob); // Return original blob as fallback
-            }
-          } else {
-            console.warn('[Squat] Failed to create fallback image blob');
-            
-            // Create a minimal fallback blob so we don't return null
-            try {
-              const minimalBlob = new Blob(['fallback_data'], { type: 'text/plain' });
-              minimalBlob._recordingType = 'image';
-              minimalBlob._isEmptyFallback = true;
-              resolve(minimalBlob);
-            } catch (e) {
-              resolve(null);
-            }
-          }
-        }, 'image/png', 0.95);
-      });
-    } catch (error) {
-      console.error('[Squat] Error creating fallback recording:', error);
-      
-      // Create a minimal fallback blob as a last resort
-      try {
-        const minimalBlob = new Blob(['error_fallback'], { type: 'text/plain' });
-        minimalBlob._recordingType = 'image';
-        minimalBlob._isEmptyFallback = true;
-        return Promise.resolve(minimalBlob);
-      } catch (e) {
-        return Promise.resolve(null);
-      }
-    }
-  };
-
-  // Handle stop recording with better mobile support
-  const handleStopRecording = () => {
-    try {
-      console.debug('[Squat] In handleStopRecording');
-      
-      // If we have a max recording timeout, clear it
-      if (mediaRecorderRef.current && mediaRecorderRef.current.maxRecordingTimeoutId) {
-        clearTimeout(mediaRecorderRef.current.maxRecordingTimeoutId);
-      }
-      
-      // If no media recorder, check if we were using frame capture only
-      if (!mediaRecorderRef.current) {
-        console.warn('[Squat] No media recorder found to stop');
-        setIsRecording(false);
-        stopTimer();
-        return;
-      }
-      
-      // Capture any frames if they exist for potential fallback
-      const captureFrames = mediaRecorderRef.current.captureFrames || [];
-      const frameCapture = mediaRecorderRef.current.frameCapture;
-      
-      // Stop the frame capture if it's running
-      if (frameCapture && frameCapture.current) {
-        clearTimeout(frameCapture.current);
-        console.debug('[Squat] Stopped backup frame capture');
-      }
-      
-      // Check if recorder is already inactive
-      if (mediaRecorderRef.current.state === 'inactive') {
-        console.warn('[Squat] MediaRecorder already inactive');
-        
-        // If we have frame captures but no chunks, use the frame captures
-        if (captureFrames && captureFrames.length > 0 && recordedChunksRef.current.length === 0) {
-          console.debug(`[Squat] Using ${captureFrames.length} backup frames since recorder is inactive`);
-          const lastFrame = captureFrames[captureFrames.length - 1];
-          
-          if (lastFrame && lastFrame.blob && typeof onRecordingComplete === 'function') {
-            console.debug('[Squat] Using last captured frame for inactive recorder');
-            const processedBlob = processRecordingForAnalysis(lastFrame.blob);
-            onRecordingComplete(processedBlob);
           }
         }
-        
-        setIsRecording(false);
-        stopTimer();
-        return;
-      }
-      
-      console.debug(`[Squat] Stopping MediaRecorder (current state: ${mediaRecorderRef.current.state})`);
-      
-      // Force a data request before stopping to ensure we have at least one chunk
-      if (recordedChunksRef.current.length === 0) {
-        try {
-          mediaRecorderRef.current.requestData();
-          // Small delay to allow data to be received
-          setTimeout(() => {
-            try {
-              mediaRecorderRef.current.stop();
-            } catch (e) {
-              console.warn('[Squat] Error stopping recorder after requestData:', e);
-            }
-          }, 100);
-          return;
-        } catch (e) {
-          console.warn('[Squat] Error requesting final data before stop:', e);
-        }
-      }
-      
-      // Create a manual cleanup function that can be called if onstop doesn't fire
-      const manualCleanup = async () => {
-        console.warn('[Squat] Performing manual cleanup');
 
-        // Clear the associated timeout
-        if (mediaRecorderRef.current && mediaRecorderRef.current.cleanupTimeoutId) {
-          clearTimeout(mediaRecorderRef.current.cleanupTimeoutId);
-          mediaRecorderRef.current.cleanupTimeoutId = null;
-        }
-
-        // Only proceed if we are still in recording state
-        if (isRecording) {
-          let finalBlob = null;
-          
+        // Create blob from chunks if we have any
+        if (recordedChunksRef.current.length > 0) {
           try {
-            // Try using the chunks we have
-            if (recordedChunksRef.current.length > 0) {
-              // Determine mime type (use a common fallback)
-              const mimeType = 'video/webm';
-              
-              // Create blob manually
-              const blob = new Blob(recordedChunksRef.current, { type: mimeType });
-              console.debug(`[Squat] Created blob manually: ${blob.size} bytes`);
-              
-              // Process the blob and store it before calling the callback
-              if (typeof onRecordingComplete === 'function') {
-                console.debug('[Squat] Calling onRecordingComplete with manually created blob');
-                finalBlob = processRecordingForAnalysis(blob);
-                onRecordingComplete(finalBlob);
-              }
-            } 
-            // Try using captured frames if available
-            else if (captureFrames && captureFrames.length > 0) {
-              console.debug(`[Squat] Using ${captureFrames.length} backup frames in manual cleanup`);
-              const lastFrame = captureFrames[captureFrames.length - 1];
-              
-              if (lastFrame && lastFrame.blob && typeof onRecordingComplete === 'function') {
-                console.debug('[Squat] Using last captured frame in manual cleanup');
-                finalBlob = processRecordingForAnalysis(lastFrame.blob);
-                onRecordingComplete(finalBlob);
-              }
-            }
-            // Try using our canvas snapshots
-            else if (mediaRecorderRef.current && mediaRecorderRef.current.canvasSnapshots && 
-                    mediaRecorderRef.current.canvasSnapshots.length > 0) {
-              console.debug(`[Squat] Using canvas snapshots in manual cleanup`);
-              
-              const snapshotBlob = await createSnapshotFallback();
-              if (snapshotBlob && typeof onRecordingComplete === 'function') {
-                console.debug('[Squat] Using canvas snapshot in manual cleanup');
-                finalBlob = processRecordingForAnalysis(snapshotBlob);
-                onRecordingComplete(finalBlob);
-              } else {
-                // Fall through to the next fallback method
-                console.warn('[Squat] Failed to create snapshot fallback, trying final fallback');
-                throw new Error('Snapshot fallback failed');
-              }
-            }
-            // Last resort: try to create a fallback image from current video frame
-            else {
-              console.warn('[Squat] No chunks, frames, or snapshots available, attempting to create fallback image');
-              
-              try {
-                // Try to create a fallback image and await the result
-                const fallbackBlob = await createFallbackRecording();
-                
-                if (fallbackBlob && !fallbackBlob._isEmptyFallback && typeof onRecordingComplete === 'function') {
-                  console.debug('[Squat] Calling onRecordingComplete with fallback image');
-                  finalBlob = processRecordingForAnalysis(fallbackBlob);
-                  onRecordingComplete(finalBlob);
-                } else {
-                  console.error('[Squat] Failed to create any usable recording data');
-                  setError('Recording failed. Please try again with a supported browser.');
-                  // Don't call onRecordingComplete with invalid data
-                }
-              } catch (fallbackError) {
-                console.error('[Squat] Error creating fallback:', fallbackError);
-                setError('Recording failed. Could not create fallback image.');
-              }
+            console.debug(`[Squat] Creating blob from ${recordedChunksRef.current.length} chunks`);
+            
+            // Create blob with proper MIME type based on what was used for recording
+            const mimeType = mediaRecorderRef.current.mimeType || 'video/webm';
+            const recordedBlob = new Blob(recordedChunksRef.current, { type: mimeType });
+            
+            // Call the callback provided by the parent component
+            if (typeof onRecordingComplete === 'function') {
+              console.debug('[Squat] Calling onRecordingComplete with blob:', recordedBlob);
+              const processedBlob = processRecordingForAnalysis(recordedBlob);
+              onRecordingComplete(processedBlob);
             }
           } catch (blobError) {
-            console.error('[Squat] Error creating blob manually:', blobError);
-            setError('Failed to process recording. Please try again.');
+            console.error('[Squat] Error creating blob:', blobError);
+            setError(`Recording error: ${blobError.message}`);
           }
-        } else {
-          console.warn('[Squat] Already stopped');
         }
         
-        // Reset recording state regardless of outcome
+        // Reset recording state
         setIsRecording(false);
         stopTimer();
       };
@@ -1935,8 +1650,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Stop the timer immediately for better UX
       stopTimer();
     } catch (error) {
-      console.error('[Squat] Error in handleStopRecording:', error);
-      setError(`Failed to stop recording: ${error.message}`);
+      console.error('[Squat] Error in handleStartRecording:', error);
+      setError(`Recording error: ${error.message}`);
       setIsRecording(false);
       stopTimer();
     }
@@ -2300,7 +2015,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         console.debug(`[Squat] Captured video snapshot #${mediaRecorderRef.current.canvasSnapshots.length}`);
         
         // Schedule next snapshot if still recording
-        if (isRecording) {
+    if (isRecording) {
           mediaRecorderRef.current.snapshotTimeoutId = setTimeout(captureVideoSnapshot, 1000); // Every second
         }
       } catch (error) {
@@ -2351,6 +2066,186 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         }
       }, 'image/png', 0.95);
     });
+  };
+
+  // Process recording blob before sending to callback
+  const processRecordingForAnalysis = (blob) => {
+    if (!blob) return null;
+    
+    // Clone the blob's metadata if it exists
+    const processedBlob = blob;
+    
+    // Mark the blob type for analysis
+    if (!processedBlob._recordingType) {
+      processedBlob._recordingType = blob.type.includes('image') ? 'image' : 'video';
+    }
+    
+    // Store the original type if not already stored
+    if (!processedBlob._originalType) {
+      processedBlob._originalType = blob.type;
+    }
+    
+    console.debug(`[Squat] Processed blob for analysis: type=${processedBlob.type}, recordingType=${processedBlob._recordingType}`);
+    return processedBlob;
+  };
+
+  // Create a fallback recording when MediaRecorder fails
+  const createFallbackRecording = async () => {
+    try {
+      console.debug('[Squat] Creating fallback recording');
+      
+      // Check if we have valid references to work with
+      const hasValidVideoRef = videoRef.current && videoRef.current.videoWidth && videoRef.current.videoHeight;
+      
+      // Use stored dimensions or fallbacks
+      let validWidth = 640;
+      let validHeight = 480;
+      
+      if (hasValidVideoRef) {
+        validWidth = videoRef.current.videoWidth;
+        validHeight = videoRef.current.videoHeight;
+        console.debug(`[Squat] Using video dimensions: ${validWidth}x${validHeight}`);
+      } else if (mediaRecorderRef.current && mediaRecorderRef.current.videoMetadata) {
+        validWidth = mediaRecorderRef.current.videoMetadata.width || validWidth;
+        validHeight = mediaRecorderRef.current.videoMetadata.height || validHeight;
+        console.debug(`[Squat] Using stored metadata dimensions: ${validWidth}x${validHeight}`);
+      } else {
+        console.warn('[Squat] No valid video dimensions available, using defaults');
+      }
+
+      // Check if video ref is completely invalid
+      if (!hasValidVideoRef) {
+        console.warn('[Squat] Cannot create visual fallback - no valid video ref');
+        
+        // Create a solid color fallback - still better than nothing
+        const fallbackCanvas = document.createElement('canvas');
+        const fallbackCtx = fallbackCanvas.getContext('2d');
+        
+        fallbackCanvas.width = validWidth;
+        fallbackCanvas.height = validHeight;
+        
+        // Fill with a blue color to indicate fallback
+        fallbackCtx.fillStyle = 'blue';
+        fallbackCtx.fillRect(0, 0, fallbackCanvas.width, fallbackCanvas.height);
+        
+        // Add text to indicate this is a fallback
+        fallbackCtx.fillStyle = 'white';
+        fallbackCtx.font = '20px Arial';
+        fallbackCtx.textAlign = 'center';
+        fallbackCtx.fillText('Recording Failed - Fallback Image', fallbackCanvas.width/2, fallbackCanvas.height/2);
+        
+        // Convert to blob
+        return new Promise((resolve) => {
+          fallbackCanvas.toBlob((blob) => {
+            if (blob) {
+              console.debug('[Squat] Created solid color fallback blob');
+              const fallbackBlob = blob;
+              fallbackBlob._originalType = blob.type;
+              fallbackBlob._recordingType = 'image';
+              fallbackBlob._isFallback = true;
+              resolve(fallbackBlob);
+            } else {
+              console.warn('[Squat] Failed to create even a solid color fallback');
+              const minimalBlob = new Blob(['fallback_data'], { type: 'text/plain' });
+              minimalBlob._recordingType = 'image';
+              minimalBlob._isEmptyFallback = true;
+              resolve(minimalBlob);
+            }
+          }, 'image/png', 0.95);
+        });
+      }
+
+      const fallbackCanvas = document.createElement('canvas');
+      const fallbackCtx = fallbackCanvas.getContext('2d');
+      
+      // Set dimensions to match the video or use fallback dimensions
+      fallbackCanvas.width = validWidth;
+      fallbackCanvas.height = validHeight;
+      
+      // Try to draw the current video frame if available
+      try {
+        if (hasValidVideoRef) {
+          fallbackCtx.drawImage(videoRef.current, 0, 0, fallbackCanvas.width, fallbackCanvas.height);
+        }
+        else {
+          // If video ref is not valid, just create a colored rectangle
+          fallbackCtx.fillStyle = 'green';
+          fallbackCtx.fillRect(0, 0, fallbackCanvas.width, fallbackCanvas.height);
+          fallbackCtx.fillStyle = 'white';
+          fallbackCtx.font = '20px Arial';
+          fallbackCtx.textAlign = 'center';
+          fallbackCtx.fillText('Video Snapshot Not Available', fallbackCanvas.width/2, fallbackCanvas.height/2);
+        }
+      } catch (drawError) {
+        console.warn('[Squat] Error drawing video to canvas:', drawError);
+        // Fill with a color to indicate failure but still provide something
+        fallbackCtx.fillStyle = 'red';
+        fallbackCtx.fillRect(0, 0, fallbackCanvas.width, fallbackCanvas.height);
+        fallbackCtx.fillStyle = 'white';
+        fallbackCtx.font = '20px Arial';
+        fallbackCtx.textAlign = 'center';
+        fallbackCtx.fillText('Error Creating Video Snapshot', fallbackCanvas.width/2, fallbackCanvas.height/2);
+      }
+      
+      // If we have pose data, try to draw it on the canvas too
+      if (canvasRef.current) {
+        try {
+          fallbackCtx.drawImage(canvasRef.current, 0, 0, fallbackCanvas.width, fallbackCanvas.height);
+        } catch (canvasError) {
+          console.warn('[Squat] Could not copy pose canvas:', canvasError);
+        }
+      }
+      
+      // Convert the canvas to a Blob using toBlob - use PNG format instead of JPEG
+      // PNG is more widely supported for analysis
+      return new Promise((resolve) => {
+        fallbackCanvas.toBlob((blob) => {
+          if (blob) {
+            console.debug(`[Squat] Created fallback image blob: ${blob.size} bytes with type ${blob.type}`);
+            
+            try {
+              // For analysis purposes, just keep the PNG data
+              const analysisBlob = blob;
+              
+              // Store the original type in case we need it later
+              analysisBlob._originalType = blob.type;
+              // Explicitly mark this as an image for analysis detection
+              analysisBlob._recordingType = 'image';
+              analysisBlob._isFallback = true;
+              
+              resolve(analysisBlob);
+            } catch (blobError) {
+              console.warn('[Squat] Error creating video blob:', blobError);
+              resolve(blob); // Return original blob as fallback
+            }
+          } else {
+            console.warn('[Squat] Failed to create fallback image blob');
+            
+            // Create a minimal fallback blob so we don't return null
+            try {
+              const minimalBlob = new Blob(['fallback_data'], { type: 'text/plain' });
+              minimalBlob._recordingType = 'image';
+              minimalBlob._isEmptyFallback = true;
+              resolve(minimalBlob);
+            } catch (e) {
+              resolve(null);
+            }
+          }
+        }, 'image/png', 0.95);
+      });
+    } catch (error) {
+      console.error('[Squat] Error creating fallback recording:', error);
+      
+      // Create a minimal fallback blob as a last resort
+      try {
+        const minimalBlob = new Blob(['error_fallback'], { type: 'text/plain' });
+        minimalBlob._recordingType = 'image';
+        minimalBlob._isEmptyFallback = true;
+        return Promise.resolve(minimalBlob);
+      } catch (e) {
+        return Promise.resolve(null);
+      }
+    }
   };
 
   return (
@@ -2455,6 +2350,6 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       )}
     </div>
   );
-};
+}
 
 export default VideoCapture;
