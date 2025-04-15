@@ -1847,6 +1847,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         // Only proceed if we are still in recording state
         if (isRecording) {
           let finalBlob = null;
+          
           try {
             // Try using the chunks we have
             if (recordedChunksRef.current.length > 0) {
@@ -1857,13 +1858,11 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
               const blob = new Blob(recordedChunksRef.current, { type: mimeType });
               console.debug(`[Squat] Created blob manually: ${blob.size} bytes`);
               
-              // Call the callback
+              // Process the blob and store it before calling the callback
               if (typeof onRecordingComplete === 'function') {
                 console.debug('[Squat] Calling onRecordingComplete with manually created blob');
-                const processedBlob = processRecordingForAnalysis(blob);
-                // Store the blob before calling the handler
-                finalBlob = processedBlob; 
-                onRecordingComplete(processedBlob);
+                finalBlob = processRecordingForAnalysis(blob);
+                onRecordingComplete(finalBlob);
               }
             } 
             // Try using captured frames if available
@@ -1873,43 +1872,41 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
               
               if (lastFrame && lastFrame.blob && typeof onRecordingComplete === 'function') {
                 console.debug('[Squat] Using last captured frame in manual cleanup');
-                const processedBlob = processRecordingForAnalysis(lastFrame.blob);
-                // Store the blob before calling the handler
-                finalBlob = processedBlob;
-                onRecordingComplete(processedBlob);
+                finalBlob = processRecordingForAnalysis(lastFrame.blob);
+                onRecordingComplete(finalBlob);
               }
             }
             // Last resort: try to create a fallback image from current video frame
             else {
               console.warn('[Squat] No chunks or frames available, attempting to create fallback image');
               
-              // Try to create a fallback image as a last resort
-              const fallbackBlob = await createFallbackRecording();
-              
-              if (fallbackBlob && typeof onRecordingComplete === 'function') {
-                console.debug('[Squat] Calling onRecordingComplete with fallback image');
-                const processedBlob = processRecordingForAnalysis(fallbackBlob);
-                // Store the blob before calling the handler
-                finalBlob = processedBlob;
-                onRecordingComplete(processedBlob);
-              } else {
-                console.error('[Squat] Failed to create any recording data');
-                setError('Recording failed. Please try again or check your browser compatibility.');
-                 // *** Do not call onRecordingComplete ***
-                 // Ensure finalBlob remains null
-                 finalBlob = null;
+              try {
+                // Try to create a fallback image and await the result
+                const fallbackBlob = await createFallbackRecording();
+                
+                if (fallbackBlob && !fallbackBlob._isEmptyFallback && typeof onRecordingComplete === 'function') {
+                  console.debug('[Squat] Calling onRecordingComplete with fallback image');
+                  finalBlob = processRecordingForAnalysis(fallbackBlob);
+                  onRecordingComplete(finalBlob);
+                } else {
+                  console.error('[Squat] Failed to create any usable recording data');
+                  setError('Recording failed. Please try again with a supported browser.');
+                  // Don't call onRecordingComplete with invalid data
+                }
+              } catch (fallbackError) {
+                console.error('[Squat] Error creating fallback:', fallbackError);
+                setError('Recording failed. Could not create fallback image.');
               }
             }
           } catch (blobError) {
             console.error('[Squat] Error creating blob manually:', blobError);
             setError('Failed to process recording. Please try again.');
-            finalBlob = null; // Ensure finalBlob is null on error
           }
         } else {
           console.warn('[Squat] Already stopped');
         }
         
-        // Reset recording state regardless
+        // Reset recording state regardless of outcome
         setIsRecording(false);
         stopTimer();
       };

@@ -863,7 +863,11 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
         <Button
           onClick={() => {
             if (videoRef.current) {
-              videoRef.current.currentTime = Math.max(0, videoRef.current.currentTime - 1);
+              const video = videoRef.current;
+              // Make sure we have a valid duration and current time before updating
+              if (isFinite(video.duration) && isFinite(video.currentTime)) {
+                video.currentTime = Math.max(0, video.currentTime - 1);
+              }
             }
           }}
           >
@@ -874,7 +878,11 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
         <Button
           onClick={() => {
             if (videoRef.current) {
-              videoRef.current.currentTime = Math.min(videoRef.current.duration, videoRef.current.currentTime + 1);
+              const video = videoRef.current;
+              // Make sure we have a valid duration and current time before updating
+              if (isFinite(video.duration) && isFinite(video.currentTime)) {
+                video.currentTime = Math.min(video.duration || 0, video.currentTime + 1);
+              }
             }
           }}
           >
