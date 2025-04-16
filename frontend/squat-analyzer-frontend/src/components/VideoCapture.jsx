@@ -1473,7 +1473,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   }, [isRecording, onRecordingComplete, setError, setIsRecording, stopTimer]); // Dependencies for useCallback
 
   // Handle start recording function
-  const handleStartRecording = async () => {
+  const handleStartRecording = useCallback(async () => {
     try {
       console.debug('[Squat] Starting recording...');
       // Check if camera is ready
@@ -1741,7 +1741,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       setIsRecording(false);
       stopTimer();
     }
-  };
+  }, [isCameraReady, videoRef, mediaRecorderRef, recordedChunksRef, isMobile, onRecordingComplete, setError, setIsRecording, startTimer, stopTimer, startSnapshottingFrames, isRecording, createSnapshotFallback, createFallbackRecording, processRecordingForAnalysis, manualCleanup]); // Add dependencies
 
   // Timer utility functions
   const startTimer = () => {
