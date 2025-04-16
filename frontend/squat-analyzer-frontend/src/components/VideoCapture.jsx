@@ -1395,6 +1395,83 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     }
   };
 
+  // Create a manual cleanup function that can be called if onstop doesn't fire
+  const manualCleanup = useCallback(async () => {
+    console.warn('[Squat] Performing manual cleanup');
+
+    // Clear the associated timeout if it exists
+    if (mediaRecorderRef.current && mediaRecorderRef.current.cleanupTimeoutId) {
+      clearTimeout(mediaRecorderRef.current.cleanupTimeoutId);
+      mediaRecorderRef.current.cleanupTimeoutId = null;
+    }
+
+    // Only proceed if we are still in recording state
+    if (isRecording) {
+      let finalBlob = null;
+      const captureFrames = mediaRecorderRef.current?.captureFrames || [];
+
+      try {
+        // Try using the chunks we have
+        if (recordedChunksRef.current.length > 0) {
+          const mimeType = mediaRecorderRef.current?.mimeType || 'video/webm';
+          const blob = new Blob(recordedChunksRef.current, { type: mimeType });
+          console.debug(`[Squat] Created blob manually: ${blob.size} bytes`);
+          if (typeof onRecordingComplete === 'function') {
+            console.debug('[Squat] Calling onRecordingComplete with manually created blob');
+            finalBlob = processRecordingForAnalysis(blob);
+            onRecordingComplete(finalBlob);
+          }
+        }
+        // Try using captured frames if available
+        else if (captureFrames.length > 0) {
+          console.debug(`[Squat] Using ${captureFrames.length} backup frames in manual cleanup`);
+          const lastFrame = captureFrames[captureFrames.length - 1];
+          if (lastFrame && lastFrame.blob && typeof onRecordingComplete === 'function') {
+            console.debug('[Squat] Using last captured frame in manual cleanup');
+            finalBlob = processRecordingForAnalysis(lastFrame.blob);
+            onRecordingComplete(finalBlob);
+          }
+        }
+        // Try using canvas snapshots
+        else if (mediaRecorderRef.current && mediaRecorderRef.current.canvasSnapshots &&
+                 mediaRecorderRef.current.canvasSnapshots.length > 0) {
+          console.debug(`[Squat] Using canvas snapshots in manual cleanup`);
+          const snapshotBlob = await createSnapshotFallback();
+          if (snapshotBlob && typeof onRecordingComplete === 'function') {
+            console.debug('[Squat] Using canvas snapshot in manual cleanup');
+            finalBlob = processRecordingForAnalysis(snapshotBlob);
+            onRecordingComplete(finalBlob);
+          } else {
+            console.warn('[Squat] Failed to create snapshot fallback, trying final fallback');
+            throw new Error('Snapshot fallback failed');
+          }
+        }
+        // Last resort: create fallback image
+        else {
+          console.warn('[Squat] No chunks, frames, or snapshots available, attempting final fallback image');
+          const fallbackBlob = await createFallbackRecording();
+          if (fallbackBlob && !fallbackBlob._isEmptyFallback && typeof onRecordingComplete === 'function') {
+            console.debug('[Squat] Calling onRecordingComplete with final fallback image');
+            finalBlob = processRecordingForAnalysis(fallbackBlob);
+            onRecordingComplete(finalBlob);
+          } else {
+            console.error('[Squat] Failed to create any usable recording data');
+            setError('Recording failed. Please try again with a supported browser.');
+          }
+        }
+      } catch (blobError) {
+        console.error('[Squat] Error creating blob manually:', blobError);
+        setError('Failed to process recording. Please try again.');
+      }
+    } else {
+      console.warn('[Squat] Manual cleanup called but already stopped');
+    }
+
+    // Reset recording state regardless of outcome
+    setIsRecording(false);
+    stopTimer();
+  }, [isRecording, onRecordingComplete, setError, setIsRecording, stopTimer]); // Dependencies for useCallback
+
   // Handle start recording function
   const handleStartRecording = async () => {
     try {
