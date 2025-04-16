@@ -1553,12 +1553,12 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       const captureFrames = [];
       let frameCapture = { current: null };
       
-      const captureFrame = async () => {
-        if (!isRecording || !videoRef.current) {
-      return;
-    }
-    
-    try {
+      const captureFrame = async (shouldRecord = true) => {
+        if (!shouldRecord || !videoRef.current) {
+          return;
+        }
+        
+        try {
           // Create a temporary canvas to capture the video frame
           const tempCanvas = document.createElement('canvas');
           const tempCtx = tempCanvas.getContext('2d');
@@ -1587,14 +1587,23 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         }
         
         // Continue capturing every 300ms (if still recording)
-        if (isRecording) {
-          frameCapture.current = setTimeout(captureFrame, 300);
+        // Use a local variable to track recording state that was passed to this function
+        if (shouldRecord) {
+          frameCapture.current = setTimeout(() => captureFrame(isRecording), 300);
         }
       };
       
       // Store the frame capture in the recorder for cleanup later
       mediaRecorderRef.current.captureFrames = captureFrames;
       mediaRecorderRef.current.frameCapture = frameCapture;
+      
+      // Start the frame capture process
+      setIsRecording(true);
+      startTimer();
+      startSnapshottingFrames(); // Start snapshot backup
+      
+      // Start the frame capture with explicit recording flag
+      captureFrame(true);
       
       // Define onstop handler
       mediaRecorderRef.current.onstop = async () => {
