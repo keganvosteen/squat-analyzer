@@ -1,5 +1,5 @@
 // src/components/VideoCapture.jsx
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { Camera, RefreshCw, Maximize2, Minimize2, Square, AlertTriangle, Circle } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import styled from 'styled-components';
@@ -614,6 +614,73 @@ const Button = styled.button`
     min-width: 80px;
   }
 `;
+
+// Create specialized frame capture utilities outside of component scope
+// to avoid initialization errors
+const createFrameCapture = (videoRef, isRecording, frameArray) => {
+  // Return an object with methods for starting, stopping, and managing frame capture
+  return {
+    // Start capturing frames from video
+    start: function(shouldRecord = true) {
+      if (!shouldRecord || !videoRef.current) {
+        return;
+      }
+      
+      const captureTimeout = { current: null };
+      
+      const captureOneFrame = () => {
+        if (!videoRef.current) return;
+        
+        try {
+          // Create a temporary canvas to capture the video frame
+          const tempCanvas = document.createElement('canvas');
+          const tempCtx = tempCanvas.getContext('2d');
+          
+          // Render current video frame
+          tempCanvas.width = videoRef.current.videoWidth || 640;
+          tempCanvas.height = videoRef.current.videoHeight || 480;
+          tempCtx.drawImage(videoRef.current, 0, 0, tempCanvas.width, tempCanvas.height);
+          
+          // Convert to blob with timestamp
+          tempCanvas.toBlob((blob) => {
+            if (blob) {
+              frameArray.push({
+                timestamp: Date.now(),
+                blob: blob
+              });
+              
+              // Keep only the last 5 frames (for memory reasons)
+              if (frameArray.length > 5) {
+                frameArray.shift();
+              }
+            }
+          }, 'image/jpeg', 0.85);
+        } catch (frameError) {
+          console.warn('[Squat] Frame capture error:', frameError);
+        }
+        
+        // Continue capturing every 300ms (if still recording)
+        if (shouldRecord) {
+          captureTimeout.current = setTimeout(captureOneFrame, 300);
+        }
+      };
+      
+      // Start the capture process
+      captureOneFrame();
+      
+      return captureTimeout;
+    },
+    
+    // Stop frame capture
+    stop: function(timeoutRef) {
+      if (timeoutRef && timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+        console.debug('[Squat] Frame capture stopped');
+      }
+    }
+  };
+};
 
 const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const videoRef = useRef(null);
@@ -1304,21 +1371,23 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
   };
 
-  // Separate function to handle stopping frame-based recording (when MediaRecorder is not available)
-  const stopFrameCapture = async () => {
+  // Create a ref to hold captured frames
+  const captureFramesRef = useRef([]);
+  const frameTimeoutRef = useRef({ current: null });
+  
+  // Initialize frame capture utility
+  const frameCaptureUtil = useMemo(() => 
+    createFrameCapture(videoRef, isRecording, captureFramesRef.current),
+  [videoRef, isRecording]);
+  
+  // Separate function to handle stopping frame-based recording
+  const stopFrameCapture = useCallback(async () => {
     console.debug('[Squat] Stopping frame-based recording');
     
-    // Get a reference to the most recent capture timeout
-    const frameCapture = mediaRecorderRef.current?.frameCapture;
-    const captureFrames = mediaRecorderRef.current?.captureFrames || [];
+    // Stop the frame capture
+    frameCaptureUtil.stop(frameTimeoutRef.current);
     
-    // Clear any running capture timeout
-    if (frameCapture && frameCapture.current) {
-      clearTimeout(frameCapture.current);
-      console.debug('[Squat] Frame capture loop stopped');
-    }
-    
-    if (captureFrames.length === 0) {
+    if (captureFramesRef.current.length === 0) {
       console.warn('[Squat] No frames were captured during recording');
       // Try one last capture
       const lastFrameBlob = await createFallbackRecording();
@@ -1326,17 +1395,17 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       if (lastFrameBlob && typeof onRecordingComplete === 'function') {
         console.debug('[Squat] Using emergency last frame capture');
         onRecordingComplete(lastFrameBlob);
-    } else {
+      } else {
         setError('Recording failed: No frames were captured.');
         // Ensure we stop the timer and reset state even on failure
         setIsRecording(false);
         stopTimer();
       }
     } else {
-      console.debug(`[Squat] Collected ${captureFrames.length} frames during recording`);
+      console.debug(`[Squat] Collected ${captureFramesRef.current.length} frames during recording`);
       
       // Use the last frame as the recording output
-      const lastFrame = captureFrames[captureFrames.length - 1];
+      const lastFrame = captureFramesRef.current[captureFramesRef.current.length - 1];
       
       if (lastFrame && lastFrame.blob && typeof onRecordingComplete === 'function') {
         console.debug('[Squat] Using last captured frame as recording output');
@@ -1352,48 +1421,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     // Reset UI state
     setIsRecording(false);
     stopTimer();
-  };
-
-  // Unified function to toggle recording
-  const toggleRecording = () => {
-    try {
-      console.debug('[Squat] Toggle recording. Current state:', isRecording);
-      
-    if (isRecording) {
-        // If we're using MediaRecorder
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-          handleStopRecording();
-        } 
-        // If we're using frame capture only
-        else if (mediaRecorderRef.current && mediaRecorderRef.current.frameCapture) {
-          stopFrameCapture(); // Use the dedicated stop function
-        }
-        // Fallback case
-        else {
-          setIsRecording(false);
-          stopTimer();
-        }
-      } else {
-        // Check if tracking is enabled before recording
-        if (!isPoseTracking) {
-          // Auto-enable pose tracking when starting recording
-          console.debug('[Squat] Auto-enabling pose tracking for recording');
-          startPoseDetection();
-          setIsPoseTracking(true);
-          
-          // Small delay to ensure pose tracking is initialized
-          setTimeout(() => {
-            handleStartRecording();
-          }, 1000);
-        } else {
-          handleStartRecording();
-        }
-      }
-    } catch (error) {
-      console.error('[Squat] Error in toggleRecording:', error);
-      setError(`Recording error: ${error.message}`);
-    }
-  };
+  }, [createFallbackRecording, frameCaptureUtil, onRecordingComplete, setError, setIsRecording, stopTimer]);
 
   // Create a manual cleanup function that can be called if onstop doesn't fire
   const manualCleanup = useCallback(async () => {
@@ -1405,10 +1433,12 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       mediaRecorderRef.current.cleanupTimeoutId = null;
     }
 
+    // Stop frame capture if running
+    frameCaptureUtil.stop(frameTimeoutRef.current);
+
     // Only proceed if we are still in recording state
     if (isRecording) {
       let finalBlob = null;
-      const captureFrames = mediaRecorderRef.current?.captureFrames || [];
 
       try {
         // Try using the chunks we have
@@ -1423,9 +1453,9 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           }
         }
         // Try using captured frames if available
-        else if (captureFrames.length > 0) {
-          console.debug(`[Squat] Using ${captureFrames.length} backup frames in manual cleanup`);
-          const lastFrame = captureFrames[captureFrames.length - 1];
+        else if (captureFramesRef.current.length > 0) {
+          console.debug(`[Squat] Using ${captureFramesRef.current.length} backup frames in manual cleanup`);
+          const lastFrame = captureFramesRef.current[captureFramesRef.current.length - 1];
           if (lastFrame && lastFrame.blob && typeof onRecordingComplete === 'function') {
             console.debug('[Squat] Using last captured frame in manual cleanup');
             finalBlob = processRecordingForAnalysis(lastFrame.blob);
@@ -1470,7 +1500,48 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     // Reset recording state regardless of outcome
     setIsRecording(false);
     stopTimer();
-  }, [isRecording, onRecordingComplete, setError, setIsRecording, stopTimer]); // Dependencies for useCallback
+  }, [isRecording, onRecordingComplete, setError, setIsRecording, stopTimer, createSnapshotFallback, createFallbackRecording, frameCaptureUtil, processRecordingForAnalysis]);
+
+  // Unified function to toggle recording
+  const toggleRecording = useCallback(() => {
+    try {
+      console.debug('[Squat] Toggle recording. Current state:', isRecording);
+      
+      if (isRecording) {
+        // If we're using MediaRecorder
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+          handleStopRecording();
+        } 
+        // If we're using frame capture only
+        else if (mediaRecorderRef.current && mediaRecorderRef.current.frameCapture) {
+          stopFrameCapture(); // Use the dedicated stop function
+        }
+        // Fallback case
+        else {
+          setIsRecording(false);
+          stopTimer();
+        }
+      } else {
+        // Check if tracking is enabled before recording
+        if (!isPoseTracking) {
+          // Auto-enable pose tracking when starting recording
+          console.debug('[Squat] Auto-enabling pose tracking for recording');
+          startPoseDetection();
+          setIsPoseTracking(true);
+          
+          // Small delay to ensure pose tracking is initialized
+          setTimeout(() => {
+            handleStartRecording();
+          }, 1000);
+        } else {
+          handleStartRecording();
+        }
+      }
+    } catch (error) {
+      console.error('[Squat] Error in toggleRecording:', error);
+      setError(`Recording error: ${error.message}`);
+    }
+  }, [isRecording, mediaRecorderRef, stopFrameCapture, handleStopRecording, setIsRecording, stopTimer, isPoseTracking, startPoseDetection, handleStartRecording, setError, setIsPoseTracking]);
 
   // Handle start recording function
   const handleStartRecording = useCallback(async () => {
@@ -1541,69 +1612,28 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       
       // Set up data available handler to save chunks
       mediaRecorderRef.current.ondataavailable = (event) => {
-    if (event.data && event.data.size > 0) {
+        if (event.data && event.data.size > 0) {
           console.debug(`[Squat] Received chunk: ${event.data.size} bytes`);
-      recordedChunksRef.current.push(event.data);
+          recordedChunksRef.current.push(event.data);
         } else {
           console.warn('[Squat] Empty data received from recorder');
         }
       };
       
-      // Function to capture frames as backup
-      const captureFrames = [];
-      let frameCapture = { current: null };
+      // Prepare the arrays for frame capture
+      captureFramesRef.current = [];
       
-      const captureFrame = async (shouldRecord = true) => {
-        if (!shouldRecord || !videoRef.current) {
-          return;
-        }
-        
-        try {
-          // Create a temporary canvas to capture the video frame
-          const tempCanvas = document.createElement('canvas');
-          const tempCtx = tempCanvas.getContext('2d');
-          
-          // Render current video frame
-          tempCanvas.width = videoRef.current.videoWidth || 640;
-          tempCanvas.height = videoRef.current.videoHeight || 480;
-          tempCtx.drawImage(videoRef.current, 0, 0, tempCanvas.width, tempCanvas.height);
-          
-          // Convert to blob with timestamp
-          tempCanvas.toBlob((blob) => {
-            if (blob) {
-              captureFrames.push({
-                timestamp: Date.now(),
-                blob: blob
-              });
-              
-              // Keep only the last 5 frames (for memory reasons)
-              if (captureFrames.length > 5) {
-                captureFrames.shift();
-              }
-            }
-          }, 'image/jpeg', 0.85);
-        } catch (frameError) {
-          console.warn('[Squat] Frame capture error:', frameError);
-        }
-        
-        // Continue capturing every 300ms (if still recording)
-        // Use a local variable to track recording state that was passed to this function
-        if (shouldRecord) {
-          frameCapture.current = setTimeout(() => captureFrame(isRecording), 300);
-        }
-      };
+      // Start frame capture using our utility
+      frameTimeoutRef.current = frameCaptureUtil.start(true);
       
       // Store the frame capture in the recorder for cleanup later
-      mediaRecorderRef.current.captureFrames = captureFrames;
-      mediaRecorderRef.current.frameCapture = frameCapture;
+      mediaRecorderRef.current.captureFrames = captureFramesRef.current;
+      mediaRecorderRef.current.frameCapture = frameTimeoutRef.current;
       
       // Start the frame capture process
       setIsRecording(true);
       startTimer();
       startSnapshottingFrames(); // Start snapshot backup
-      
-      // Start the frame capture with explicit recording flag
-      captureFrame(true);
       
       // Define onstop handler
       mediaRecorderRef.current.onstop = async () => {
@@ -1619,11 +1649,11 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           console.warn('[Squat] No recorded data available from MediaRecorder - this is a common issue in Firefox');
           
           // If we have backup frames, convert them to a video or still image
-          if (captureFrames.length > 0) {
-            console.debug(`[Squat] Using ${captureFrames.length} backup frames`);
+          if (captureFramesRef.current.length > 0) {
+            console.debug(`[Squat] Using ${captureFramesRef.current.length} backup frames`);
             
             // For simplicity, just use the last frame as a fallback image
-            const lastFrame = captureFrames[captureFrames.length - 1];
+            const lastFrame = captureFramesRef.current[captureFramesRef.current.length - 1];
             
             if (lastFrame && lastFrame.blob) {
               console.debug('[Squat] Using last captured frame as fallback');
@@ -1741,7 +1771,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       setIsRecording(false);
       stopTimer();
     }
-  }, [isCameraReady, videoRef, mediaRecorderRef, recordedChunksRef, isMobile, onRecordingComplete, setError, setIsRecording, startTimer, stopTimer, startSnapshottingFrames, isRecording, createSnapshotFallback, createFallbackRecording, processRecordingForAnalysis, manualCleanup]); // Add dependencies
+  }, [isCameraReady, videoRef, mediaRecorderRef, recordedChunksRef, isMobile, onRecordingComplete, setError, setIsRecording, startTimer, stopTimer, startSnapshottingFrames, isRecording, createSnapshotFallback, createFallbackRecording, processRecordingForAnalysis, manualCleanup, frameCaptureUtil]);
 
   // Timer utility functions
   const startTimer = () => {
