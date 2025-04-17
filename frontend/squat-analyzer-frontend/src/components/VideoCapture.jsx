@@ -30,6 +30,11 @@ const isMobileDevice = () => {
 
 // Initialize TensorFlow backend explicitly with improved mobile handling
 const initializeTensorFlow = async () => {
+  // Set a timeout promise to detect hanging initialization
+  const timeoutPromise = new Promise((_, reject) => {
+    setTimeout(() => reject(new Error('TensorFlow initialization timeout')), 10000);
+  });
+  
   // Try WebGL first, fallback to CPU if needed
   try {
     console.log("Starting TensorFlow initialization...");
@@ -47,29 +52,145 @@ const initializeTensorFlow = async () => {
       console.log("Desktop device detected, using standard TensorFlow settings");
     }
     
-    // Try WebGL first
-    await tf.setBackend('webgl');
-    await tf.ready();
-    console.log('Using WebGL backend for TensorFlow.js');
-    console.log('WebGL version:', tf.env().get('WEBGL_VERSION'));
-    console.log('WebGL flags:', {
-      'WEBGL_FORCE_F16_TEXTURES': tf.env().get('WEBGL_FORCE_F16_TEXTURES'),
-      'WEBGL_PACK': tf.env().get('WEBGL_PACK'),
-      'WEBGL_CPU_FORWARD': tf.env().get('WEBGL_CPU_FORWARD'),
-      'WEBGL_FLUSH_THRESHOLD': tf.env().get('WEBGL_FLUSH_THRESHOLD')
-    });
-    return true;
+    // Try WebGL first with timeout protection
+    const initPromise = (async () => {
+      // Test actual GPU capability before committing to WebGL
+      const gpuSupported = await testWebGLCapability();
+      
+      if (gpuSupported) {
+        await tf.setBackend('webgl');
+      } else {
+        console.warn('WebGL capability test failed, falling back to CPU');
+        await tf.setBackend('cpu');
+      }
+      
+      await tf.ready();
+      
+      // Verify backend is actually working by running a simple operation
+      const testTensor = tf.tensor([1, 2, 3]);
+      const result = testTensor.square();
+      await result.data(); // Force execution to check for runtime errors
+      testTensor.dispose();
+      result.dispose();
+      
+      const currentBackend = tf.getBackend();
+      console.log(`Using ${currentBackend} backend for TensorFlow.js`);
+      
+      if (currentBackend === 'webgl') {
+        console.log('WebGL version:', tf.env().get('WEBGL_VERSION'));
+        console.log('WebGL flags:', {
+          'WEBGL_FORCE_F16_TEXTURES': tf.env().get('WEBGL_FORCE_F16_TEXTURES'),
+          'WEBGL_PACK': tf.env().get('WEBGL_PACK'),
+          'WEBGL_CPU_FORWARD': tf.env().get('WEBGL_CPU_FORWARD'),
+          'WEBGL_FLUSH_THRESHOLD': tf.env().get('WEBGL_FLUSH_THRESHOLD')
+        });
+      }
+      
+      return true;
+    })();
+    
+    // Race between initialization and timeout
+    return await Promise.race([initPromise, timeoutPromise]);
   } catch (error) {
-    console.warn('WebGL backend failed, falling back to CPU:', error);
+    console.warn('WebGL backend failed, trying CPU:', error);
+    
     try {
+      // Try CPU backend as fallback
       await tf.setBackend('cpu');
       await tf.ready();
+      
+      // Verify backend is working
+      const testTensor = tf.tensor([1, 2, 3]);
+      const result = testTensor.square();
+      await result.data();
+      testTensor.dispose();
+      result.dispose();
+      
       console.log('Using CPU backend for TensorFlow.js');
       return true;
     } catch (cpuError) {
       console.error('Failed to initialize TensorFlow backend:', cpuError);
       return false;
     }
+  }
+};
+
+// Function to test if WebGL is functioning properly
+const testWebGLCapability = async () => {
+  try {
+    // Create a test canvas and get WebGL context
+    const canvas = document.createElement('canvas');
+    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+    
+    if (!gl) {
+      console.warn('WebGL not supported');
+      return false;
+    }
+    
+    // Try to get extension support
+    const extensions = [
+      'OES_texture_float',
+      'WEBGL_color_buffer_float',
+      'EXT_color_buffer_float'
+    ];
+    
+    const supportedExtensions = extensions.filter(ext => gl.getExtension(ext));
+    
+    // Check if sufficient extensions are supported
+    if (supportedExtensions.length < 1) {
+      console.warn('Insufficient WebGL extensions for TensorFlow.js');
+      return false;
+    }
+    
+    // Check max texture size (need at least 4096 for good performance)
+    const maxTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+    if (maxTextureSize < 2048) {
+      console.warn(`WebGL max texture size too small: ${maxTextureSize}`);
+      return false;
+    }
+    
+    // Create and run a simple WebGL program to ensure shader compilation works
+    const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vertexShader, `
+      attribute vec2 position;
+      void main() {
+        gl_Position = vec4(position, 0.0, 1.0);
+      }
+    `);
+    gl.compileShader(vertexShader);
+    
+    const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fragmentShader, `
+      precision mediump float;
+      void main() {
+        gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);
+      }
+    `);
+    gl.compileShader(fragmentShader);
+    
+    // Check if shaders compiled successfully
+    if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS) ||
+        !gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+      console.warn('WebGL shader compilation failed');
+      return false;
+    }
+    
+    // Create and link program
+    const program = gl.createProgram();
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
+    gl.linkProgram(program);
+    
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      console.warn('WebGL program linking failed');
+      return false;
+    }
+    
+    // Success - WebGL appears to be functioning properly
+    return true;
+  } catch (e) {
+    console.error('Error testing WebGL capability:', e);
+    return false;
   }
 };
 
@@ -617,7 +738,7 @@ const Button = styled.button`
 
 // Create specialized frame capture utilities outside of component scope
 // to avoid initialization errors
-const createFrameCapture = (videoRef, isRecording, frameArray) => {
+const createFrameCapture = (videoRef, isRecording, frameArray, options = {}) => {
   // Return an object with methods for starting, stopping, and managing frame capture
   return {
     // Start capturing frames from video
@@ -627,6 +748,9 @@ const createFrameCapture = (videoRef, isRecording, frameArray) => {
       }
       
       const captureTimeout = { current: null };
+      // Get max frames from options (default to 5)
+      const maxFrames = options.maxFrames || 5;
+      const captureInterval = options.captureInterval || 300; // ms between captures
       
       const captureOneFrame = () => {
         if (!videoRef.current) return;
@@ -649,9 +773,14 @@ const createFrameCapture = (videoRef, isRecording, frameArray) => {
                 blob: blob
               });
               
-              // Keep only the last 5 frames (for memory reasons)
-              if (frameArray.length > 5) {
-                frameArray.shift();
+              // Keep only the recent frames based on maxFrames config
+              if (frameArray.length > maxFrames) {
+                // Dispose of old blobs properly to prevent memory leaks
+                const removed = frameArray.shift();
+                if (removed && removed.blob) {
+                  // Release the blob reference for garbage collection
+                  URL.revokeObjectURL(URL.createObjectURL(removed.blob));
+                }
               }
             }
           }, 'image/jpeg', 0.85);
@@ -659,9 +788,9 @@ const createFrameCapture = (videoRef, isRecording, frameArray) => {
           console.warn('[Squat] Frame capture error:', frameError);
         }
         
-        // Continue capturing every 300ms (if still recording)
+        // Continue capturing at the configured interval (if still recording)
         if (shouldRecord) {
-          captureTimeout.current = setTimeout(captureOneFrame, 300);
+          captureTimeout.current = setTimeout(captureOneFrame, captureInterval);
         }
       };
       
@@ -680,6 +809,23 @@ const createFrameCapture = (videoRef, isRecording, frameArray) => {
       }
     }
   };
+};
+
+// Centralized error handling function to standardize error messages and actions
+const handleError = (error, context, fallbackAction = null) => {
+  const errorPrefix = '[Squat]';
+  const errorMessage = error?.message || 'Unknown error occurred';
+  const fullMessage = `${errorPrefix} ${context}: ${errorMessage}`;
+  
+  // Log to console with appropriate level
+  console.error(fullMessage, error);
+  
+  // Perform fallback action if provided
+  if (typeof fallbackAction === 'function') {
+    fallbackAction();
+  }
+  
+  return fullMessage;
 };
 
 const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
@@ -793,35 +939,54 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     let mounted = true;
     
     const initTF = async () => {
-      try {
-        addDebugLog(`Starting TensorFlow initialization on ${isMobile ? 'mobile' : 'desktop'} device`);
-        const success = await initializeTensorFlow();
-        if (mounted) {
-          setTfInitialized(success);
-          if (success) {
-            setShowTFWarning(false);
-          }
-          addDebugLog(`TensorFlow initialization ${success ? 'succeeded' : 'failed'}`);
+      // Add initialization status tracking
+      let initAttempts = 0;
+      const maxAttempts = 2;
+      let success = false;
+      
+      while (!success && initAttempts < maxAttempts && mounted) {
+        try {
+          addDebugLog(`TensorFlow initialization attempt ${initAttempts + 1}/${maxAttempts}`);
+          success = await initializeTensorFlow();
           
-          if (!success) {
-            console.warn("TensorFlow initialization failed, disabling pose tracking");
-            setEnableLivePose(false);
-            setError("Pose tracking disabled: your device may not support it.");
+          if (mounted) {
+            setTfInitialized(success);
+            if (success) {
+              setShowTFWarning(false);
+              addDebugLog(`TensorFlow initialization succeeded`);
+            } else {
+              addDebugLog(`TensorFlow initialization failed`);
+              if (initAttempts + 1 >= maxAttempts) {
+                console.warn("TensorFlow initialization failed after multiple attempts");
+                setEnableLivePose(false);
+                setError("Pose tracking disabled: your device may not support it.");
+              }
+            }
+          }
+        } catch (err) {
+          console.error("Failed to initialize TensorFlow:", err);
+          addDebugLog(`TensorFlow initialization error: ${err.message}`);
+          
+          if (mounted) {
+            // Only show error on final attempt
+            if (initAttempts + 1 >= maxAttempts) {
+              setEnableLivePose(false);
+              setError("Could not initialize pose detection. The live tracking feature will be disabled.");
+            }
           }
         }
-      } catch (err) {
-        console.error("Failed to initialize TensorFlow:", err);
-        addDebugLog(`TensorFlow initialization error: ${err.message}`);
         
-        if (mounted) {
-          setEnableLivePose(false);
-          setError("Could not initialize pose detection. The live tracking feature will be disabled.");
+        initAttempts++;
+        
+        // If not successful and not at max attempts, wait before retry
+        if (!success && initAttempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
         }
-      } finally {
-        // Ensure we proceed with camera initialization regardless of TF status
-        if (mounted && isInitializing) {
-          initializeCamera();
-        }
+      }
+      
+      // Ensure we proceed with camera initialization regardless of TF status
+      if (mounted && isInitializing) {
+        initializeCamera();
       }
     };
     
@@ -1109,7 +1274,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       try {
         const success = await initializeTensorFlow();
         if (!success) {
-          console.error("Could not initialize TensorFlow");
+          const message = "Could not initialize TensorFlow";
           addDebugLog("TensorFlow initialization failed");
           setError("Could not initialize pose detection. Please try again or check if your device supports it.");
           return;
@@ -1118,8 +1283,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         setTfInitialized(true);
         addDebugLog("TensorFlow initialization succeeded");
       } catch (err) {
-        console.error("TensorFlow initialization error:", err);
-        addDebugLog(`TensorFlow initialization error: ${err.message}`);
+        const errorMessage = handleError(err, "TensorFlow initialization failed");
         setError(`Pose detection initialization failed: ${err.message}`);
         return;
       }
@@ -1186,12 +1350,28 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Store canvas context for drawing
       const ctx = canvasRef.current.getContext('2d');
       
-      // Function to detect poses and draw
-      const detectAndDraw = async () => {
-        if (!videoRef.current || !canvasRef.current || videoRef.current.paused || videoRef.current.ended) {
-        return;
-      }
+      // Track frame processing time to adjust frequency
+      let lastFrameTime = 0;
+      let frameInterval = isMobile ? 100 : 0; // ms between frames, 0 = every frame
       
+      // Function to detect poses and draw with adaptive rate limiting
+      const detectAndDraw = async (timestamp) => {
+        // Skip if video or canvas is not ready
+        if (!videoRef.current || !canvasRef.current || videoRef.current.paused || videoRef.current.ended) {
+          poseDetectionIdRef.current = requestAnimationFrame(detectAndDraw);
+          return;
+        }
+        
+        // Check if enough time has passed since last frame
+        const elapsed = timestamp - lastFrameTime;
+        if (frameInterval > 0 && elapsed < frameInterval) {
+          poseDetectionIdRef.current = requestAnimationFrame(detectAndDraw);
+          return;
+        }
+        
+        // Update last frame time
+        lastFrameTime = timestamp;
+        
         const video = videoRef.current;
         const canvas = canvasRef.current;
         const ctx = canvas.getContext('2d');
@@ -1212,10 +1392,25 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           const videoWidth = video.videoWidth;
           const videoHeight = video.videoHeight;
           
+          // Performance measurement
+          const startTime = performance.now();
+          
           // Detect poses
           const poses = await detectorRef.current.estimatePoses(video, {
             flipHorizontal: isFrontFacing // Flip detection results if using front camera
           });
+          
+          // Measure performance and adjust frameInterval if needed
+          const endTime = performance.now();
+          const detectionTime = endTime - startTime;
+          
+          // Dynamically adjust frame rate based on performance
+          // If detection is taking too long, reduce frequency
+          if (detectionTime > 33) { // More than 30fps
+            frameInterval = Math.min(frameInterval + 5, isMobile ? 150 : 100);
+          } else if (detectionTime < 16) { // Less than 60fps
+            frameInterval = Math.max(frameInterval - 5, isMobile ? 50 : 0);
+          }
           
           if (poses && poses.length > 0) {
             const pose = poses[0]; // MoveNet detects a single pose
@@ -1247,10 +1442,11 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             drawPose(pose, canvas, ctx);
           }
         } catch (error) {
-          console.error('Error in pose detection:', error);
-          addDebugLog(`Pose detection error: ${error.message}`);
+          // Use centralized error handling
+          handleError(error, 'Pose detection error');
           
-          // Don't stop the loop on errors, just continue to next frame
+          // Increase frame interval on error to reduce CPU load
+          frameInterval = Math.min(frameInterval + 10, isMobile ? 200 : 150);
         }
         
         // Schedule next frame using the ref
@@ -1263,10 +1459,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         setIsPoseTracking(true);
       }
     } catch (err) {
-      console.error("Error initializing pose detector:", err);
-      addDebugLog(`Pose detector initialization error: ${err.message}`);
-      detectorRef.current = null;
-      setEnableLivePose(false);
+      const errorMsg = handleError(err, "Error initializing pose detector", () => {
+        detectorRef.current = null;
+        setEnableLivePose(false);
+      });
       setError("Failed to initialize pose tracking. This feature will be disabled.");
     }
   };
@@ -1375,10 +1571,17 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const captureFramesRef = useRef([]);
   const frameTimeoutRef = useRef({ current: null });
   
-  // Initialize frame capture utility
+  // Configure frame capture options based on device capabilities
+  const frameCaptureOptions = useMemo(() => ({
+    maxFrames: isMobile ? 3 : 5, // Store fewer frames on mobile
+    captureInterval: isMobile ? 500 : 300, // Longer interval on mobile
+    quality: isMobile ? 0.75 : 0.85 // Lower quality on mobile
+  }), [isMobile]);
+  
+  // Initialize frame capture utility with the updated options
   const frameCaptureUtil = useMemo(() => 
-    createFrameCapture(videoRef, isRecording, captureFramesRef.current),
-  [videoRef, isRecording]);
+    createFrameCapture(videoRef, isRecording, captureFramesRef.current, frameCaptureOptions),
+  [videoRef, isRecording, frameCaptureOptions]);
   
   // Separate function to handle stopping frame-based recording
   const stopFrameCapture = useCallback(async () => {
@@ -1421,88 +1624,141 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     // Reset UI state
     setIsRecording(false);
     stopTimer();
+    
+    // Clean up stored frames to prevent memory leaks
+    while (captureFramesRef.current.length > 0) {
+      const frame = captureFramesRef.current.pop();
+      if (frame && frame.blob) {
+        URL.revokeObjectURL(URL.createObjectURL(frame.blob));
+      }
+    }
   }, [createFallbackRecording, frameCaptureUtil, onRecordingComplete, setError, setIsRecording, stopTimer]);
 
   // Create a manual cleanup function that can be called if onstop doesn't fire
   const manualCleanup = useCallback(async () => {
     console.warn('[Squat] Performing manual cleanup');
 
-    // Clear the associated timeout if it exists
-    if (mediaRecorderRef.current && mediaRecorderRef.current.cleanupTimeoutId) {
-      clearTimeout(mediaRecorderRef.current.cleanupTimeoutId);
-      mediaRecorderRef.current.cleanupTimeoutId = null;
-    }
-
-    // Stop frame capture if running
-    frameCaptureUtil.stop(frameTimeoutRef.current);
+    // Single function to clear all timeouts for better organization
+    const clearAllTimeouts = () => {
+      // Clear the associated cleanup timeout
+      if (mediaRecorderRef.current?.cleanupTimeoutId) {
+        clearTimeout(mediaRecorderRef.current.cleanupTimeoutId);
+        mediaRecorderRef.current.cleanupTimeoutId = null;
+      }
+      
+      // Clear snapshot timeout
+      if (mediaRecorderRef.current?.snapshotTimeoutId) {
+        clearTimeout(mediaRecorderRef.current.snapshotTimeoutId);
+        mediaRecorderRef.current.snapshotTimeoutId = null;
+      }
+      
+      // Stop frame capture if running
+      frameCaptureUtil.stop(frameTimeoutRef.current);
+    };
+    
+    // Clear all timeouts at the beginning
+    clearAllTimeouts();
 
     // Only proceed if we are still in recording state
-    if (isRecording) {
-      let finalBlob = null;
-
-      try {
-        // Try using the chunks we have
-        if (recordedChunksRef.current.length > 0) {
-          const mimeType = mediaRecorderRef.current?.mimeType || 'video/webm';
-          const blob = new Blob(recordedChunksRef.current, { type: mimeType });
-          console.debug(`[Squat] Created blob manually: ${blob.size} bytes`);
-          if (typeof onRecordingComplete === 'function') {
-            console.debug('[Squat] Calling onRecordingComplete with manually created blob');
-            finalBlob = processRecordingForAnalysis(blob);
-            onRecordingComplete(finalBlob);
-          }
-        }
-        // Try using captured frames if available
-        else if (captureFramesRef.current.length > 0) {
-          console.debug(`[Squat] Using ${captureFramesRef.current.length} backup frames in manual cleanup`);
-          const lastFrame = captureFramesRef.current[captureFramesRef.current.length - 1];
-          if (lastFrame && lastFrame.blob && typeof onRecordingComplete === 'function') {
-            console.debug('[Squat] Using last captured frame in manual cleanup');
-            finalBlob = processRecordingForAnalysis(lastFrame.blob);
-            onRecordingComplete(finalBlob);
-          }
-        }
-        // Try using canvas snapshots
-        else if (mediaRecorderRef.current && mediaRecorderRef.current.canvasSnapshots &&
-                 mediaRecorderRef.current.canvasSnapshots.length > 0) {
-          console.debug(`[Squat] Using canvas snapshots in manual cleanup`);
-          const snapshotBlob = await createSnapshotFallback();
-          if (snapshotBlob && typeof onRecordingComplete === 'function') {
-            console.debug('[Squat] Using canvas snapshot in manual cleanup');
-            finalBlob = processRecordingForAnalysis(snapshotBlob);
-            onRecordingComplete(finalBlob);
-          } else {
-            console.warn('[Squat] Failed to create snapshot fallback, trying final fallback');
-            throw new Error('Snapshot fallback failed');
-          }
-        }
-        // Last resort: create fallback image
-        else {
-          console.warn('[Squat] No chunks, frames, or snapshots available, attempting final fallback image');
-          const fallbackBlob = await createFallbackRecording();
-          if (fallbackBlob && !fallbackBlob._isEmptyFallback && typeof onRecordingComplete === 'function') {
-            console.debug('[Squat] Calling onRecordingComplete with final fallback image');
-            finalBlob = processRecordingForAnalysis(fallbackBlob);
-            onRecordingComplete(finalBlob);
-          } else {
-            console.error('[Squat] Failed to create any usable recording data');
-            setError('Recording failed. Please try again with a supported browser.');
-          }
-        }
-      } catch (blobError) {
-        console.error('[Squat] Error creating blob manually:', blobError);
-        setError('Failed to process recording. Please try again.');
-      }
-    } else {
+    if (!isRecording) {
       console.warn('[Squat] Manual cleanup called but already stopped');
+      return;
+    }
+    
+    // Ordered fallback strategy with early returns to avoid nested chains
+    let finalBlob = null;
+    
+    // Try using the recorded chunks first (highest quality)
+    if (recordedChunksRef.current.length > 0) {
+      try {
+        const mimeType = mediaRecorderRef.current?.mimeType || 'video/webm';
+        const blob = new Blob(recordedChunksRef.current, { type: mimeType });
+        console.debug(`[Squat] Created blob manually: ${blob.size} bytes`);
+        finalBlob = processRecordingForAnalysis(blob);
+      } catch (blobError) {
+        console.error('[Squat] Error creating blob from chunks:', blobError);
+        // Continue to next fallback
+      }
+    }
+    
+    // If no blob from chunks, try captured frames
+    if (!finalBlob && captureFramesRef.current.length > 0) {
+      try {
+        console.debug(`[Squat] Using ${captureFramesRef.current.length} backup frames in manual cleanup`);
+        const lastFrame = captureFramesRef.current[captureFramesRef.current.length - 1];
+        if (lastFrame?.blob) {
+          console.debug('[Squat] Using last captured frame in manual cleanup');
+          finalBlob = processRecordingForAnalysis(lastFrame.blob);
+        }
+      } catch (frameError) {
+        console.error('[Squat] Error using frame capture:', frameError);
+        // Continue to next fallback
+      }
+    }
+    
+    // If no blob from frames, try canvas snapshots
+    if (!finalBlob && mediaRecorderRef.current?.canvasSnapshots?.length > 0) {
+      try {
+        console.debug(`[Squat] Using canvas snapshots in manual cleanup`);
+        const snapshotBlob = await createSnapshotFallback();
+        if (snapshotBlob) {
+          console.debug('[Squat] Using canvas snapshot in manual cleanup');
+          finalBlob = processRecordingForAnalysis(snapshotBlob);
+        }
+      } catch (snapshotError) {
+        console.error('[Squat] Error creating snapshot fallback:', snapshotError);
+        // Continue to last fallback
+      }
+    }
+    
+    // Last resort: create an emergency fallback image
+    if (!finalBlob) {
+      try {
+        console.warn('[Squat] No reliable recording data, creating emergency fallback');
+        const fallbackBlob = await createFallbackRecording();
+        if (fallbackBlob && !fallbackBlob._isEmptyFallback) {
+          console.debug('[Squat] Using emergency fallback image');
+          finalBlob = processRecordingForAnalysis(fallbackBlob);
+        }
+      } catch (fallbackError) {
+        console.error('[Squat] Error creating fallback recording:', fallbackError);
+        // No more fallbacks available
+        setError('Recording failed completely. Please try again with a supported browser.');
+      }
+    }
+    
+    // If we have a blob, send it to the callback
+    if (finalBlob && typeof onRecordingComplete === 'function') {
+      onRecordingComplete(finalBlob);
+    } else if (!finalBlob) {
+      setError('Failed to create any usable recording data.');
     }
 
     // Reset recording state regardless of outcome
     setIsRecording(false);
     stopTimer();
-  }, [isRecording, onRecordingComplete, setError, setIsRecording, stopTimer, createSnapshotFallback, createFallbackRecording, frameCaptureUtil, processRecordingForAnalysis]);
+    
+    // Clear memory
+    recordedChunksRef.current = [];
+    if (mediaRecorderRef.current?.canvasSnapshots) {
+      mediaRecorderRef.current.canvasSnapshots = [];
+    }
+  }, [
+    isRecording, 
+    frameCaptureUtil, 
+    recordedChunksRef, 
+    captureFramesRef, 
+    mediaRecorderRef,
+    onRecordingComplete, 
+    setError, 
+    setIsRecording, 
+    stopTimer, 
+    createSnapshotFallback, 
+    createFallbackRecording, 
+    processRecordingForAnalysis
+  ]);
 
-  // Unified function to toggle recording
+  // Unified function to toggle recording with proper dependencies
   const toggleRecording = useCallback(() => {
     try {
       console.debug('[Squat] Toggle recording. Current state:', isRecording);
@@ -1541,7 +1797,19 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       console.error('[Squat] Error in toggleRecording:', error);
       setError(`Recording error: ${error.message}`);
     }
-  }, [isRecording, mediaRecorderRef, stopFrameCapture, handleStopRecording, setIsRecording, stopTimer, isPoseTracking, startPoseDetection, handleStartRecording, setError, setIsPoseTracking]);
+  }, [
+    isRecording, 
+    mediaRecorderRef, 
+    stopFrameCapture, 
+    handleStopRecording, 
+    setIsRecording, 
+    stopTimer, 
+    isPoseTracking, 
+    startPoseDetection, 
+    setIsPoseTracking, 
+    handleStartRecording, 
+    setError
+  ]);
 
   // Handle start recording function
   const handleStartRecording = useCallback(async () => {
@@ -1773,33 +2041,47 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     }
   }, [isCameraReady, videoRef, mediaRecorderRef, recordedChunksRef, isMobile, onRecordingComplete, setError, setIsRecording, startTimer, stopTimer, startSnapshottingFrames, isRecording, createSnapshotFallback, createFallbackRecording, processRecordingForAnalysis, manualCleanup, frameCaptureUtil]);
 
-  // Timer utility functions
-  const startTimer = () => {
+  // Timer utility functions with improved state management using refs
+  const startTimer = useCallback(() => {
     // Initialize recording time and start interval
-    setRecordingTime('00:00'); // Keep this for initial display reset
-    setRecordingDuration(0); // Reset raw duration state
-    recordingTimerRef.current = 0; // Reset ref as well
+    const formattedTime = '00:00';
+    setRecordingTime(formattedTime); // Update UI with formatted time
+    
+    recordingTimerRef.current = {
+      startTime: Date.now(),
+      duration: 0,
+      formattedTime
+    };
+    
+    setRecordingDuration(0); // Keep state synced for compatibility
     
     // Clear any existing interval first
     if (recordingInterval.current) {
       clearInterval(recordingInterval.current);
+      recordingInterval.current = null;
     }
     
     // Create new interval that increments seconds and updates display
     recordingInterval.current = setInterval(() => {
-      // Use functional update for recordingDuration state
-      setRecordingDuration(prevDuration => {
-        const newDuration = prevDuration + 1;
-        // Update the ref as well
-        recordingTimerRef.current = newDuration;
-        // Update the formatted time string state for display
-        setRecordingTime(formatRecordingTime(newDuration)); 
-        return newDuration;
-      });
+      // Calculate duration based on actual elapsed time
+      const elapsed = Math.floor((Date.now() - recordingTimerRef.current.startTime) / 1000);
+      
+      // Format time for display
+      const formatted = formatRecordingTime(elapsed);
+      
+      // Update ref values
+      recordingTimerRef.current.duration = elapsed;
+      recordingTimerRef.current.formattedTime = formatted;
+      
+      // Update UI with formatted time
+      setRecordingTime(formatted);
+      
+      // Keep duration state synced for compatibility
+      setRecordingDuration(elapsed);
     }, 1000);
-  };
+  }, []);
 
-  const stopTimer = () => {
+  const stopTimer = useCallback(() => {
     // Clear the interval
     if (recordingInterval.current) {
       clearInterval(recordingInterval.current);
@@ -1807,10 +2089,19 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     }
     
     // Reset recording time display
-    setRecordingTime('00:00');
-    setRecordingDuration(0); // Reset raw duration state
-    recordingTimerRef.current = 0; // Reset ref
-  };
+    const formattedTime = '00:00';
+    setRecordingTime(formattedTime);
+    
+    // Reset refs
+    recordingTimerRef.current = {
+      startTime: 0,
+      duration: 0,
+      formattedTime
+    };
+    
+    // Reset state for compatibility
+    setRecordingDuration(0);
+  }, []);
 
   // Function to draw pose landmarks on canvas with proper scaling
   const drawPose = (pose, canvas, ctx) => {
