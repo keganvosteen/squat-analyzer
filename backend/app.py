@@ -1,5 +1,5 @@
 # app.py
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 import cv2
 import numpy as np
@@ -343,26 +343,38 @@ def get_session_data():
 
 @app.route('/analyze', methods=['POST', 'OPTIONS'])
 def analyze_video():
+    print(f"--- Received request for /analyze (Method: {request.method}) ---") 
+    app.logger.info(f"Received request for /analyze (Method: {request.method})")
+
     # Handle preflight OPTIONS request
     if request.method == 'OPTIONS':
-        return '', 204
-        
-    app.logger.info("Analyze endpoint called")
+        print("--- Responding to OPTIONS preflight request ---")
+        app.logger.info("Responding to OPTIONS preflight request for /analyze")
+        response = make_response()
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response
+
+    print("--- Processing POST request for /analyze... ---")
+    app.logger.info("Processing POST request for /analyze...")
     
     if 'video' not in request.files:
-        app.logger.error("No video file in request")
-        return jsonify({'error': 'No video file provided'}), 400
+        print("--- 'video' file part not found in request ---")
+        app.logger.warning("'video' file part not found in request")
+        return jsonify({"error": "No video file part"}), 400
     
-    video_file = request.files['video']
-    if not video_file:
+    file = request.files['video']
+    if not file:
         app.logger.error("Empty video file")
         return jsonify({'error': 'Empty video file'}), 400
     
-    app.logger.info(f"Received video: {video_file.filename}, size: {video_file.content_length}, type: {video_file.content_type}")
+    app.logger.info(f"Received video: {file.filename}, size: {file.content_length}, type: {file.content_type}")
     
     # Save the uploaded video temporarily
     temp_path = os.path.join(os.path.dirname(__file__), 'temp_video.webm')
-    video_file.save(temp_path)
+    file.save(temp_path)
     
     try:
         app.logger.info(f"Processing video at {temp_path}")
@@ -422,7 +434,7 @@ def analyze_video():
                 app.logger.warning(f"Using frame count calculated from duration: {frame_count}")
             else:
                  # If duration is also zero, estimate based on file size (rough)
-                 file_size_mb = video_file.content_length / (1024 * 1024)
+                 file_size_mb = file.content_length / (1024 * 1024)
                  estimated_duration = max(1, file_size_mb * 8) # Assume ~8s per MB, min 1s
                  frame_count = int(estimated_duration * fps)
                  app.logger.warning(f"Estimating frame count based on file size: {frame_count}")
