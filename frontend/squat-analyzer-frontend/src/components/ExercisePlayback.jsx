@@ -263,73 +263,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
                         Array.isArray(analysisData.frames) && 
                         analysisData.frames.length > 0;
 
-  // Log any issues with analysis data
-  useEffect(() => {
-    if (analysisData && (!analysisData.frames || analysisData.frames.length === 0)) {
-      console.warn("Analysis data has no valid frames", analysisData);
-      setError("Analysis completed but no valid frames were found. Try recording a clearer video.");
-    }
-    
-    if (analysisData && (analysisData.frame_count < 0 || !isFinite(analysisData.frame_count))) {
-      console.warn("Analysis data has invalid frame count:", analysisData.frame_count);
-    }
-  }, [analysisData, setError]); // Added setError dependency
-
-  // Reset error when video URL changes
-  useEffect(() => {
-    if (videoUrl) {
-      setError(null);
-    }
-  }, [videoUrl, setError]); // Added setError dependency
-
-  // Add logic to load video/image source and metadata
-  useEffect(() => {
-    console.log(`[Playback Setup] videoUrl updated or isImagePlayback changed. URL: ${videoUrl}, IsImage: ${isImagePlayback}`);
-    
-    // If it's image playback mode
-    if (videoUrl && isImagePlayback) {
-      console.log("[Playback Setup] Loading image source...");
-      const img = new Image();
-      img.onload = () => {
-        console.log('[Playback Setup] Image loaded successfully for playback');
-        setVideoDimensions({ width: img.width, height: img.height }); // Set dimensions from image
-        // Optionally draw overlays if analysis data exists for the single frame
-        if (hasAnalysisData && canvasRef.current) {
-          const canvas = canvasRef.current;
-          canvas.width = img.width; // Match canvas to image size
-          canvas.height = img.height;
-          const ctx = canvas.getContext('2d');
-          drawOverlays(ctx, 0); // Draw overlay for the static image (time 0)
-        }
-      };
-      img.onerror = (err) => {
-        console.error('[Playback Setup] Error loading image for playback:', err);
-        setError('Failed to load snapshot image. Please try again.');
-      };
-      img.src = videoUrl;
-    }
-    // If it's video playback mode
-    else if (videoUrl && !isImagePlayback && videoRef.current) {
-      console.log("[Playback Setup] Loading video source...");
-      videoRef.current.src = videoUrl;
-      // Reset duration/time when src changes
-      setCurrentTime(0);
-      setDuration(0);
-      // Add a load() call for reliability, though src assignment usually triggers it
-      videoRef.current.load(); 
-      
-      // The 'loadedmetadata' event listener added in the other useEffect 
-      // will handle setting duration, dimensions, and initial overlay draw.
-      console.log("[Playback Setup] Video source set. Waiting for 'loadedmetadata' event...");
-    }
-    else if (!videoUrl) {
-        console.log("[Playback Setup] videoUrl is null, clearing video/image.");
-        if (videoRef.current) videoRef.current.src = "";
-        // If needed, clear image display here too
-    }
-    
-  }, [videoUrl, isImagePlayback, hasAnalysisData, drawOverlays, setError]); // Dependencies
-
+  // Define drawing and coordinate functions BEFORE the useEffect that uses them
   // Transform coordinates based on video orientation and apply scaling
   const transformCoordinates = useCallback((x, y, canvasWidth, canvasHeight, isPortrait = false) => {
     // Default values to prevent NaN
@@ -359,30 +293,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     
     return { x: normalizedX, y: normalizedY };
   }, []);
-
-  // Detect mobile recordings that are rotated
-  const detectVideoRotation = useCallback((video) => {
-    if (!video) return 'landscape';
-    
-    // Simple detection based on dimensions
-    const isPortrait = video.videoHeight > video.videoWidth;
-    
-    // Additional checks to detect rotation
-    // Sometimes videos are recorded in portrait but stored as landscape with rotation metadata
-    if (isPortrait) {
-      return 'portrait';
-    }
-    
-    // Check if video might be mobile-recorded (typically 9:16 ratio when properly oriented)
-    const aspectRatio = video.videoWidth / video.videoHeight;
-    if (aspectRatio > 1.7) { // Wide aspect ratio common for mobile videos shot in landscape
-      // This is likely a mobile recording with natural landscape orientation
-      return 'landscape-mobile';
-    }
-    
-    return 'landscape';
-  }, []);
-
+  
   // Draw overlays on canvas - MEMOIZED with useCallback
   const drawOverlays = useCallback((ctx, time) => {
     if (!ctx || !ctx.canvas || !hasAnalysisData) return;
@@ -511,7 +422,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
           ctx.fillStyle = 'green';
         } else if (idx === 27 || idx === 28 || idx === 31 || idx === 32) { // Ankles and feet
           ctx.fillStyle = 'yellow';
-      } else {
+        } else {
           ctx.fillStyle = 'white';
         }
         
@@ -625,6 +536,96 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     ctx.fillText(`Frame: ${closestFrame.frame}, Time: ${closestFrame.timestamp.toFixed(2)}s`, 10, ctx.canvas.height - 10);
     
   }, [hasAnalysisData, analysisData, videoOrientation, showDebug, transformCoordinates]);
+
+  // Log any issues with analysis data
+  useEffect(() => {
+    if (analysisData && (!analysisData.frames || analysisData.frames.length === 0)) {
+      console.warn("Analysis data has no valid frames", analysisData);
+      setError("Analysis completed but no valid frames were found. Try recording a clearer video.");
+    }
+    
+    if (analysisData && (analysisData.frame_count < 0 || !isFinite(analysisData.frame_count))) {
+      console.warn("Analysis data has invalid frame count:", analysisData.frame_count);
+    }
+  }, [analysisData, setError]); // Added setError dependency
+
+  // Reset error when video URL changes
+  useEffect(() => {
+    if (videoUrl) {
+      setError(null);
+    }
+  }, [videoUrl, setError]); // Added setError dependency
+
+  // Add logic to load video/image source and metadata
+  useEffect(() => {
+    console.log(`[Playback Setup] videoUrl updated or isImagePlayback changed. URL: ${videoUrl}, IsImage: ${isImagePlayback}`);
+    
+    // If it's image playback mode
+    if (videoUrl && isImagePlayback) {
+      console.log("[Playback Setup] Loading image source...");
+      const img = new Image();
+      img.onload = () => {
+        console.log('[Playback Setup] Image loaded successfully for playback');
+        setVideoDimensions({ width: img.width, height: img.height }); // Set dimensions from image
+        // Optionally draw overlays if analysis data exists for the single frame
+        if (hasAnalysisData && canvasRef.current) {
+          const canvas = canvasRef.current;
+          canvas.width = img.width; // Match canvas to image size
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          drawOverlays(ctx, 0); // Draw overlay for the static image (time 0)
+        }
+      };
+      img.onerror = (err) => {
+        console.error('[Playback Setup] Error loading image for playback:', err);
+        setError('Failed to load snapshot image. Please try again.');
+      };
+      img.src = videoUrl;
+    }
+    // If it's video playback mode
+    else if (videoUrl && !isImagePlayback && videoRef.current) {
+      console.log("[Playback Setup] Loading video source...");
+      videoRef.current.src = videoUrl;
+      // Reset duration/time when src changes
+      setCurrentTime(0);
+      setDuration(0);
+      // Add a load() call for reliability, though src assignment usually triggers it
+      videoRef.current.load(); 
+      
+      // The 'loadedmetadata' event listener added in the other useEffect 
+      // will handle setting duration, dimensions, and initial overlay draw.
+      console.log("[Playback Setup] Video source set. Waiting for 'loadedmetadata' event...");
+    }
+    else if (!videoUrl) {
+        console.log("[Playback Setup] videoUrl is null, clearing video/image.");
+        if (videoRef.current) videoRef.current.src = "";
+        // If needed, clear image display here too
+    }
+    
+  }, [videoUrl, isImagePlayback, hasAnalysisData, drawOverlays, setError]); // Dependencies
+
+  // Detect mobile recordings that are rotated
+  const detectVideoRotation = useCallback((video) => {
+    if (!video) return 'landscape';
+    
+    // Simple detection based on dimensions
+    const isPortrait = video.videoHeight > video.videoWidth;
+    
+    // Additional checks to detect rotation
+    // Sometimes videos are recorded in portrait but stored as landscape with rotation metadata
+    if (isPortrait) {
+      return 'portrait';
+    }
+    
+    // Check if video might be mobile-recorded (typically 9:16 ratio when properly oriented)
+    const aspectRatio = video.videoWidth / video.videoHeight;
+    if (aspectRatio > 1.7) { // Wide aspect ratio common for mobile videos shot in landscape
+      // This is likely a mobile recording with natural landscape orientation
+      return 'landscape-mobile';
+    }
+    
+    return 'landscape';
+  }, []);
 
   // Handle video time updates - Simplified, primarily for UI, drawing handled by rAF
   const handleTimeUpdate = useCallback(() => {
