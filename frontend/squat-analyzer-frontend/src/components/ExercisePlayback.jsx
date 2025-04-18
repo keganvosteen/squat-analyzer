@@ -766,14 +766,15 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
       animationFrameId = requestAnimationFrame(updateCanvas);
     };
     
-    const handlePlay = () => {
+    // Define handlers locally for adding/removing listeners
+    const localHandlePlay = () => {
       setIsPlaying(true);
       // Start animation loop when video plays
       cancelAnimationFrame(animationFrameId);
       animationFrameId = requestAnimationFrame(updateCanvas);
     };
     
-    const handlePause = () => {
+    const localHandlePause = () => {
       setIsPlaying(false);
       // Stop animation loop when video pauses
       cancelAnimationFrame(animationFrameId);
@@ -786,27 +787,38 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     };
     
     // Handle regular time updates for UI updates (not for drawing)
-    const handleTimeUpdate = () => {
+    const localHandleTimeUpdate = () => {
       setCurrentTime(video.currentTime);
     };
     
-    video.addEventListener('timeupdate', handleTimeUpdate);
-    video.addEventListener('play', handlePlay);
-    video.addEventListener('pause', handlePause);
-    video.addEventListener('seeking', handlePause); // Update frame when seeking
+    video.addEventListener('timeupdate', localHandleTimeUpdate);
+    video.addEventListener('play', localHandlePlay);
+    video.addEventListener('pause', localHandlePause);
+    video.addEventListener('seeking', localHandlePause); // Update frame when seeking
     video.addEventListener('loadedmetadata', handleLoadedMetadata);
     video.addEventListener('error', handleError);
 
     return () => {
       cancelAnimationFrame(animationFrameId);
-      video.removeEventListener('timeupdate', handleTimeUpdate);
-      video.removeEventListener('play', handlePlay);
-      video.removeEventListener('pause', handlePause);
-      video.removeEventListener('seeking', handlePause);
+      video.removeEventListener('timeupdate', localHandleTimeUpdate);
+      video.removeEventListener('play', localHandlePlay);
+      video.removeEventListener('pause', localHandlePause);
+      video.removeEventListener('seeking', localHandlePause);
       video.removeEventListener('loadedmetadata', handleLoadedMetadata);
       video.removeEventListener('error', handleError);
     };
-  }, [videoRef.current, drawOverlays, handleLoadedMetadata]);
+  }, [videoRef.current, drawOverlays, handleLoadedMetadata, handleError]);
+
+  // Define handlePlay and handlePause outside useEffect using useCallback
+  const handlePlay = useCallback(() => {
+      setIsPlaying(true);
+      // Animation loop handled by useEffect listener
+  }, []);
+
+  const handlePause = useCallback(() => {
+      setIsPlaying(false);
+      // Animation loop handled by useEffect listener
+  }, []);
 
   // Toggle play/pause
   const togglePlayPause = () => {
