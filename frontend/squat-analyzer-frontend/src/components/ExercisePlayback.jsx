@@ -226,25 +226,31 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
   
   // Use effect to check blob type and set image/video playback mode
   useEffect(() => {
-    if (videoBlob && videoBlob.type.startsWith('image/')) {
-      setIsImagePlayback(true);
-      console.log("Detected image blob, switching to image playback mode.");
+    // Reset image playback state initially
+    setIsImagePlayback(false);
+    
+    if (videoBlob) {
+      console.log(`[Playback Setup] Received blob. Type: ${videoBlob.type}, Size: ${videoBlob.size}, Custom Type: ${videoBlob._recordingType}`);
+      if (videoBlob.type.startsWith('image/') || videoBlob._recordingType === 'image') {
+        console.log("[Playback Setup] Setting mode to IMAGE playback.");
+        setIsImagePlayback(true);
+      } else {
+        console.log("[Playback Setup] Setting mode to VIDEO playback.");
+        setIsImagePlayback(false);
+      }
     } else {
-      setIsImagePlayback(false);
+      console.log("[Playback Setup] No videoBlob present.");
+    }
+
+    // The logic to create a fallback URL if videoUrl is missing is removed.
+    // App.jsx is now responsible for providing videoUrl.
+    // If videoUrl is null/undefined here, something is wrong upstream.
+    if (!videoUrl && videoBlob) {
+        console.error("[Playback Setup] FATAL: videoBlob exists but videoUrl is missing from props! Playback cannot proceed.");
+        setError("Internal error: Failed to prepare video for playback.");
     }
     
-    // Create URL if blob exists (handles both video and image)
-    if (videoBlob && !videoUrl) {
-      // If App.jsx didn't pass a URL, create one here
-      // This shouldn't happen with the latest App.jsx changes, but acts as a fallback
-      const url = URL.createObjectURL(videoBlob);
-      // Note: We need a way to set the videoUrl state in App.jsx from here, or manage URL creation entirely in App.jsx
-      // For now, just use it locally if needed, but ideally App.jsx provides the URL.
-      console.warn("ExercisePlayback created its own Object URL. This should be handled in App.jsx.");
-      // videoRef.current.src = url; // Assign directly if videoRef is ready
-    }
-    
-  }, [videoBlob, videoUrl]);
+  }, [videoBlob, videoUrl, setError]); // Added setError dependency
 
   // Toggle debug display with double-click
   const toggleDebug = () => {
@@ -267,115 +273,62 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     if (analysisData && (analysisData.frame_count < 0 || !isFinite(analysisData.frame_count))) {
       console.warn("Analysis data has invalid frame count:", analysisData.frame_count);
     }
-  }, [analysisData]);
+  }, [analysisData, setError]); // Added setError dependency
 
   // Reset error when video URL changes
   useEffect(() => {
     if (videoUrl) {
       setError(null);
     }
-  }, [videoUrl]);
+  }, [videoUrl, setError]); // Added setError dependency
 
-  // Add logic to detect image vs video URLs
+  // Add logic to load video/image source and metadata
   useEffect(() => {
-    if (videoUrl) {
-      // Try to determine if this is an image or video URL
-      const isImageUrl = videoUrl.startsWith('blob:') && (
-        videoUrl.includes('image/') || 
-        (videoBlob && (videoBlob.type.startsWith('image/') || videoBlob._recordingType === 'image'))
-      );
-      
-      console.log(`Playback URL detected as: ${isImageUrl ? 'image' : 'video'}`);
-      
-      if (isImageUrl) {
-        // For image URLs, load as an image instead
-        const img = new Image();
-        img.onload = () => {
-          console.log('Image loaded successfully for playback');
-          
-          // Create a canvas to display the image
-          const canvas = document.createElement('canvas');
-          canvas.width = img.width;
+    console.log(`[Playback Setup] videoUrl updated or isImagePlayback changed. URL: ${videoUrl}, IsImage: ${isImagePlayback}`);
+    
+    // If it's image playback mode
+    if (videoUrl && isImagePlayback) {
+      console.log("[Playback Setup] Loading image source...");
+      const img = new Image();
+      img.onload = () => {
+        console.log('[Playback Setup] Image loaded successfully for playback');
+        setVideoDimensions({ width: img.width, height: img.height }); // Set dimensions from image
+        // Optionally draw overlays if analysis data exists for the single frame
+        if (hasAnalysisData && canvasRef.current) {
+          const canvas = canvasRef.current;
+          canvas.width = img.width; // Match canvas to image size
           canvas.height = img.height;
           const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0);
-          
-          // Replace video element with the image
-          if (videoContainerRef.current) {
-            // Create styled image element
-            const imgElement = document.createElement('img');
-            imgElement.src = videoUrl;
-            imgElement.alt = 'Exercise snapshot';
-            imgElement.style.width = '100%';
-            imgElement.style.height = 'auto';
-            imgElement.style.borderRadius = '8px';
-            imgElement.style.display = 'block';
-            
-            // Clear container and append image
-            videoContainerRef.current.innerHTML = '';
-            videoContainerRef.current.appendChild(imgElement);
-          }
-        };
-        
-        img.onerror = (err) => {
-          console.error('Error loading image for playback:', err);
-          setError('Failed to load image. Please try again.');
-        };
-        
-        img.src = videoUrl;
-    } else {
-        // Handle as regular video URL
-        if (videoRef.current) {
-          videoRef.current.src = videoUrl;
-          
-          videoRef.current.onloadedmetadata = () => {
-            console.log('Video metadata loaded successfully');
-            setDuration(videoRef.current.duration);
-            setVideoDimensions({ width: videoRef.current.videoWidth, height: videoRef.current.videoHeight });
-            
-            // Use our enhanced rotation detection
-            const orientation = detectVideoRotation(videoRef.current);
-            setVideoOrientation(orientation);
-            
-            console.log(`Video loaded: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}, duration: ${videoRef.current.duration}s, orientation: ${orientation}`);
-            
-            // Update debugging info
-            setDebugInfo(prev => ({
-              ...prev,
-              videoMetadata: {
-                width: videoRef.current.videoWidth,
-                height: videoRef.current.videoHeight,
-                duration: videoRef.current.duration,
-                orientation: orientation,
-                aspectRatio: (videoRef.current.videoWidth / videoRef.current.videoHeight).toFixed(2)
-              }
-            }));
-            
-            // Initialize canvas size to match video dimensions exactly
-            if (canvasRef.current) {
-              const canvas = canvasRef.current;
-              canvas.width = videoRef.current.videoWidth;
-              canvas.height = videoRef.current.videoHeight;
-              setCanvasDimensions({ width: canvas.width, height: canvas.height });
-              
-              // Initial render of overlays
-              const ctx = canvas.getContext('2d');
-              if (ctx) {
-                // Clear any previous drawings
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                drawOverlays(ctx, 0);
-              }
-            }
-          };
-          
-          videoRef.current.onerror = (err) => {
-            console.error('Video error:', err);
-            setError('Failed to load video. Please try again.');
-          };
+          drawOverlays(ctx, 0); // Draw overlay for the static image (time 0)
         }
-      }
+      };
+      img.onerror = (err) => {
+        console.error('[Playback Setup] Error loading image for playback:', err);
+        setError('Failed to load snapshot image. Please try again.');
+      };
+      img.src = videoUrl;
     }
-  }, [videoUrl, videoBlob, analysisData]);
+    // If it's video playback mode
+    else if (videoUrl && !isImagePlayback && videoRef.current) {
+      console.log("[Playback Setup] Loading video source...");
+      videoRef.current.src = videoUrl;
+      // Reset duration/time when src changes
+      setCurrentTime(0);
+      setDuration(0);
+      // Add a load() call for reliability, though src assignment usually triggers it
+      videoRef.current.load(); 
+      
+      // The 'loadedmetadata' event listener added in the other useEffect 
+      // will handle setting duration, dimensions, and initial overlay draw.
+      console.log("[Playback Setup] Video source set. Waiting for 'loadedmetadata' event...");
+    }
+    else if (!videoUrl) {
+        console.log("[Playback Setup] videoUrl is null, clearing video/image.");
+        if (videoRef.current) videoRef.current.src = "";
+        // If needed, clear image display here too
+    }
+    
+  }, [videoUrl, isImagePlayback, hasAnalysisData, drawOverlays, setError]); // Dependencies
 
   // Transform coordinates based on video orientation and apply scaling
   const transformCoordinates = useCallback((x, y, canvasWidth, canvasHeight, isPortrait = false) => {
