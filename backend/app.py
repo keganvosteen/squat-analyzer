@@ -19,17 +19,13 @@ import gc
 from werkzeug.utils import secure_filename
 import multiprocessing
 from concurrent.futures import ThreadPoolExecutor
+import traceback
 
 app = Flask(__name__)
-# Configure CORS correctly
-CORS(app, 
-     resources={r"/*": {
-         "origins": ["https://squat-analyzer-frontend.onrender.com", "http://localhost:5173", "*"],
-         "supports_credentials": True,
-         "allow_headers": ["Content-Type", "Authorization"],
-         "methods": ["GET", "POST", "OPTIONS"]
-     }}
-)
+CORS(app, origins=[
+    "https://squat-analyzer-frontend.onrender.com",
+    "http://localhost:5173"
+])
 
 # Add CORS headers to all responses manually as well
 @app.after_request
@@ -160,122 +156,148 @@ def calculate_shoulder_midfoot_diff(shoulder, hip, knee, ankle):
 # Create pose landmarker instance
 pose_landmarker = PoseLandmarker.create_from_options(options)
 
-def analyze_frame(frame, session_id=None):
-    if session_id is None:
-        session_id = "default"
-    
-    # Initialize state tracking for new sessions
-    if session_id not in previous_states:
-        previous_states[session_id] = "standing"
-        squat_counts[session_id] = 0
-        squat_timings[session_id] = []
-        session_start_times[session_id] = time.time()
-    
-    # Convert BGR image (OpenCV) to RGB
-    image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
-    
-    # Detect pose landmarks
-    detection_result = pose_landmarker.detect(mp_image)
-    
-    # Prepare feedback data with a relative timestamp from session start
-    feedback = {
-        "landmarks": None,
-        "feedback": [],
-        "skeletonImage": None,
-        "squatState": previous_states[session_id],
-        "timestamp": time.time() - session_start_times[session_id]
-    }
-    
-    if not detection_result.pose_landmarks:
-        return feedback
-    
-    # Get the first detected pose's landmarks
-    pose_landmarks = detection_result.pose_landmarks[0]
-    
-    # Convert landmarks to list of dictionaries
-    landmarks_list = []
-    for landmark in pose_landmarks:
-        landmarks_list.append({
-            'x': landmark.x,
-            'y': landmark.y,
-            'z': landmark.z,
-            'visibility': landmark.presence
-        })
-    
-    feedback["landmarks"] = landmarks_list
-    
-    # Get key points for analysis
-    left_knee = landmarks_list[POSE_LANDMARKS.LEFT_KNEE]
-    right_knee = landmarks_list[POSE_LANDMARKS.RIGHT_KNEE]
-    left_hip = landmarks_list[POSE_LANDMARKS.LEFT_HIP]
-    right_hip = landmarks_list[POSE_LANDMARKS.RIGHT_HIP]
-    left_ankle = landmarks_list[POSE_LANDMARKS.LEFT_ANKLE]
-    right_ankle = landmarks_list[POSE_LANDMARKS.RIGHT_ANKLE]
-    left_shoulder = landmarks_list[POSE_LANDMARKS.LEFT_SHOULDER]
-    right_shoulder = landmarks_list[POSE_LANDMARKS.RIGHT_SHOULDER]
-    
-    # Calculate average knee position for squat detection
-    avg_knee_y = (left_knee['y'] + right_knee['y']) / 2
-    
-    # Detect squat state
-    if previous_states[session_id] == "standing" and avg_knee_y > 0.6:  # Knees lowered
+# --- Utility Functions (Refactored) ---
+def extract_landmarks(pose_landmarks):
+    """Convert MediaPipe pose landmarks to a list of dicts."""
+    return [
+        {'x': lm.x, 'y': lm.y, 'z': lm.z, 'visibility': getattr(lm, 'presence', getattr(lm, 'visibility', 0))}
+        for lm in pose_landmarks
+    ]
+
+def detect_squat_state(session_id, avg_knee_y):
+    """Update and return squat state based on knee position."""
+    if previous_states[session_id] == "standing" and avg_knee_y > 0.6:
         previous_states[session_id] = "squatting"
         squat_timings[session_id].append(time.time() - session_start_times[session_id])
-    elif previous_states[session_id] == "squatting" and avg_knee_y < 0.4:  # Standing back up
+    elif previous_states[session_id] == "squatting" and avg_knee_y < 0.4:
         previous_states[session_id] = "standing"
         squat_counts[session_id] += 1
-    
-    # Generate feedback
+    return previous_states[session_id]
+
+def generate_feedback(landmarks_list, session_id):
+    """Generate feedback annotations for squat form."""
     feedback_list = []
-    
-    # Check knee alignment
-    knee_hip_alignment = abs((left_knee['x'] + right_knee['x'])/2 - (left_hip['x'] + right_hip['x'])/2)
+    # Knee alignment
+    knee_hip_alignment = abs((landmarks_list[POSE_LANDMARKS.LEFT_KNEE]['x'] + landmarks_list[POSE_LANDMARKS.RIGHT_KNEE]['x'])/2 -
+                             (landmarks_list[POSE_LANDMARKS.LEFT_HIP]['x'] + landmarks_list[POSE_LANDMARKS.RIGHT_HIP]['x'])/2)
     if knee_hip_alignment > 0.1:
         feedback_list.append({
             'type': 'annotation',
             'message': 'Keep knees aligned with hips',
-            'position': {
-                'start': POSE_LANDMARKS.LEFT_HIP,
-                'end': POSE_LANDMARKS.LEFT_KNEE,
-                'textX': 0.1,
-                'textY': 0.1
-            }
+            'position': {'start': POSE_LANDMARKS.LEFT_HIP, 'end': POSE_LANDMARKS.LEFT_KNEE, 'textX': 0.1, 'textY': 0.1}
         })
-    
-    # Calculate back angle
+    # Back angle
+    left_shoulder = landmarks_list[POSE_LANDMARKS.LEFT_SHOULDER]
+    right_shoulder = landmarks_list[POSE_LANDMARKS.RIGHT_SHOULDER]
+    left_hip = landmarks_list[POSE_LANDMARKS.LEFT_HIP]
+    right_hip = landmarks_list[POSE_LANDMARKS.RIGHT_HIP]
+    left_knee = landmarks_list[POSE_LANDMARKS.LEFT_KNEE]
+    right_knee = landmarks_list[POSE_LANDMARKS.RIGHT_KNEE]
     shoulder_midpoint = [(left_shoulder['x'] + right_shoulder['x'])/2, (left_shoulder['y'] + right_shoulder['y'])/2]
     hip_midpoint = [(left_hip['x'] + right_hip['x'])/2, (left_hip['y'] + right_hip['y'])/2]
     knee_midpoint = [(left_knee['x'] + right_knee['x'])/2, (left_knee['y'] + right_knee['y'])/2]
-    
     back_angle = calculate_angle(shoulder_midpoint, hip_midpoint, knee_midpoint)
     if back_angle < 45:
         feedback_list.append({
             'type': 'annotation',
             'message': 'Keep back straight',
-            'position': {
-                'start': POSE_LANDMARKS.LEFT_SHOULDER,
-                'end': POSE_LANDMARKS.LEFT_HIP,
-                'textX': 0.7,
-                'textY': 0.2
-            }
+            'position': {'start': POSE_LANDMARKS.LEFT_SHOULDER, 'end': POSE_LANDMARKS.LEFT_HIP, 'textX': 0.7, 'textY': 0.2}
         })
-    
-    # Initialize feedback batching outside the function
-    feedback_batch = []
+    return feedback_list
 
-    # Inside analyze_frame function, replace feedback generation logic
-    feedback_batch.append(feedback_list)
+# --- Refactored analyze_frame ---
+def analyze_frame(frame, session_id=None):
+    """
+    Analyze a single video frame for squat form and return feedback.
+    Args:
+        frame: The video frame (BGR, OpenCV).
+        session_id: Optional session identifier.
+    Returns:
+        feedback: Dict with landmarks, feedback, squat state, timestamp, etc.
+    """
+    try:
+        if session_id is None:
+            session_id = "default"
+        if session_id not in previous_states:
+            previous_states[session_id] = "standing"
+            squat_counts[session_id] = 0
+            squat_timings[session_id] = []
+            session_start_times[session_id] = time.time()
+        image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
+        detection_result = pose_landmarker.detect(mp_image)
+        feedback = {
+            "landmarks": None,
+            "feedback": [],
+            "skeletonImage": None,
+            "squatState": previous_states[session_id],
+            "timestamp": time.time() - session_start_times[session_id]
+        }
+        if not detection_result.pose_landmarks:
+            return feedback
+        pose_landmarks = detection_result.pose_landmarks[0]
+        landmarks_list = extract_landmarks(pose_landmarks)
+        feedback["landmarks"] = landmarks_list
+        # Key points
+        left_knee = landmarks_list[POSE_LANDMARKS.LEFT_KNEE]
+        right_knee = landmarks_list[POSE_LANDMARKS.RIGHT_KNEE]
+        left_hip = landmarks_list[POSE_LANDMARKS.LEFT_HIP]
+        right_hip = landmarks_list[POSE_LANDMARKS.RIGHT_HIP]
+        avg_knee_y = (left_knee['y'] + right_knee['y']) / 2
+        feedback["squatState"] = detect_squat_state(session_id, avg_knee_y)
+        feedback["feedback"] = generate_feedback(landmarks_list, session_id)
+        return feedback
+    except Exception as e:
+        return {"error": f"Frame analysis failed: {str(e)}"}, 500
 
-    if len(feedback_batch) >= 5:
-        feedback["feedback"] = feedback_batch.copy()
-        feedback_batch.clear()
-    else:
-        feedback["feedback"] = []
+# --- Refactored analyze_video helpers ---
+def validate_video_metadata(cap, video_file):
+    """Validate and correct video metadata (fps, frame count, duration)."""
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    is_portrait_video = height > width
+    duration_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+    if duration_msec <= 0:
+        cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 1)
+        duration_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+        cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0)
+    duration_sec = duration_msec / 1000.0 if duration_msec > 0 else 0.0
+    if fps <= 0 or fps > 120 or fps == 1000:
+        if duration_sec > 0 and frame_count > 0 and frame_count < 100000:
+            calculated_fps = frame_count / duration_sec
+            fps = round(calculated_fps) if 0 < calculated_fps <= 120 else 30
+        else:
+            fps = 30
+    expected_frame_count = int(duration_sec * fps) if duration_sec > 0 and fps > 0 else 0
+    is_frame_count_invalid = frame_count < 0 or (duration_sec > 0.5 and frame_count <= 1)
+    is_frame_count_mismatch = expected_frame_count > 0 and abs(frame_count - expected_frame_count) > (expected_frame_count * 0.5)
+    if is_frame_count_invalid or is_frame_count_mismatch:
+        frame_count = expected_frame_count if expected_frame_count > 0 else 30
+    frame_count = max(10, min(frame_count, 1500))
+    return fps, frame_count, width, height, is_portrait_video, duration_sec
 
-    feedback["squatState"] = previous_states[session_id]
-    
-    return feedback
+def extract_frames(cap, frame_skip, frame_count, is_portrait_video):
+    """Extract frames from the video, rotating if portrait."""
+    frames_to_process = []
+    for idx in range(0, frame_count, frame_skip):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        success, frame = cap.read()
+        if success:
+            if is_portrait_video:
+                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+            if frame.shape[0] > 720 or frame.shape[1] > 1280:
+                frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
+            frames_to_process.append((idx, frame))
+    return frames_to_process
+
+def aggregate_results(processed_frames):
+    """Aggregate results from processed frames."""
+    # Placeholder: implement aggregation logic as needed
+    return processed_frames
+
+# --- Refactored analyze_video ---
 
 # Simple GET route to verify the server is running
 @app.route('/', methods=['GET'])
@@ -366,14 +388,24 @@ def analyze_video():
         return jsonify({"error": "No video file part"}), 400
     
     file = request.files['video']
-    if not file:
-        app.logger.error("Empty video file")
-        return jsonify({'error': 'Empty video file'}), 400
-    
+    if not file or not getattr(file, 'filename', None):
+        app.logger.error("Empty or missing video file")
+        return jsonify({'error': 'No file uploaded'}), 400
+
     app.logger.info(f"Received video: {file.filename}, size: {file.content_length}, type: {file.content_type}")
-    
+
+    # Validate video file format
+    filename = getattr(file, 'filename', None)
+    if not filename or not isinstance(filename, str):
+        app.logger.error("Missing or invalid filename in uploaded file")
+        return jsonify({'error': 'No file uploaded'}), 400
+    filename = filename.lower()
+    allowed_exts = ['.mp4']
+    if not any(filename.endswith(ext) for ext in allowed_exts):
+        return jsonify({'error': 'Unsupported video format. Please upload an MP4 file.'}), 400
+
     # Save the uploaded video temporarily
-    temp_path = os.path.join(os.path.dirname(__file__), 'temp_video.webm')
+    temp_path = os.path.join(os.path.dirname(__file__), 'temp_video.mp4')
     file.save(temp_path)
     
     try:
@@ -401,7 +433,7 @@ def analyze_video():
            cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 1) # Seek to end if needed
            duration_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
            cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0) # Reset to beginning
-           
+        
         duration_sec = duration_msec / 1000.0 if duration_msec > 0 else 0.0
         app.logger.info(f"Raw metadata: FPS={fps}, FrameCount={frame_count}, Duration={duration_sec:.2f}s")
 
