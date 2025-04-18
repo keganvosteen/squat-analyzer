@@ -416,12 +416,36 @@ def analyze_video():
     file_size = file.tell()
     file.seek(0)
     if not file or file.filename == '' or file_size == 0:
-        app.logger.error(f"Empty or missing video file (filename: {file.filename}, size: {file_size})")
-        print(f"Empty or missing video file (filename: {file.filename}, size: {file_size})")
+        msg = f"Empty or missing video file (filename: {getattr(file, 'filename', None)}, size: {getattr(file, 'content_length', None)})"
+        app.logger.error(msg)
+        print(msg)
         # --- Render.com/Proxy Debug ---
+        try:
+            if 'video' in request.files:
+                app.logger.error("About to read raw file stream for 'video'")
+                print("About to read raw file stream for 'video'")
+                file_stream = request.files['video'].stream
+                raw_bytes = file_stream.read()
+                app.logger.error(f'Raw file stream length: {len(raw_bytes)}')
+                print(f'Raw file stream length: {len(raw_bytes)}')
+                # Optionally, save to disk for inspection
+                try:
+                    with open('/tmp/debug_upload.webm', 'wb') as f:
+                        f.write(raw_bytes)
+                    app.logger.error('Saved raw file stream to /tmp/debug_upload.webm')
+                    print('Saved raw file stream to /tmp/debug_upload.webm')
+                except Exception as e:
+                    app.logger.error(f'Failed to save file stream: {e}')
+                    print(f'Failed to save file stream: {e}')
+            else:
+                app.logger.error("'video' not in request.files")
+                print("'video' not in request.files")
+        except Exception as e:
+            app.logger.error(f'Exception while reading file stream: {e}')
+            print(f'Exception while reading file stream: {e}')
         raw_data = request.get_data()
+        app.logger.error(f"Raw request data length: {len(raw_data)}")
         print(f"Raw request data length: {len(raw_data)}")
-        app.logger.info(f"Raw request data length: {len(raw_data)}")
         return jsonify({"error": "No selected file or file is empty"}), 400
 
     app.logger.info(f"Received video: {file.filename}, size: {file_size}, type: {getattr(file, 'content_type', 'unknown')}")
