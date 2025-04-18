@@ -363,8 +363,17 @@ def get_session_data():
     
     return jsonify(session_data)
 
+# Set a high max upload size (100MB)
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
+
 @app.route('/analyze', methods=['POST', 'OPTIONS'])
 def analyze_video():
+    # Extra debug info for upload issues
+    print("Request content_length:", request.content_length)
+    print("Request headers:", dict(request.headers))
+    print("Request files:", request.files)
+    print("Request form:", request.form)
+
     print(f"--- Received request for /analyze (Method: {request.method}) ---") 
     app.logger.info(f"Received request for /analyze (Method: {request.method})")
 
