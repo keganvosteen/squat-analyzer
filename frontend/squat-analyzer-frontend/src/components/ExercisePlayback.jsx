@@ -430,7 +430,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     return 'landscape';
   }, []);
 
-  // Draw overlays on canvas
+  // Draw overlays on canvas - MEMOIZED with useCallback
   const drawOverlays = useCallback((ctx, time) => {
     if (!ctx || !ctx.canvas || !hasAnalysisData) return;
     
@@ -673,25 +673,19 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     
   }, [hasAnalysisData, analysisData, videoOrientation, showDebug, transformCoordinates]);
 
-  // Handle video time updates
-  const handleTimeUpdate = () => {
+  // Handle video time updates - Simplified, primarily for UI, drawing handled by rAF
+  const handleTimeUpdate = useCallback(() => {
     if (videoRef.current) {
-      const currentTime = videoRef.current.currentTime;
-      setCurrentTime(currentTime);
-      
-      const ctx = canvasRef.current?.getContext('2d');
-      if (ctx) {
-        // Draw overlays appropriate for the current video time
-        drawOverlays(ctx, currentTime);
-      }
+      setCurrentTime(videoRef.current.currentTime);
+      // No need to call drawOverlays here, rAF loop handles it
     }
-  };
+  }, []);
 
   // Handle video errors
-  const handleError = (e) => {
+  const handleError = useCallback((e) => {
     console.error('Video error:', e);
     setError('Error playing video. Please try recording again.');
-  };
+  }, [setError]);
 
   // Check if the video orientation is portrait (for coordinate transform)
   const isPortraitVideo = useCallback(() => {
@@ -699,7 +693,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
   }, [videoOrientation]);
 
   // Handle video metadata loading
-  const handleLoadedMetadata = () => {
+  const handleLoadedMetadata = useCallback(() => {
     if (videoRef.current) {
       const video = videoRef.current;
       setDuration(video.duration);
@@ -740,99 +734,73 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
         }
       }
     }
-  };
+  }, [hasAnalysisData, detectVideoRotation, drawOverlays]);
 
-  // Set up video event listeners
+  // Set up video event listeners and animation frame loop
   useEffect(() => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || isImagePlayback) return; // Don't run for images
     
-    console.log("Setting up video event listeners");
+    console.log("Setting up video event listeners and rAF loop");
     
-    // Use rAF for smoother animations
-    let animationFrameId;
+    let animationFrameId = null;
     
-    const updateCanvas = () => {
+    // rAF loop function
+    const animationLoop = () => {
       if (video.paused || video.ended) {
+        cancelAnimationFrame(animationFrameId); // Stop loop if paused/ended
         return;
       }
       
       const ctx = canvasRef.current?.getContext('2d');
       if (ctx) {
-        drawOverlays(ctx, video.currentTime);
+        drawOverlays(ctx, video.currentTime); // Use memoized drawOverlays
       }
       
       // Continue animation loop
-      animationFrameId = requestAnimationFrame(updateCanvas);
+      animationFrameId = requestAnimationFrame(animationLoop);
     };
     
-    // Define handlers locally for adding/removing listeners
+    // Define handlers for adding/removing listeners
     const localHandlePlay = () => {
       setIsPlaying(true);
-      // Start animation loop when video plays
-      cancelAnimationFrame(animationFrameId);
-      animationFrameId = requestAnimationFrame(updateCanvas);
+      cancelAnimationFrame(animationFrameId); // Ensure no duplicate loops
+      animationFrameId = requestAnimationFrame(animationLoop); // Start loop on play
     };
     
     const localHandlePause = () => {
       setIsPlaying(false);
-      // Stop animation loop when video pauses
-      cancelAnimationFrame(animationFrameId);
-      
-      // Draw one last frame at the current position
+      cancelAnimationFrame(animationFrameId); // Stop loop on pause
+      // Draw one last frame at the pause position
       const ctx = canvasRef.current?.getContext('2d');
       if (ctx) {
         drawOverlays(ctx, video.currentTime);
       }
     };
-    
-    // Handle regular time updates for UI updates (not for drawing)
-    const localHandleTimeUpdate = () => {
-      setCurrentTime(video.currentTime);
-    };
-    
-    video.addEventListener('timeupdate', localHandleTimeUpdate);
+
+    // Add listeners
     video.addEventListener('play', localHandlePlay);
     video.addEventListener('pause', localHandlePause);
-    video.addEventListener('seeking', localHandlePause); // Update frame when seeking
+    video.addEventListener('seeking', localHandlePause); // Update frame when seeking finishes (usually fires pause)
+    video.addEventListener('seeked', localHandlePause); // Also handle seeked for good measure
+    video.addEventListener('timeupdate', handleTimeUpdate); // Keep for UI display
     video.addEventListener('loadedmetadata', handleLoadedMetadata);
     video.addEventListener('error', handleError);
 
+    // Cleanup function
     return () => {
+      console.log("Cleaning up video event listeners and rAF loop");
       cancelAnimationFrame(animationFrameId);
-      video.removeEventListener('timeupdate', localHandleTimeUpdate);
       video.removeEventListener('play', localHandlePlay);
       video.removeEventListener('pause', localHandlePause);
       video.removeEventListener('seeking', localHandlePause);
+      video.removeEventListener('seeked', localHandlePause);
+      video.removeEventListener('timeupdate', handleTimeUpdate);
       video.removeEventListener('loadedmetadata', handleLoadedMetadata);
       video.removeEventListener('error', handleError);
     };
-  }, [videoRef.current, drawOverlays, handleLoadedMetadata, handleError]);
-
-  // Define handlePlay and handlePause outside useEffect using useCallback
-  const handlePlay = useCallback(() => {
-      setIsPlaying(true);
-      // Animation loop handled by useEffect listener
-  }, []);
-
-  const handlePause = useCallback(() => {
-      setIsPlaying(false);
-      // Animation loop handled by useEffect listener
-  }, []);
-
-  // Toggle play/pause
-  const togglePlayPause = () => {
-    if (!videoRef.current) return;
-    
-    if (isPlaying) {
-      videoRef.current.pause();
-    } else {
-      videoRef.current.play().catch(e => {
-        console.error("Error playing video:", e);
-        setError("Could not play video. This may be due to browser permissions or an unsupported format.");
-      });
-    }
-  };
+  // Rerun this effect if the video element itself changes (via videoUrl) or drawing logic updates
+  }, [videoUrl, isImagePlayback, drawOverlays, handleLoadedMetadata, handleTimeUpdate, handleError]);
 
   return (
     <Container ref={containerRef}>
@@ -865,11 +833,9 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
             ref={videoRef}
             src={videoUrl}
             playsInline
-            onClick={togglePlayPause}
+            onClick={() => setIsPlaying(!isPlaying)}
             onLoadedMetadata={handleLoadedMetadata}
             onTimeUpdate={handleTimeUpdate}
-            onPlay={handlePlay}
-            onPause={handlePause}
             onError={handleError}
             onEnded={() => setIsPlaying(false)}
             style={{ maxWidth: '100%', maxHeight: '70vh' }} 
@@ -904,7 +870,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
       )}
       
       <Controls>
-        <Button onClick={togglePlayPause}>
+        <Button onClick={() => setIsPlaying(!isPlaying)}>
           {isPlaying ? <Pause size={20} /> : <Play size={20} />}
           {isPlaying ? 'Pause' : 'Play'}
         </Button>
