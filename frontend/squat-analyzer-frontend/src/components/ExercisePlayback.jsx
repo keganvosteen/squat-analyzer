@@ -224,6 +224,28 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
   // Track if we're using an image instead of a video for playback
   const [isImagePlayback, setIsImagePlayback] = useState(false);
   
+  // Use effect to check blob type and set image/video playback mode
+  useEffect(() => {
+    if (videoBlob && videoBlob.type.startsWith('image/')) {
+      setIsImagePlayback(true);
+      console.log("Detected image blob, switching to image playback mode.");
+    } else {
+      setIsImagePlayback(false);
+    }
+    
+    // Create URL if blob exists (handles both video and image)
+    if (videoBlob && !videoUrl) {
+      // If App.jsx didn't pass a URL, create one here
+      // This shouldn't happen with the latest App.jsx changes, but acts as a fallback
+      const url = URL.createObjectURL(videoBlob);
+      // Note: We need a way to set the videoUrl state in App.jsx from here, or manage URL creation entirely in App.jsx
+      // For now, just use it locally if needed, but ideally App.jsx provides the URL.
+      console.warn("ExercisePlayback created its own Object URL. This should be handled in App.jsx.");
+      // videoRef.current.src = url; // Assign directly if videoRef is ready
+    }
+    
+  }, [videoBlob, videoUrl]);
+
   // Toggle debug display with double-click
   const toggleDebug = () => {
     setShowDebug(prev => !prev);
@@ -820,22 +842,37 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
         ref={containerRef} 
         onDoubleClick={toggleDebug}
       >
-        <div ref={videoContainerRef}>
+        {isImagePlayback ? (
+          <img 
+            src={videoUrl} 
+            alt="Recorded Squat Snapshot" 
+            style={{ maxWidth: '100%', maxHeight: '70vh', display: 'block' }} 
+          />
+        ) : (
           <Video
             ref={videoRef}
             src={videoUrl}
-            controls={true}
+            playsInline
+            onClick={togglePlayPause}
             onLoadedMetadata={handleLoadedMetadata}
             onTimeUpdate={handleTimeUpdate}
+            onPlay={handlePlay}
+            onPause={handlePause}
             onError={handleError}
-            $rotate={videoOrientation || 0}
-            playsInline
+            onEnded={() => setIsPlaying(false)}
+            style={{ maxWidth: '100%', maxHeight: '70vh' }} 
+            controls={false}
           />
-          </div>
-          
-        <OverlayCanvas
-          ref={canvasRef}
-        />
+        )}
+        <CanvasOverlay ref={canvasRef} />
+        {isFullscreen && (
+          <button
+            onClick={() => setIsFullscreen(false)}
+            style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 1001 }}
+          >
+            <Minimize2 size={24} color="white" />
+          </button>
+        )}
       </VideoContainer>
       
       {/* Add video orientation badge for debugging */}

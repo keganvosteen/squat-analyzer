@@ -340,9 +340,13 @@ const App = () => {
       setError(null);
     }
     
+    // Create an Object URL for playback
+    const url = URL.createObjectURL(blob);
+    setVideoUrl(url); // Set the URL state for the playback component
+    
     // Always show playback even for fallback images - they're better than nothing
     setShowPlayback(true);
-    setVideoBlob(blob);
+    setVideoBlob(blob); // Keep the blob for potential re-analysis or download
     
     // Force local analysis off - always disabled
     setUsingLocalAnalysis(false);
@@ -432,7 +436,7 @@ const App = () => {
 
   // Handle going back to the recording screen
   const handleBackToRecord = () => {
-    // Clean up resources
+    // Clean up the Object URL when leaving playback
     if (videoUrl) {
       URL.revokeObjectURL(videoUrl);
     }
