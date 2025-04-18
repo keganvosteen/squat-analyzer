@@ -403,9 +403,17 @@ const App = () => {
         }
       }
     }
+    // Do NOT set Content-Type header manually! Let the browser set it for FormData.
+    // Log outgoing headers (except body, for security)
+    if (typeof formData.getHeaders === 'function') {
+      console.log('FormData headers:', formData.getHeaders());
+    } else {
+      console.log('Letting browser set Content-Type for FormData (should be multipart/form-data with boundary)');
+    }
     fetch(`${BACKEND_URL}/analyze`, {
       method: "POST",
       body: formData,
+      // headers: DO NOT include Content-Type here!
     })
     .then(response => {
       if (!response.ok) {
