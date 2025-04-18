@@ -394,12 +394,14 @@ const App = () => {
     .then(data => {
       console.log("Received analysis data:", data);
       
-      // Validate the response data
-      if (!data || !data.results) {
+      // Validate the response data based on actual structure
+      // Check for essential keys like 'success' and 'frames' (or adjust as needed)
+      if (!data || typeof data.success === 'undefined' || !data.frames) { 
+        console.error("Validation failed: Unexpected data structure", data);
         throw new Error("Invalid response format from server");
       }
       
-      setAnalysisData(data);
+      setAnalysisData(data); // The received 'data' object seems correct now
       setLoading(false);
       
       // Clear any warning errors for fallback images that were successfully analyzed
