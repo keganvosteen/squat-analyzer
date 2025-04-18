@@ -1583,28 +1583,124 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     createFrameCapture(videoRef, isRecording, captureFramesRef.current, frameCaptureOptions),
   [videoRef, isRecording, frameCaptureOptions]);
   
-  // Process recording blob before sending to callback
-  const processRecordingForAnalysis = useCallback((blob) => {
-    if (!blob) return null;
+  // Define all utility functions first
+  const startTimer = useCallback(() => {
+    // Initialize recording time and start interval
+    const formattedTime = '00:00';
+    setRecordingTime(formattedTime); // Update UI with formatted time
     
-    // Clone the blob's metadata if it exists
-    const processedBlob = blob;
+    recordingTimerRef.current = {
+      startTime: Date.now(),
+      duration: 0,
+      formattedTime
+    };
     
-    // Mark the blob type for analysis
-    if (!processedBlob._recordingType) {
-      processedBlob._recordingType = blob.type.includes('image') ? 'image' : 'video';
+    setRecordingDuration(0); // Keep state synced for compatibility
+    
+    // Clear any existing interval first
+    if (recordingInterval.current) {
+      clearInterval(recordingInterval.current);
+      recordingInterval.current = null;
     }
     
-    // Store the original type if not already stored
-    if (!processedBlob._originalType) {
-      processedBlob._originalType = blob.type;
-    }
-    
-    console.debug(`[Squat] Processed blob for analysis: type=${processedBlob.type}, recordingType=${processedBlob._recordingType}`);
-    return processedBlob;
+    // Create new interval that increments seconds and updates display
+    recordingInterval.current = setInterval(() => {
+      // Calculate duration based on actual elapsed time
+      const elapsed = Math.floor((Date.now() - recordingTimerRef.current.startTime) / 1000);
+      
+      // Format time for display
+      const formatted = formatRecordingTime(elapsed);
+      
+      // Update ref values
+      recordingTimerRef.current.duration = elapsed;
+      recordingTimerRef.current.formattedTime = formatted;
+      
+      // Update UI with formatted time
+      setRecordingTime(formatted);
+      
+      // Keep duration state synced for compatibility
+      setRecordingDuration(elapsed);
+    }, 1000);
   }, []);
 
-  // Create a fallback recording when MediaRecorder fails - moved to the top
+  const stopTimer = useCallback(() => {
+    // Clear the interval
+    if (recordingInterval.current) {
+      clearInterval(recordingInterval.current);
+      recordingInterval.current = null;
+    }
+    
+    // Reset recording time display
+    const formattedTime = '00:00';
+    setRecordingTime(formattedTime);
+    
+    // Reset refs
+    recordingTimerRef.current = {
+      startTime: 0,
+      duration: 0,
+      formattedTime
+    };
+    
+    // Reset state for compatibility
+    setRecordingDuration(0);
+  }, []);
+
+  const startSnapshottingFrames = useCallback(() => {
+    // Create or clear our array of canvas snapshots
+    mediaRecorderRef.current = mediaRecorderRef.current || {};
+    mediaRecorderRef.current.canvasSnapshots = [];
+    
+    // Create a function to snapshot the current video frame
+    const captureVideoSnapshot = () => {
+      if (!isRecording || !videoRef.current) {
+        return;
+      }
+      
+      try {
+        // Only keep up to 5 snapshots to avoid memory issues
+        if (mediaRecorderRef.current.canvasSnapshots.length >= 5) {
+          mediaRecorderRef.current.canvasSnapshots.shift(); // Remove oldest
+        }
+        
+        const snapshotCanvas = document.createElement('canvas');
+        const ctx = snapshotCanvas.getContext('2d');
+        
+        // Set canvas dimensions to match video
+        snapshotCanvas.width = videoRef.current.videoWidth || 640;
+        snapshotCanvas.height = videoRef.current.videoHeight || 480;
+        
+        // Draw video frame to canvas
+        ctx.drawImage(videoRef.current, 0, 0, snapshotCanvas.width, snapshotCanvas.height);
+        
+        // Store the timestamp and canvas (not the blob yet, to save memory)
+        mediaRecorderRef.current.canvasSnapshots.push({
+          timestamp: Date.now(),
+          canvas: snapshotCanvas
+        });
+        
+        console.debug(`[Squat] Captured video snapshot #${mediaRecorderRef.current.canvasSnapshots.length}`);
+        
+        // Schedule next snapshot if still recording
+        if (isRecording) {
+          mediaRecorderRef.current.snapshotTimeoutId = setTimeout(captureVideoSnapshot, 1000); // Every second
+        }
+      } catch (error) {
+        console.warn('[Squat] Error capturing video snapshot:', error);
+      }
+    };
+    
+    // Start capturing snapshots
+    captureVideoSnapshot();
+  }, [isRecording, videoRef, mediaRecorderRef]);
+  
+  const stopSnapshottingFrames = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.snapshotTimeoutId) {
+      clearTimeout(mediaRecorderRef.current.snapshotTimeoutId);
+      mediaRecorderRef.current.snapshotTimeoutId = null;
+      console.debug('[Squat] Stopped video snapshots');
+    }
+  }, [mediaRecorderRef]);
+
   const createFallbackRecording = useCallback(async () => {
     try {
       console.debug('[Squat] Creating fallback recording');
@@ -1763,7 +1859,6 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     }
   }, [videoRef, canvasRef, mediaRecorderRef]);
 
-  // Use snapshot canvases to create a fallback blob
   const createSnapshotFallback = useCallback(async () => {
     if (!mediaRecorderRef.current || !mediaRecorderRef.current.canvasSnapshots || 
         mediaRecorderRef.current.canvasSnapshots.length === 0) {
@@ -1795,127 +1890,27 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     });
   }, [mediaRecorderRef]);
 
-  // Timer utility functions with improved state management using refs
-  const startTimer = useCallback(() => {
-    // Initialize recording time and start interval
-    const formattedTime = '00:00';
-    setRecordingTime(formattedTime); // Update UI with formatted time
+  const processRecordingForAnalysis = useCallback((blob) => {
+    if (!blob) return null;
     
-    recordingTimerRef.current = {
-      startTime: Date.now(),
-      duration: 0,
-      formattedTime
-    };
+    // Clone the blob's metadata if it exists
+    const processedBlob = blob;
     
-    setRecordingDuration(0); // Keep state synced for compatibility
-    
-    // Clear any existing interval first
-    if (recordingInterval.current) {
-      clearInterval(recordingInterval.current);
-      recordingInterval.current = null;
+    // Mark the blob type for analysis
+    if (!processedBlob._recordingType) {
+      processedBlob._recordingType = blob.type.includes('image') ? 'image' : 'video';
     }
     
-    // Create new interval that increments seconds and updates display
-    recordingInterval.current = setInterval(() => {
-      // Calculate duration based on actual elapsed time
-      const elapsed = Math.floor((Date.now() - recordingTimerRef.current.startTime) / 1000);
-      
-      // Format time for display
-      const formatted = formatRecordingTime(elapsed);
-      
-      // Update ref values
-      recordingTimerRef.current.duration = elapsed;
-      recordingTimerRef.current.formattedTime = formatted;
-      
-      // Update UI with formatted time
-      setRecordingTime(formatted);
-      
-      // Keep duration state synced for compatibility
-      setRecordingDuration(elapsed);
-    }, 1000);
+    // Store the original type if not already stored
+    if (!processedBlob._originalType) {
+      processedBlob._originalType = blob.type;
+    }
+    
+    console.debug(`[Squat] Processed blob for analysis: type=${processedBlob.type}, recordingType=${processedBlob._recordingType}`);
+    return processedBlob;
   }, []);
 
-  const stopTimer = useCallback(() => {
-    // Clear the interval
-    if (recordingInterval.current) {
-      clearInterval(recordingInterval.current);
-      recordingInterval.current = null;
-    }
-    
-    // Reset recording time display
-    const formattedTime = '00:00';
-    setRecordingTime(formattedTime);
-    
-    // Reset refs
-    recordingTimerRef.current = {
-      startTime: 0,
-      duration: 0,
-      formattedTime
-    };
-    
-    // Reset state for compatibility
-    setRecordingDuration(0);
-  }, []);
-
-  // Add a function to capture video frames periodically during recording
-  const startSnapshottingFrames = useCallback(() => {
-    // Create or clear our array of canvas snapshots
-    mediaRecorderRef.current = mediaRecorderRef.current || {};
-    mediaRecorderRef.current.canvasSnapshots = [];
-    
-    // Create a function to snapshot the current video frame
-    const captureVideoSnapshot = () => {
-      if (!isRecording || !videoRef.current) {
-        return;
-      }
-      
-      try {
-        // Only keep up to 5 snapshots to avoid memory issues
-        if (mediaRecorderRef.current.canvasSnapshots.length >= 5) {
-          mediaRecorderRef.current.canvasSnapshots.shift(); // Remove oldest
-        }
-        
-        const snapshotCanvas = document.createElement('canvas');
-        const ctx = snapshotCanvas.getContext('2d');
-        
-        // Set canvas dimensions to match video
-        snapshotCanvas.width = videoRef.current.videoWidth || 640;
-        snapshotCanvas.height = videoRef.current.videoHeight || 480;
-        
-        // Draw video frame to canvas
-        ctx.drawImage(videoRef.current, 0, 0, snapshotCanvas.width, snapshotCanvas.height);
-        
-        // Store the timestamp and canvas (not the blob yet, to save memory)
-        mediaRecorderRef.current.canvasSnapshots.push({
-          timestamp: Date.now(),
-          canvas: snapshotCanvas
-        });
-        
-        console.debug(`[Squat] Captured video snapshot #${mediaRecorderRef.current.canvasSnapshots.length}`);
-        
-        // Schedule next snapshot if still recording
-        if (isRecording) {
-          mediaRecorderRef.current.snapshotTimeoutId = setTimeout(captureVideoSnapshot, 1000); // Every second
-        }
-      } catch (error) {
-        console.warn('[Squat] Error capturing video snapshot:', error);
-      }
-    };
-    
-    // Start capturing snapshots
-    captureVideoSnapshot();
-  }, [isRecording, videoRef, mediaRecorderRef]);
-  
-  // Stop the snapshot capturing process
-  const stopSnapshottingFrames = useCallback(() => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.snapshotTimeoutId) {
-      clearTimeout(mediaRecorderRef.current.snapshotTimeoutId);
-      mediaRecorderRef.current.snapshotTimeoutId = null;
-      console.debug('[Squat] Stopped video snapshots');
-    }
-  }, [mediaRecorderRef]);
-
-  // Now include manualCleanup after all its dependencies are defined
+  // Define cleanup and stop functions
   const manualCleanup = useCallback(async () => {
     console.warn('[Squat] Performing manual cleanup');
 
@@ -2034,13 +2029,12 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     onRecordingComplete, 
     setError, 
     setIsRecording, 
-    stopTimer, 
-    createSnapshotFallback, 
-    createFallbackRecording, 
-    processRecordingForAnalysis
+    stopTimer, // Defined above
+    createSnapshotFallback, // Defined above
+    createFallbackRecording, // Defined above
+    processRecordingForAnalysis // Defined above
   ]);
   
-  // Separate function to handle stopping frame-based recording
   const stopFrameCapture = useCallback(async () => {
     console.debug('[Squat] Stopping frame-based recording');
     
@@ -2089,9 +2083,17 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         URL.revokeObjectURL(URL.createObjectURL(frame.blob));
       }
     }
-  }, [createFallbackRecording, frameCaptureUtil, onRecordingComplete, setError, setIsRecording, stopTimer, frameTimeoutRef, captureFramesRef]);
+  }, [
+    createFallbackRecording, // Defined above
+    frameCaptureUtil, 
+    onRecordingComplete, 
+    setError, 
+    setIsRecording, 
+    stopTimer, // Defined above
+    frameTimeoutRef, 
+    captureFramesRef
+  ]);
 
-  // Handle stop recording with better mobile support
   const handleStopRecording = useCallback(() => {
     try {
       console.debug('[Squat] In handleStopRecording');
@@ -2154,69 +2156,16 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     frameCaptureUtil, 
     frameTimeoutRef, 
     mediaRecorderRef, 
-    manualCleanup, 
+    manualCleanup, // Defined above
     recordedChunksRef, 
     onRecordingComplete, 
-    processRecordingForAnalysis, 
+    processRecordingForAnalysis, // Defined above
     setIsRecording, 
-    stopTimer, 
+    stopTimer, // Defined above
     setError
   ]);
 
-  // Unified function to toggle recording with proper dependencies
-  const toggleRecording = useCallback(() => {
-    try {
-      console.debug('[Squat] Toggle recording. Current state:', isRecording);
-      
-      if (isRecording) {
-        // If we're using MediaRecorder
-        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-          handleStopRecording();
-        } 
-        // If we're using frame capture only
-        else if (mediaRecorderRef.current && mediaRecorderRef.current.frameCapture) {
-          stopFrameCapture(); // Use the dedicated stop function
-        }
-        // Fallback case
-        else {
-          setIsRecording(false);
-          stopTimer();
-        }
-      } else {
-        // Check if tracking is enabled before recording
-        if (!isPoseTracking) {
-          // Auto-enable pose tracking when starting recording
-          console.debug('[Squat] Auto-enabling pose tracking for recording');
-          startPoseDetection();
-          setIsPoseTracking(true);
-          
-          // Small delay to ensure pose tracking is initialized
-          setTimeout(() => {
-            handleStartRecording();
-          }, 1000);
-        } else {
-          handleStartRecording();
-        }
-      }
-    } catch (error) {
-      console.error('[Squat] Error in toggleRecording:', error);
-      setError(`Recording error: ${error.message}`);
-    }
-  }, [
-    isRecording, 
-    mediaRecorderRef, 
-    handleStopRecording, 
-    stopFrameCapture, 
-    setIsRecording, 
-    stopTimer, 
-    isPoseTracking, 
-    startPoseDetection, 
-    setIsPoseTracking, 
-    handleStartRecording, 
-    setError
-  ]);
-
-  // Handle start recording function - Defined AFTER all its dependencies
+  // Define start function after all its dependencies
   const handleStartRecording = useCallback(async () => {
     try {
       console.debug('[Squat] Starting recording...');
@@ -2458,15 +2407,69 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     frameCaptureUtil, 
     frameTimeoutRef,
     setIsRecording, 
-    startTimer, 
-    startSnapshottingFrames, 
+    startTimer, // Defined above
+    stopTimer,  // Defined above
+    startSnapshottingFrames, // Defined above
     onRecordingComplete, 
     setError, 
-    stopTimer, 
-    createSnapshotFallback, 
-    createFallbackRecording, 
-    processRecordingForAnalysis, 
-    manualCleanup
+    stopTimer,  // Defined above
+    createSnapshotFallback, // Defined above
+    createFallbackRecording, // Defined above
+    processRecordingForAnalysis, // Defined above
+    manualCleanup // Defined above
+  ]);
+
+  // Define toggle function last as it depends on start/stop
+  const toggleRecording = useCallback(() => {
+    try {
+      console.debug('[Squat] Toggle recording. Current state:', isRecording);
+      
+      if (isRecording) {
+        // If we're using MediaRecorder
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+          handleStopRecording();
+        } 
+        // If we're using frame capture only
+        else if (mediaRecorderRef.current && mediaRecorderRef.current.frameCapture) {
+          stopFrameCapture(); // Use the dedicated stop function
+        }
+        // Fallback case
+        else {
+          setIsRecording(false);
+          stopTimer();
+        }
+      } else {
+        // Check if tracking is enabled before recording
+        if (!isPoseTracking) {
+          // Auto-enable pose tracking when starting recording
+          console.debug('[Squat] Auto-enabling pose tracking for recording');
+          startPoseDetection();
+          setIsPoseTracking(true);
+          
+          // Small delay to ensure pose tracking is initialized
+          setTimeout(() => {
+            handleStartRecording();
+          }, 1000);
+        } else {
+          handleStartRecording();
+        }
+      }
+    } catch (error) {
+      console.error('[Squat] Error in toggleRecording:', error);
+      setError(`Recording error: ${error.message}`);
+    }
+  }, [
+    isRecording, 
+    mediaRecorderRef, 
+    handleStopRecording, // Defined above
+    stopFrameCapture, // Defined above
+    setIsRecording, 
+    stopTimer, // Defined above
+    isPoseTracking, 
+    startPoseDetection, // Assumed defined earlier 
+    setIsPoseTracking, 
+    handleStartRecording, // Defined above
+    setError
   ]);
 
   // Function to draw pose landmarks on canvas with proper scaling
