@@ -2242,6 +2242,70 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         }
       };
       
+      // ***** ADDED: Set up onstop handler *****
+      mediaRecorderRef.current.onstop = () => {
+        console.debug('[Squat] MediaRecorder.onstop event fired.');
+        
+        // Clear the cleanup timeout if it exists
+        if (mediaRecorderRef.current?.cleanupTimeoutId) {
+          clearTimeout(mediaRecorderRef.current.cleanupTimeoutId);
+          mediaRecorderRef.current.cleanupTimeoutId = null;
+          console.debug('[Squat] Cleared manual cleanup timeout.');
+        }
+        
+        // Check if we have chunks
+        if (recordedChunksRef.current.length > 0) {
+          try {
+            // Create the final Blob
+            const recordedBlob = new Blob(recordedChunksRef.current, { type: mediaRecorderRef.current.mimeType });
+            console.debug(`[Squat] Created final blob: ${recordedBlob.size} bytes, type: ${recordedBlob.type}`);
+
+            // Process the blob for analysis (adds metadata)
+            const processedBlob = processRecordingForAnalysis(recordedBlob);
+
+            // Pass the complete recording to the parent component
+            if (typeof onRecordingComplete === 'function') {
+              onRecordingComplete(processedBlob);
+            }
+          } catch (blobError) {
+            console.error('[Squat] Error creating blob in onstop:', blobError);
+            setError('Failed to process recorded video.');
+            // Attempt manual cleanup as a fallback if blob creation fails
+            manualCleanup();
+          }
+        } else {
+          console.warn('[Squat] MediaRecorder stopped but no recorded chunks found. Triggering manual cleanup.');
+          // If no chunks were recorded (e.g., very short recording or error), attempt manual cleanup.
+          manualCleanup();
+        }
+        
+        // Reset state after handling stop
+        setIsRecording(false);
+        stopTimer();
+        recordedChunksRef.current = []; // Clear chunks after processing
+      };
+      
+      // ***** ADDED: Set up onerror handler *****
+      mediaRecorderRef.current.onerror = (event) => {
+        console.error('[Squat] MediaRecorder error:', event.error);
+        setError(`Recording error: ${event.error.name} - ${event.error.message}`);
+        
+        // Clear the cleanup timeout if it exists
+        if (mediaRecorderRef.current?.cleanupTimeoutId) {
+          clearTimeout(mediaRecorderRef.current.cleanupTimeoutId);
+          mediaRecorderRef.current.cleanupTimeoutId = null;
+        }
+        
+        // Attempt manual cleanup on error
+        manualCleanup();
+        
+        // Reset state
+        setIsRecording(false);
+        stopTimer();
+        recordedChunksRef.current = [];
+      };
+      
+      // ***** MOVED/CORRECTED PLACEMENT *****
       // Prepare the arrays for frame capture
       captureFramesRef.current = [];
       
@@ -2252,92 +2316,11 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       mediaRecorderRef.current.captureFrames = captureFramesRef.current;
       mediaRecorderRef.current.frameCapture = frameTimeoutRef.current;
       
-      // Start the frame capture process
+      // Start the state updates and timers
       setIsRecording(true);
       startTimer();
       startSnapshottingFrames(); // Start snapshot backup
-      
-      // Define onstop handler
-      mediaRecorderRef.current.onstop = async () => {
-        console.debug('[Squat] MediaRecorder stopped');
-
-        // Clear the cleanup timeout if it exists
-        if (mediaRecorderRef.current && mediaRecorderRef.current.cleanupTimeoutId) {
-          clearTimeout(mediaRecorderRef.current.cleanupTimeoutId);
-          mediaRecorderRef.current.cleanupTimeoutId = null;
-        }
-
-        if (recordedChunksRef.current.length === 0) {
-          console.warn('[Squat] No recorded data available from MediaRecorder - this is a common issue in Firefox');
-          
-          // If we have backup frames, convert them to a video or still image
-          if (captureFramesRef.current.length > 0) {
-            console.debug(`[Squat] Using ${captureFramesRef.current.length} backup frames`);
-            
-            // For simplicity, just use the last frame as a fallback image
-            const lastFrame = captureFramesRef.current[captureFramesRef.current.length - 1];
-            
-            if (lastFrame && lastFrame.blob) {
-              console.debug('[Squat] Using last captured frame as fallback');
-              if (typeof onRecordingComplete === 'function') {
-                const processedBlob = processRecordingForAnalysis(lastFrame.blob);
-                onRecordingComplete(processedBlob);
-              } else {
-                 // If no callback, just set error
-                 setError('Recording data captured but no handler available.');
-              }
-            } else {
-              // Try canvas snapshots if frame capture failed
-              console.warn('[Squat] Frame capture fallback failed, trying canvas snapshots');
-              const snapshotBlob = await createSnapshotFallback();
-              
-              if (snapshotBlob) {
-                console.debug('[Squat] Using canvas snapshot as fallback');
-                if (typeof onRecordingComplete === 'function') {
-                  const processedBlob = processRecordingForAnalysis(snapshotBlob);
-                  onRecordingComplete(processedBlob);
-                }
-              } else {
-                // Try final fallback if snapshot fails
-                console.warn('[Squat] Canvas snapshot fallback failed, trying final fallback');
-                const finalFallbackBlob = await createFallbackRecording();
-                if (finalFallbackBlob && typeof onRecordingComplete === 'function') {
-                  console.debug('[Squat] Using final fallback image');
-                  onRecordingComplete(finalFallbackBlob);
-                } else {
-                  console.error('[Squat] All fallback methods failed');
-                  setError('Recording failed: Could not capture video data.');
-                }
-              }
-            }
-          }
-        }
-
-        // Create blob from chunks if we have any
-        if (recordedChunksRef.current.length > 0) {
-          try {
-            console.debug(`[Squat] Creating blob from ${recordedChunksRef.current.length} chunks`);
-            
-            // Create blob with proper MIME type based on what was used for recording
-            const mimeType = mediaRecorderRef.current.mimeType || 'video/webm';
-            const recordedBlob = new Blob(recordedChunksRef.current, { type: mimeType });
-            
-            // Call the callback provided by the parent component
-            if (typeof onRecordingComplete === 'function') {
-              console.debug('[Squat] Calling onRecordingComplete with blob:', recordedBlob);
-              const processedBlob = processRecordingForAnalysis(recordedBlob);
-              onRecordingComplete(processedBlob);
-            }
-          } catch (blobError) {
-            console.error('[Squat] Error creating blob:', blobError);
-            setError(`Recording error: ${blobError.message}`);
-          }
-        }
-        
-        // Reset recording state
-        setIsRecording(false);
-        stopTimer();
-      };
+      // ***** END MOVED SECTION *****
       
       // Set a timeout to ensure we eventually clean up if onstop never fires (use a longer timeout)
       const cleanupTimeout = setTimeout(() => {
