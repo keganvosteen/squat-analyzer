@@ -2343,14 +2343,14 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       const cleanupTimeout = setTimeout(() => {
         // Check if the recorder is still potentially recording or paused
         if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-           console.warn('[Squat] MediaRecorder.onstop did not fire after 3 seconds, forcing cleanup');
+           console.warn('[Squat] MediaRecorder.onstop did not fire after 5 seconds, forcing cleanup'); // Increased timeout
            manualCleanup(); // Call the async cleanup function
          } else {
           // If onstop didn't fire, force cleanup
           console.warn('[Squat] MediaRecorder.onstop did not fire, forcing cleanup');
           manualCleanup();
         }
-      }, 3000);  
+      }, 5000);  // Increased timeout from 3000 to 5000 ms
       
       // Keep track of this timeout so we can clear it if onstop works
       mediaRecorderRef.current.cleanupTimeoutId = cleanupTimeout;
