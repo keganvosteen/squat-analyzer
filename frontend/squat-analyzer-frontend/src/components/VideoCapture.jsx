@@ -2263,22 +2263,21 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
 
             // Fix WebM duration metadata before analysis and playback
             if (recordedBlob && recordedBlob.type && recordedBlob.type.startsWith('video/webm')) {
-              fixWebmDuration(recordedBlob, recordingDuration * 1000)
-                .then((fixedBlob) => {
-                  fixedBlob._originalType = recordedBlob.type;
-                  fixedBlob._recordingType = 'video';
-                  const processedBlob = processRecordingForAnalysis(fixedBlob);
-                  if (typeof onRecordingComplete === 'function') {
-                    onRecordingComplete(processedBlob);
-                  }
-                })
-                .catch((err) => {
-                  console.warn('[Squat] Failed to fix WebM duration, using original blob:', err);
-                  const processedBlob = processRecordingForAnalysis(recordedBlob);
-                  if (typeof onRecordingComplete === 'function') {
-                    onRecordingComplete(processedBlob);
-                  }
-                });
+              // Always call onRecordingComplete with a Promise for WebM so parent can await
+const fixedBlobPromise = fixWebmDuration(recordedBlob, recordingDuration * 1000)
+  .then((fixedBlob) => {
+    fixedBlob._originalType = recordedBlob.type;
+    fixedBlob._recordingType = 'video';
+    console.debug('[Squat] WebM duration fixed. Patched blob size:', fixedBlob.size, 'type:', fixedBlob.type);
+    return processRecordingForAnalysis(fixedBlob);
+  })
+  .catch((err) => {
+    console.warn('[Squat] Failed to fix WebM duration, using original blob:', err);
+    return processRecordingForAnalysis(recordedBlob);
+  });
+if (typeof onRecordingComplete === 'function') {
+  onRecordingComplete(fixedBlobPromise); // Always a Promise for WebM
+}
             } else {
               // Not a WebM video, process as usual
               const processedBlob = processRecordingForAnalysis(recordedBlob);
