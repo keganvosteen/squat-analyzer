@@ -1,4 +1,11 @@
 # app.py
+#
+# Render.com deployment troubleshooting:
+# - Ensure your Render service allows large POST bodies (check 'Body Size Limit' in settings).
+# - Gunicorn: Use --timeout 120 and multiple workers (e.g., --workers 2).
+# - If uploads work locally but not on Render, the proxy may be stripping or truncating uploads.
+# - For debugging, log raw request data length if file upload fails (see below).
+#
 from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 import cv2
@@ -411,6 +418,10 @@ def analyze_video():
     if not file or file.filename == '' or file_size == 0:
         app.logger.error(f"Empty or missing video file (filename: {file.filename}, size: {file_size})")
         print(f"Empty or missing video file (filename: {file.filename}, size: {file_size})")
+        # --- Render.com/Proxy Debug ---
+        raw_data = request.get_data()
+        print(f"Raw request data length: {len(raw_data)}")
+        app.logger.info(f"Raw request data length: {len(raw_data)}")
         return jsonify({"error": "No selected file or file is empty"}), 400
 
     app.logger.info(f"Received video: {file.filename}, size: {file_size}, type: {getattr(file, 'content_type', 'unknown')}")
