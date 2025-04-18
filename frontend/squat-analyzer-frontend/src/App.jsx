@@ -308,7 +308,9 @@ const App = () => {
   };
 
   // Handle when a recording is completed
-  const handleRecordingComplete = (blob) => {
+  const handleRecordingComplete = async (blobOrPromise) => {
+    // Await the blob in case it's a Promise (from webm-duration-fix)
+    const blob = await blobOrPromise;
     console.log("Recording complete, blob received:", blob);
     
     if (!blob) {
@@ -381,6 +383,10 @@ const App = () => {
     }
     
     formData.append("video", blob, `squat_${timestamp}.${fileExtension}`);
+    // Extra debug: check if blob is truly a Blob
+    if (!(blob instanceof Blob)) {
+      console.error("[handleRecordingComplete] The value being uploaded is not a Blob!", blob);
+    }
     
     // Add metadata to help backend processing
     if (isFallbackImage) {
