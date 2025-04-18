@@ -1,5 +1,6 @@
 // src/components/VideoCapture.jsx
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
+import fixWebmDuration from 'webm-duration-fix';
 import { Camera, RefreshCw, Maximize2, Minimize2, Square, AlertTriangle, Circle } from 'lucide-react';
 import { v4 as uuidv4 } from 'uuid';
 import styled from 'styled-components';
@@ -2260,12 +2261,30 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             const recordedBlob = new Blob(recordedChunksRef.current, { type: mediaRecorderRef.current.mimeType });
             console.debug(`[Squat] Created final blob: ${recordedBlob.size} bytes, type: ${recordedBlob.type}`);
 
-            // Process the blob for analysis (adds metadata)
-            const processedBlob = processRecordingForAnalysis(recordedBlob);
-
-            // Pass the complete recording to the parent component
-            if (typeof onRecordingComplete === 'function') {
-              onRecordingComplete(processedBlob);
+            // Fix WebM duration metadata before analysis and playback
+            if (recordedBlob && recordedBlob.type && recordedBlob.type.startsWith('video/webm')) {
+              fixWebmDuration(recordedBlob, recordingDuration * 1000)
+                .then((fixedBlob) => {
+                  fixedBlob._originalType = recordedBlob.type;
+                  fixedBlob._recordingType = 'video';
+                  const processedBlob = processRecordingForAnalysis(fixedBlob);
+                  if (typeof onRecordingComplete === 'function') {
+                    onRecordingComplete(processedBlob);
+                  }
+                })
+                .catch((err) => {
+                  console.warn('[Squat] Failed to fix WebM duration, using original blob:', err);
+                  const processedBlob = processRecordingForAnalysis(recordedBlob);
+                  if (typeof onRecordingComplete === 'function') {
+                    onRecordingComplete(processedBlob);
+                  }
+                });
+            } else {
+              // Not a WebM video, process as usual
+              const processedBlob = processRecordingForAnalysis(recordedBlob);
+              if (typeof onRecordingComplete === 'function') {
+                onRecordingComplete(processedBlob);
+              }
             }
           } catch (blobError) {
             console.error('[Squat] Error creating blob in onstop:', blobError);
