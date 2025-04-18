@@ -386,13 +386,25 @@ def analyze_video():
         print("--- 'video' file part not found in request ---")
         app.logger.warning("'video' file part not found in request")
         return jsonify({"error": "No video file part"}), 400
-    
-    file = request.files['video']
-    if not file or not getattr(file, 'filename', None):
-        app.logger.error("Empty or missing video file")
-        return jsonify({'error': 'No file uploaded'}), 400
 
-    app.logger.info(f"Received video: {file.filename}, size: {file.content_length}, type: {file.content_type}")
+    file = request.files['video']
+    # Debug logging for received file
+    app.logger.info(f"Received video: {file.filename}, size: {getattr(file, 'content_length', 'unknown')}, content_type: {getattr(file, 'content_type', 'unknown')}")
+    print(f"Received video: {file.filename}, size: {getattr(file, 'content_length', 'unknown')}, content_type: {getattr(file, 'content_type', 'unknown')}")
+    # Log all form fields
+    for key in request.form.keys():
+        app.logger.info(f"Form field: {key} = {request.form[key]}")
+        print(f"Form field: {key} = {request.form[key]}")
+    # Log if file is empty
+    file.seek(0, 2)  # Seek to end
+    file_size = file.tell()
+    file.seek(0)
+    if not file or file.filename == '' or file_size == 0:
+        app.logger.error(f"Empty or missing video file (filename: {file.filename}, size: {file_size})")
+        print(f"Empty or missing video file (filename: {file.filename}, size: {file_size})")
+        return jsonify({"error": "No selected file or file is empty"}), 400
+
+    app.logger.info(f"Received video: {file.filename}, size: {file_size}, type: {getattr(file, 'content_type', 'unknown')}")
 
     # Validate video file format
     filename = getattr(file, 'filename', None)

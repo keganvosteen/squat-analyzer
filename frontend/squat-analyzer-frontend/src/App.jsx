@@ -319,6 +319,19 @@ const App = () => {
     }
 
     setLoading(true);
+    // Debug logging for blob
+    console.log("Blob info:", {
+      size: blob.size,
+      type: blob.type,
+      isFallback: blob._isFallback,
+      isEmptyFallback: blob._isEmptyFallback
+    });
+    if (blob.size === 0) {
+      console.error("Blob is empty. Aborting analysis.");
+      setError("Recording failed: Video data is empty. Please try again.");
+      setLoading(false);
+      return;
+    }
     
     // Check for invalid fallback blob
     if (blob.type === 'text/plain' && blob._isEmptyFallback) {
@@ -374,6 +387,16 @@ const App = () => {
       formData.append("is_fallback", "true");
     }
     
+    // Debug: Log FormData keys before sending
+    if (window && window.FormData && formData && formData.entries) {
+      for (const [key, value] of formData.entries()) {
+        if (value instanceof Blob) {
+          console.log(`FormData key: ${key}, Blob size: ${value.size}, type: ${value.type}`);
+        } else {
+          console.log(`FormData key: ${key}, value: ${value}`);
+        }
+      }
+    }
     fetch(`${BACKEND_URL}/analyze`, {
       method: "POST",
       body: formData,
