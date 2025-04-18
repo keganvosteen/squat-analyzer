@@ -2636,63 +2636,33 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Face
       'nose': 'red',
       'left_eye': 'yellow',
-      'lefteye': 'yellow',
       'right_eye': 'yellow',
-      'righteye': 'yellow',
       'left_ear': 'yellow',
-      'leftear': 'yellow',
       'right_ear': 'yellow',
-      'rightear': 'yellow',
       
       // Upper body
       'left_shoulder': 'green',
-      'leftshoulder': 'green',
       'right_shoulder': 'green',
-      'rightshoulder': 'green',
       'left_elbow': 'green',
-      'leftelbow': 'green',
       'right_elbow': 'green',
-      'rightelbow': 'green',
       'left_wrist': 'green',
-      'leftwrist': 'green',
       'right_wrist': 'green',
-      'rightwrist': 'green',
       
       // Lower body
       'left_hip': 'blue',
-      'lefthip': 'blue',
       'right_hip': 'blue',
-      'righthip': 'blue',
       'left_knee': 'blue',
-      'leftknee': 'blue',
       'right_knee': 'blue',
-      'rightknee': 'blue',
       'left_ankle': 'blue',
-      'leftankle': 'blue',
-      'right_ankle': 'blue',
-      'rightankle': 'blue',
-      
-      // Legacy format
-      'lefteye': 'yellow',
-      'righteye': 'yellow',
-      'leftear': 'yellow',
-      'rightear': 'yellow',
-      'leftshoulder': 'green',
-      'rightshoulder': 'green',
-      'leftelbow': 'green',
-      'rightelbow': 'green',
-      'leftwrist': 'green',
-      'rightwrist': 'green',
-      'lefthip': 'blue',
-      'righthip': 'blue',
-      'leftknee': 'blue',
-      'rightknee': 'blue',
-      'leftankle': 'blue',
-      'rightankle': 'blue'
+      'right_ankle': 'blue'
     };
     
+    // Handle formats without underscores (like "lefteye" instead of "left_eye")
+    const withoutUnderscore = standardizedPart.replace(/_/g, '');
+    const withUnderscore = withoutUnderscore.replace(/(?<=[a-z])[a-z]/g, '_$&');
+    
     // Return the color for the standardized part name or white as default
-    return colors[standardizedPart] || 'white';
+    return colors[standardizedPart] || colors[withoutUnderscore] || colors[withUnderscore] || 'white';
   };
 
   // Add a useEffect cleanup to ensure proper camera reset when component mounts/unmounts
