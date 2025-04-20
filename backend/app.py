@@ -425,57 +425,11 @@ def analyze_video():
 
     file = request.files['video']
     # Debug logging for received file
-    app.logger.info(f"Received video: {file.filename}, size: {getattr(file, 'content_length', 'unknown')}, content_type: {getattr(file, 'content_type', 'unknown')}")
-    print(f"Received video: {file.filename}, size: {getattr(file, 'content_length', 'unknown')}, content_type: {getattr(file, 'content_type', 'unknown')}")
-    # Print Flask MAX_CONTENT_LENGTH config
-    print(f"Flask MAX_CONTENT_LENGTH: {app.config.get('MAX_CONTENT_LENGTH', 'not set')}")
-    # Log all form fields
-    for key in request.form.keys():
-        app.logger.info(f"Form field: {key} = {request.form[key]}")
-        print(f"Form field: {key} = {request.form[key]}")
-    # Log if file is empty
-    file.seek(0, 2)  # Seek to end
-    file_size = file.tell()
-    file.seek(0)
-    print(f"File size from seek: {file_size}")
-    # Actually read the file bytes to check received size
-    file_bytes = file.read()
-    print(f"Actual bytes received from file.read(): {len(file_bytes)}")
-    file.seek(0)  # Reset pointer for downstream processing
-    if not file or file.filename == '' or file_size == 0 or len(file_bytes) == 0:
-        msg = f"Empty or missing video file (filename: {getattr(file, 'filename', None)}, size: {getattr(file, 'content_length', None)})"
-        app.logger.error(msg)
-        print(msg)
-        # --- Render.com/Proxy Debug ---
-        try:
-            if 'video' in request.files:
-                app.logger.error("About to read raw file stream for 'video'")
-                print("About to read raw file stream for 'video'")
-                file_stream = request.files['video'].stream
-                raw_bytes = file_stream.read()
-                app.logger.error(f'Raw file stream length: {len(raw_bytes)}')
-                print(f'Raw file stream length: {len(raw_bytes)}')
-                # Optionally, save to disk for inspection
-                try:
-                    with open('/tmp/debug_upload.webm', 'wb') as f:
-                        f.write(raw_bytes)
-                    app.logger.error('Saved raw file stream to /tmp/debug_upload.webm')
-                    print('Saved raw file stream to /tmp/debug_upload.webm')
-                except Exception as e:
-                    app.logger.error(f'Failed to save file stream: {e}')
-                    print(f'Failed to save file stream: {e}')
-            else:
-                app.logger.error("'video' not in request.files")
-                print("'video' not in request.files")
-        except Exception as e:
-            app.logger.error(f'Exception while reading file stream: {e}')
-            print(f'Exception while reading file stream: {e}')
-        raw_data = request.get_data()
-        app.logger.error(f"Raw request data length: {len(raw_data)}")
-        print(f"Raw request data length: {len(raw_data)}")
-        return jsonify({"error": "No selected file or file is empty"}), 400
-
-    app.logger.info(f"Received video: {file.filename}, size: {file_size}, type: {getattr(file, 'content_type', 'unknown')}")
+    app.logger.info(f"Received video: {file.filename}, size: {getattr(file, 'content_length', request.content_length)}, content_type: {getattr(file, 'content_type', 'unknown')}")
+    print(f"Received video: {file.filename}, size: {getattr(file, 'content_length', request.content_length)}, content_type: {getattr(file, 'content_type', 'unknown')}")
+    # If server thinks file is empty, abort early
+    if request.content_length is not None and request.content_length == 0:
+        return jsonify({"error": "Uploaded file is empty"}), 400
 
     # Validate video file format
     filename = getattr(file, 'filename', None)
@@ -489,10 +443,13 @@ def analyze_video():
         return jsonify({'error': 'Unsupported video format. Please upload an MP4, WEBM, or AVI file.'}), 400
 
     # Save the uploaded video temporarily
-    # Use a unique filename per request to avoid collisions
+    # Use the same extension as the uploaded file to avoid codec issues
+    orig_ext = os.path.splitext(filename)[1]
     temp_dir = tempfile.gettempdir()
-    temp_filename = f"temp_{uuid.uuid4().hex}.mp4"
+    temp_filename = f"temp_{uuid.uuid4().hex}{orig_ext}"
     temp_path = os.path.join(temp_dir, temp_filename)
+    # Ensure pointer at start before saving
+    file.seek(0)
     file.save(temp_path)
     
     try:
@@ -501,12 +458,11 @@ def analyze_video():
         process = psutil.Process(os.getpid())
         mem_mb = process.memory_info().rss / 1024 / 1024
         app.logger.info(f"[MEMORY] Before extraction: {mem_mb:.2f} MB")
-        # Initialize video capture
-        cap = cv2.VideoCapture(temp_path)
-        
+        # Initialize video capture (explicitly request FFMPEG backend for better codec support)
+        cap = cv2.VideoCapture(temp_path, cv2.CAP_FFMPEG)
         if not cap.isOpened():
-            app.logger.error(f"Could not open video file: {temp_path}")
-            return jsonify({'error': 'Could not open video file'}), 500
+            app.logger.error(f"OpenCV could not open video file with FFMPEG backend: {temp_path}")
+            return jsonify({'error': 'Could not open video file – codec unsupported'}), 500
         
         # Get video properties
         fps = int(cap.get(cv2.CAP_PROP_FPS))
