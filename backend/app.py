@@ -32,7 +32,14 @@ import uuid
 import tempfile
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={
+    r"/*": {
+        "origins": ["https://squat-analyzer-frontend.onrender.com", "http://localhost:5173"],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True
+    }
+})
 
 # Initialize MediaPipe Pose
 BaseOptions = mp.tasks.BaseOptions
@@ -296,22 +303,19 @@ def aggregate_results(processed_frames):
     # Placeholder: implement aggregation logic as needed
     return processed_frames
 
-# --- Refactored analyze_video ---
-
-# Simple GET route to verify the server is running
 @app.route('/', methods=['GET'])
 def home():
     return "Flask server is running!"
 
 @app.route('/ping', methods=['GET'])
 def ping():
-    """Simple endpoint to keep the server warm"""
-    # Add a timestamp to the response
-    return jsonify({
-        "status": "alive",
-        "timestamp": time.time(),
-        "message": "Server is awake and ready for processing"
-    })
+    """Simple ping endpoint to verify the server is running."""
+    # Simplified response with no timestamp to reduce log noise
+    response = {
+        'status': 'alive',
+        'message': 'Server is running'
+    }
+    return jsonify(response)
 
 @app.route('/analyze-squat', methods=['POST'])
 def analyze_squat():
@@ -368,27 +372,18 @@ app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
 @app.route('/analyze', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def analyze_video():
-    # Extra debug info for upload issues
-    print("Request content_length:", request.content_length)
-    print("Request headers:", dict(request.headers))
-    print("Request files:", request.files)
-    print("Request form:", request.form)
+    # Minimize debug logging - log only critical info
+    app.logger.info(f"Received /analyze request: method={request.method}, size={request.content_length or 0}")
 
-    print(f"--- Received request for /analyze (Method: {request.method}) ---") 
-    app.logger.info(f"Received request for /analyze (Method: {request.method})")
-
-    print("--- Processing POST request for /analyze... ---")
-    app.logger.info("Processing POST request for /analyze...")
+    # Reduced logging
     
     if 'video' not in request.files:
-        print("--- 'video' file part not found in request ---")
         app.logger.warning("'video' file part not found in request")
         return jsonify({"error": "No video file part"}), 400
 
     file = request.files['video']
-    # Debug logging for received file
-    app.logger.info(f"Received video: {file.filename}, size: {getattr(file, 'content_length', request.content_length)}, content_type: {getattr(file, 'content_type', 'unknown')}")
-    print(f"Received video: {file.filename}, size: {getattr(file, 'content_length', request.content_length)}, content_type: {getattr(file, 'content_type', 'unknown')}")
+    # Simplified logging
+    app.logger.info(f"Processing video: {file.filename}, size: {getattr(file, 'content_length', request.content_length)}")
     # If server thinks file is empty, abort early
     if request.content_length is not None and request.content_length == 0:
         return jsonify({"error": "Uploaded file is empty"}), 400

@@ -219,12 +219,12 @@ const pingServer = async () => {
   }
   
   try {
-    console.log('Pinging server to keep it warm...');
+    // Reduced logging for ping requests
     
     // Use the CORS-friendly request method
     try {
       const data = await corsRequest('/ping');
-      console.log('Server is alive:', data);
+      // Reduced logging for ping responses
       updateServerStatus('ready');
       pingRetryCount = 0; // Reset retry count on success
       return true;
@@ -287,7 +287,7 @@ const warmupServer = async (url = BACKEND_URL) => {
   }
   
   try {
-    console.log(`Warming up server at ${url}...`);
+    console.log("Warming up server at " + url + "...");
     updateServerStatus('starting');
     
     // For Render.com servers, we need to make multiple ping attempts
@@ -408,7 +408,7 @@ const startWarmupService = (intervalMs = 10 * 60 * 1000) => {
   
   isInitialized = true;
   
-  console.log(`Server warmup service started, pinging every ${intervalMs/1000} seconds`);
+  console.log("Server warmup service started, pinging every " + (intervalMs / 1000) + " seconds");
 };
 
 /**
