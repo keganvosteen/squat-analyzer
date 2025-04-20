@@ -206,6 +206,22 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
   const canvasRef = useRef(null);
   
   const [isPlaying, setIsPlaying] = useState(false);
+
+  // Sync isPlaying state with the underlying video element
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    if (isPlaying) {
+      video.play().catch(err => {
+        console.warn('Video play() failed from isPlaying effect:', err);
+        setIsPlaying(false);
+      });
+    } else {
+      if (!video.paused) video.pause();
+    }
+  }, [isPlaying]);
+
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [activeFeedback, setActiveFeedback] = useState(null);
@@ -714,18 +730,24 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
       // Continue animation loop
       animationFrameId = requestAnimationFrame(animationLoop);
     };
-    
-    // Define handlers for adding/removing listeners
+
+    // Handlers to manage play / pause state and rAF loop
     const localHandlePlay = () => {
       setIsPlaying(true);
-      cancelAnimationFrame(animationFrameId); // Ensure no duplicate loops
-      animationFrameId = requestAnimationFrame(animationLoop); // Start loop on play
+      // Ensure the video actually plays (in case play called programmatically)
+      if (videoRef.current && videoRef.current.paused) {
+        videoRef.current.play().catch(err => {
+          console.warn('Video play() failed in localHandlePlay:', err);
+        });
+      }
+      cancelAnimationFrame(animationFrameId); // Avoid duplicates
+      animationFrameId = requestAnimationFrame(animationLoop);
     };
-    
+
     const localHandlePause = () => {
       setIsPlaying(false);
-      cancelAnimationFrame(animationFrameId); // Stop loop on pause
-      // Draw one last frame at the pause position
+      cancelAnimationFrame(animationFrameId);
+      // Draw one frame so overlay matches pause position
       const ctx = canvasRef.current?.getContext('2d');
       if (ctx) {
         drawOverlays(ctx, video.currentTime);

@@ -27,6 +27,8 @@ from werkzeug.utils import secure_filename
 import multiprocessing
 from concurrent.futures import ThreadPoolExecutor
 import traceback
+import uuid
+import tempfile
 
 app = Flask(__name__)
 CORS(app, origins=[
@@ -407,6 +409,8 @@ def analyze_video():
     # Debug logging for received file
     app.logger.info(f"Received video: {file.filename}, size: {getattr(file, 'content_length', 'unknown')}, content_type: {getattr(file, 'content_type', 'unknown')}")
     print(f"Received video: {file.filename}, size: {getattr(file, 'content_length', 'unknown')}, content_type: {getattr(file, 'content_type', 'unknown')}")
+    # Print Flask MAX_CONTENT_LENGTH config
+    print(f"Flask MAX_CONTENT_LENGTH: {app.config.get('MAX_CONTENT_LENGTH', 'not set')}")
     # Log all form fields
     for key in request.form.keys():
         app.logger.info(f"Form field: {key} = {request.form[key]}")
@@ -415,7 +419,12 @@ def analyze_video():
     file.seek(0, 2)  # Seek to end
     file_size = file.tell()
     file.seek(0)
-    if not file or file.filename == '' or file_size == 0:
+    print(f"File size from seek: {file_size}")
+    # Actually read the file bytes to check received size
+    file_bytes = file.read()
+    print(f"Actual bytes received from file.read(): {len(file_bytes)}")
+    file.seek(0)  # Reset pointer for downstream processing
+    if not file or file.filename == '' or file_size == 0 or len(file_bytes) == 0:
         msg = f"Empty or missing video file (filename: {getattr(file, 'filename', None)}, size: {getattr(file, 'content_length', None)})"
         app.logger.error(msg)
         print(msg)
@@ -456,12 +465,16 @@ def analyze_video():
         app.logger.error("Missing or invalid filename in uploaded file")
         return jsonify({'error': 'No file uploaded'}), 400
     filename = filename.lower()
-    allowed_exts = ['.mp4']
+    # Allow mp4, webm, and avi for debugging
+    allowed_exts = ['.mp4', '.webm', '.avi']
     if not any(filename.endswith(ext) for ext in allowed_exts):
-        return jsonify({'error': 'Unsupported video format. Please upload an MP4 file.'}), 400
+        return jsonify({'error': 'Unsupported video format. Please upload an MP4, WEBM, or AVI file.'}), 400
 
     # Save the uploaded video temporarily
-    temp_path = os.path.join(os.path.dirname(__file__), 'temp_video.mp4')
+    # Use a unique filename per request to avoid collisions
+    temp_dir = tempfile.gettempdir()
+    temp_filename = f"temp_{uuid.uuid4().hex}.mp4"
+    temp_path = os.path.join(temp_dir, temp_filename)
     file.save(temp_path)
     
     try:
@@ -678,10 +691,14 @@ def analyze_video():
             }
         
         # Enhance concurrency handling
-        executor = ThreadPoolExecutor(max_workers=multiprocessing.cpu_count())
+        # Limit worker count to reduce memory usage and avoid MediaPipe race conditions
+        max_workers = 1  # Single worker is safest on Render starter tier
+        executor = ThreadPoolExecutor(max_workers=max_workers)
 
         futures = [executor.submit(process_frame, frame) for frame in frames_to_process]
         results = [future.result() for future in futures]
+        # Cleanly shutdown executor to free threads promptly
+        executor.shutdown(wait=True)
         
         # Filter out None results before sorting
         results = [result for result in results if result is not None]
