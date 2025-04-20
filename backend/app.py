@@ -23,6 +23,7 @@ import os
 import math
 import requests
 import gc
+import psutil
 from werkzeug.utils import secure_filename
 import multiprocessing
 from concurrent.futures import ThreadPoolExecutor
@@ -486,6 +487,10 @@ def analyze_video():
     
     try:
         app.logger.info(f"Processing video at {temp_path}")
+        # Log memory usage before processing
+        process = psutil.Process(os.getpid())
+        mem_mb = process.memory_info().rss / 1024 / 1024
+        app.logger.info(f"[MEMORY] Before extraction: {mem_mb:.2f} MB")
         # Initialize video capture
         cap = cv2.VideoCapture(temp_path)
         
@@ -593,6 +598,9 @@ def analyze_video():
         cap.release()
         
         app.logger.info(f"Extracted {len(frames_to_process)} frames for processing")
+        # Log memory usage after frame extraction
+        mem_mb = process.memory_info().rss / 1024 / 1024
+        app.logger.info(f"[MEMORY] After extraction: {mem_mb:.2f} MB")
         
         # Define function to process a single frame
         def process_frame(frame_data):
@@ -697,25 +705,33 @@ def analyze_video():
                 'arrows': arrows
             }
         
-        # Enhance concurrency handling
-        # Limit worker count to reduce memory usage and avoid MediaPipe race conditions
-        max_workers = 1  # Single worker is safest on Render starter tier
+        # Process frames in small batches to limit memory usage
+        batch_size = 4
+        results = []
+        max_workers = 1  # safest for memory
         executor = ThreadPoolExecutor(max_workers=max_workers)
-
-        futures = [executor.submit(process_frame, frame) for frame in frames_to_process]
-        results = [future.result() for future in futures]
-        # Cleanly shutdown executor to free threads promptly
+        for i in range(0, len(frames_to_process), batch_size):
+            batch = frames_to_process[i:i+batch_size]
+            futures = [executor.submit(process_frame, frame) for frame in batch]
+            batch_results = [future.result() for future in futures]
+            # Filter out None results
+            batch_results = [result for result in batch_results if result is not None]
+            results.extend(batch_results)
+            # Free memory after each batch
+            del batch_results
+            gc.collect()
+            mem_mb = process.memory_info().rss / 1024 / 1024
+            app.logger.info(f"[MEMORY] After batch {i//batch_size+1}: {mem_mb:.2f} MB")
         executor.shutdown(wait=True)
-        
-        # Filter out None results before sorting
-        results = [result for result in results if result is not None]
         
         # Clean up
         if os.path.exists(temp_path):
             os.remove(temp_path)
         
-        # Force garbage collection
+        # Force garbage collection and log memory usage
         gc.collect()
+        mem_mb = process.memory_info().rss / 1024 / 1024
+        app.logger.info(f"[MEMORY] After analysis: {mem_mb:.2f} MB")
         
         app.logger.info(f"Analysis complete. Processed {len(results)} frames.")
         
