@@ -7,7 +7,7 @@
 # - For debugging, log raw request data length if file upload fails (see below).
 #
 from flask import Flask, request, jsonify, make_response
-from flask_cors import CORS
+from flask_cors import CORS, cross_origin
 import cv2
 import numpy as np
 import mediapipe as mp
@@ -32,30 +32,7 @@ import uuid
 import tempfile
 
 app = Flask(__name__)
-CORS(app, origins=[
-    "https://squat-analyzer-frontend.onrender.com",
-    "http://localhost:5173"
-])
-
-# Enable CORS for all routes (temporary wide‑open while debugging)
-@app.after_request
-def add_cors_headers(response):
-    """Add CORS headers to every response so frontend on different domain can access resources."""
-    # TODO: tighten origins when domains are finalized
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
-    response.headers['Access-Control-Allow-Credentials'] = 'true'
-    return response
-
-# Add CORS headers to all responses manually as well
-@app.after_request
-def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
-    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-    response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-    response.headers.add('Access-Control-Allow-Credentials', 'true')
-    return response
+CORS(app)
 
 # Initialize MediaPipe Pose
 BaseOptions = mp.tasks.BaseOptions
@@ -389,12 +366,8 @@ def get_session_data():
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
 
 @app.route('/analyze', methods=['POST', 'OPTIONS'])
+@cross_origin()
 def analyze_video():
-    if request.method == 'OPTIONS':
-        # CORS pre‑flight request
-        resp = make_response('', 200)
-        return resp
-
     # Extra debug info for upload issues
     print("Request content_length:", request.content_length)
     print("Request headers:", dict(request.headers))
@@ -403,17 +376,6 @@ def analyze_video():
 
     print(f"--- Received request for /analyze (Method: {request.method}) ---") 
     app.logger.info(f"Received request for /analyze (Method: {request.method})")
-
-    # Handle preflight OPTIONS request
-    if request.method == 'OPTIONS':
-        print("--- Responding to OPTIONS preflight request ---")
-        app.logger.info("Responding to OPTIONS preflight request for /analyze")
-        response = make_response()
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
-        response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
-        response.headers.add('Access-Control-Allow-Credentials', 'true')
-        return response
 
     print("--- Processing POST request for /analyze... ---")
     app.logger.info("Processing POST request for /analyze...")
