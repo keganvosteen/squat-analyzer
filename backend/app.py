@@ -108,13 +108,15 @@ MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', f'pose_landmarker
 # Download and get the model path
 model_path = download_model(MODEL_URL, MODEL_PATH)
 
-# Create pose landmarker instance
-options = PoseLandmarkerOptions(
-    base_options=BaseOptions(model_asset_path=model_path),
-    running_mode=VisionRunningMode.IMAGE,
-    min_pose_detection_confidence=0.5,
-    min_pose_presence_confidence=0.5,
-    min_tracking_confidence=0.5
+# Initialize a global pose landmarker to reuse across requests and frames (helps memory)
+pose_landmarker_global = PoseLandmarker.create_from_options(
+    PoseLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=model_path),
+        running_mode=VisionRunningMode.IMAGE,
+        min_pose_detection_confidence=0.5,
+        min_pose_presence_confidence=0.5,
+        min_tracking_confidence=0.5
+    )
 )
 
 # Global variables for squat state tracking
@@ -164,9 +166,6 @@ def calculate_shoulder_midfoot_diff(shoulder, hip, knee, ankle):
     midfoot_x = ankle.x
     shoulder_x = shoulder.x
     return abs(shoulder_x - midfoot_x) * 100  # Convert to pixels
-
-# Create pose landmarker instance
-pose_landmarker = PoseLandmarker.create_from_options(options)
 
 # --- Utility Functions (Refactored) ---
 def extract_landmarks(pose_landmarks):
@@ -237,7 +236,7 @@ def analyze_frame(frame, session_id=None):
             session_start_times[session_id] = time.time()
         image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
-        detection_result = pose_landmarker.detect(mp_image)
+        detection_result = pose_landmarker_global.detect(mp_image)
         feedback = {
             "landmarks": None,
             "feedback": [],
@@ -612,17 +611,8 @@ def analyze_video():
             # Create MediaPipe image and detect pose
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
             
-            # Create a new pose landmarker for thread safety
-            thread_options = PoseLandmarkerOptions(
-                base_options=BaseOptions(model_asset_path=model_path),
-                running_mode=VisionRunningMode.IMAGE,
-                min_pose_detection_confidence=0.5,
-                min_pose_presence_confidence=0.5,
-                min_tracking_confidence=0.5
-            )
-            thread_pose_landmarker = PoseLandmarker.create_from_options(thread_options)
-            
-            detection_result = thread_pose_landmarker.detect(mp_image)
+            # Use the global landmarker (reduces per‑frame memory usage)
+            detection_result = pose_landmarker_global.detect(mp_image)
             
             if not detection_result.pose_landmarks:
                 return None
@@ -705,24 +695,19 @@ def analyze_video():
                 'arrows': arrows
             }
         
-        # Process frames in small batches to limit memory usage
-        batch_size = 4
+        # Sequentially process frames while periodically freeing memory
+        batch_size = 4  # how many frames before an explicit GC & memory log
         results = []
-        max_workers = 1  # safest for memory
-        executor = ThreadPoolExecutor(max_workers=max_workers)
-        for i in range(0, len(frames_to_process), batch_size):
-            batch = frames_to_process[i:i+batch_size]
-            futures = [executor.submit(process_frame, frame) for frame in batch]
-            batch_results = [future.result() for future in futures]
-            # Filter out None results
-            batch_results = [result for result in batch_results if result is not None]
-            results.extend(batch_results)
-            # Free memory after each batch
-            del batch_results
-            gc.collect()
-            mem_mb = process.memory_info().rss / 1024 / 1024
-            app.logger.info(f"[MEMORY] After batch {i//batch_size+1}: {mem_mb:.2f} MB")
-        executor.shutdown(wait=True)
+        for i, frame_data in enumerate(frames_to_process):
+            result = process_frame(frame_data)
+            if result is not None:
+                results.append(result)
+
+            # Every `batch_size` frames (or at the end) run GC & log memory
+            if (i + 1) % batch_size == 0 or i == len(frames_to_process) - 1:
+                gc.collect()
+                mem_mb = process.memory_info().rss / 1024 / 1024
+                app.logger.info(f"[MEMORY] After processing {i+1} frames: {mem_mb:.2f} MB")
         
         # Clean up
         if os.path.exists(temp_path):
