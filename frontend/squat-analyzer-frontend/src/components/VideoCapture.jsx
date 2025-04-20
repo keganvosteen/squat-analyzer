@@ -843,7 +843,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const poseDetectionIdRef = useRef(null);
   const debugLogRef = useRef([]);
   const chunksRef = useRef([]);
-  
+  const lastLandmarksRef = useRef(null); // store previous landmarks for smoothing
+  const lostTrackingFramesRef = useRef(0); // consecutive low‑confidence frames
+  const resettingDetectorRef = useRef(false); // Flag to prevent reset loops
+
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState('00:00');
   const [recordingStartTime, setRecordingStartTime] = useState(null);
@@ -1129,7 +1132,6 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             // Update state first before playing to ensure UI updates
             setStreamReady(true);
             setIsInitialized(true);
-            setIsInitializing(false);
             
             try {
               await videoRef.current.play();
@@ -1154,7 +1156,6 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
               // Update state first before playing
               setStreamReady(true);
               setIsInitialized(true);
-              setIsInitializing(false);
               
               try {
                 await videoRef.current.play();
@@ -1285,7 +1286,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         addDebugLog("TensorFlow initialization succeeded");
       } catch (err) {
         const errorMessage = handleError(err, "TensorFlow initialization failed");
-        setError(`Pose detection initialization failed: ${err.message}`);
+        setError("Failed to initialize pose tracking. This feature will be disabled.");
         return;
       }
     }
@@ -1358,7 +1359,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       // Function to detect poses and draw with adaptive rate limiting
       const detectAndDraw = async (timestamp) => {
         // Skip if video or canvas is not ready
-        if (!videoRef.current || !canvasRef.current || videoRef.current.paused || videoRef.current.ended) {
+        if (!videoRef.current || !canvasRef.current || videoRef.current.paused || videoRef.current.ended || resettingDetectorRef.current) {
           poseDetectionIdRef.current = requestAnimationFrame(detectAndDraw);
           return;
         }
@@ -1385,10 +1386,14 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
           addDebugLog(`Canvas resized to match video: ${canvas.width}x${canvas.height}`);
         }
         
-        // Clear previous drawing
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
         try {
+          // If detector becomes null (e.g., after re-init request) skip until reinitialized
+          if (!detectorRef.current) {
+            addDebugLog('Detector not ready, skipping frame');
+            poseDetectionIdRef.current = requestAnimationFrame(detectAndDraw);
+            return;
+          }
+          
           // Get video dimensions
           const videoWidth = video.videoWidth;
           const videoHeight = video.videoHeight;
@@ -1438,6 +1443,66 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
                 }
                 return kp;
               });
+            }
+            
+            // --- Pose tracking constants ---
+            const MIN_CONFIDENCE = 0.25;     // relaxed further for robustness
+            const SMOOTHING_ALPHA = 0.7;    // EMA factor for landmark smoothing
+            const CRITICAL_JOINTS = [ // focus on torso joints that remain visible
+              'left_shoulder', 'right_shoulder',
+              'left_hip', 'right_hip'
+            ];
+            
+            // refs
+            // lastLandmarksRef and lostTrackingFramesRef moved to component scope
+            
+            // --- Landmark smoothing ---
+            if (
+              lastLandmarksRef.current &&
+              lastLandmarksRef.current.length === pose.keypoints.length
+            ) {
+              pose.keypoints = pose.keypoints.map((kp, idx) => {
+                const prev = lastLandmarksRef.current[idx];
+                return {
+                  ...kp,
+                  x: SMOOTHING_ALPHA * kp.x + (1 - SMOOTHING_ALPHA) * prev.x,
+                  y: SMOOTHING_ALPHA * kp.y + (1 - SMOOTHING_ALPHA) * prev.y,
+                  score: kp.score,
+                  visibility: kp.visibility ?? kp.score,
+                };
+              });
+            }
+            lastLandmarksRef.current = pose.keypoints;
+            
+            // --- Lost‑tracking detection ---
+            const goodCritical = pose.keypoints.filter(
+              (kp) => CRITICAL_JOINTS.includes(kp.part || kp.name) && (kp.score ?? 0) >= MIN_CONFIDENCE
+            ).length;
+            if (goodCritical < CRITICAL_JOINTS.length * 0.75) { // allow 1 joint to drop
+              lostTrackingFramesRef.current += 1;
+            } else {
+              lostTrackingFramesRef.current = 0;
+            }
+            if (lostTrackingFramesRef.current > 30) { // require ~1s of lost tracking
+              if (detectorRef.current) {
+                console.warn('Tracking lost – resetting detector');
+                addDebugLog('Tracking lost – resetting detector');
+                if (typeof detectorRef.current.dispose === 'function') {
+                  detectorRef.current.dispose();
+                }
+                detectorRef.current = null;
+                lostTrackingFramesRef.current = 0;
+                resettingDetectorRef.current = true;
+                // Restart after a short backoff to avoid thrashing
+                setTimeout(() => {
+                  if (!detectorRef.current && videoRef.current && canvasRef.current) {
+                    startPoseDetection();
+                  }
+                }, 2000);
+                // continue animation loop while waiting
+                poseDetectionIdRef.current = requestAnimationFrame(detectAndDraw);
+              }
+              return;
             }
             
             drawPose(pose, canvas, ctx);
@@ -1753,8 +1818,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
               console.debug('[Squat] Created solid color fallback blob');
               const fallbackBlob = blob;
               fallbackBlob._originalType = blob.type;
+              // Explicitly mark this as an image for analysis detection
               fallbackBlob._recordingType = 'image';
               fallbackBlob._isFallback = true;
+              
               resolve(fallbackBlob);
             } else {
               console.warn('[Squat] Failed to create even a solid color fallback');
@@ -1902,7 +1969,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       processedBlob._recordingType = blob.type.includes('image') ? 'image' : 'video';
     }
     
-    // Store the original type if not already stored
+    // Store the original type in case we need it later
     if (!processedBlob._originalType) {
       processedBlob._originalType = blob.type;
     }
@@ -2035,7 +2102,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     createFallbackRecording, // Defined above
     processRecordingForAnalysis // Defined above
   ]);
-  
+
   const stopFrameCapture = useCallback(async () => {
     console.debug('[Squat] Stopping frame-based recording');
     
@@ -2163,6 +2230,8 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     processRecordingForAnalysis, // Defined above
     setIsRecording, 
     stopTimer, // Defined above
+    createSnapshotFallback, // Defined above
+    createFallbackRecording, // Defined above
     setError
   ]);
 
@@ -2508,7 +2577,7 @@ if (typeof onRecordingComplete === 'function') {
     if (pose && pose.keypoints) {
       // Draw the keypoints
       pose.keypoints.forEach(keypoint => {
-        if (keypoint.score > 0.3) { // Only draw keypoints with confidence above threshold
+        if ((keypoint.score ?? 0) > 0.3) { // Only draw keypoints with confidence above threshold
           // Handle both position formats (direct x,y or nested in position object)
           let x, y;
           
@@ -2548,7 +2617,12 @@ if (typeof onRecordingComplete === 'function') {
       // Draw the skeleton
       const adjacentKeyPoints = getAdjacentKeyPoints(pose.keypoints);
       adjacentKeyPoints.forEach(keypoints => {
-        if (keypoints && keypoints.length === 2) {
+        if (
+          keypoints &&
+          keypoints.length === 2 &&
+          (keypoints[0].score ?? 0) > 0.3 &&
+          (keypoints[1].score ?? 0) > 0.3
+        ) {
           drawSegment(
             keypoints[0], 
             keypoints[1], 
@@ -2603,7 +2677,7 @@ if (typeof onRecordingComplete === 'function') {
       const keyPointA = keypoints.find(kp => (kp.part === a) || (kp.name === a));
       const keyPointB = keypoints.find(kp => (kp.part === b) || (kp.name === b));
       
-      if (keyPointA && keyPointB && keyPointA.score > 0.3 && keyPointB.score > 0.3) {
+      if (keyPointA && keyPointB && (keyPointA.score ?? 0) > 0.3 && (keyPointB.score ?? 0) > 0.3) {
         return [keyPointA, keyPointB];
       }
       return null;

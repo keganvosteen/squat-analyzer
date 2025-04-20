@@ -95,7 +95,7 @@ def download_model(url, model_path):
     return model_path
 
 # Set up model paths (variant configurable to save memory on low-resource hosts like Render)
-MODEL_VARIANT = os.environ.get('POSE_MODEL_VARIANT', 'lite')  # heavy|full|lite
+MODEL_VARIANT = os.environ.get('POSE_MODEL_VARIANT', 'full')  # heavy|full|lite
 assert MODEL_VARIANT in ('heavy', 'full', 'lite'), "POSE_MODEL_VARIANT must be heavy, full, or lite"
 MODEL_URL = f'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_{MODEL_VARIANT}/float16/1/pose_landmarker_{MODEL_VARIANT}.task'
 MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', f'pose_landmarker_{MODEL_VARIANT}.task')
@@ -601,20 +601,32 @@ def analyze_video():
             # Generate feedback arrows
             arrows = []
             
+            # Depth (knee angle)
             if knee_angle < 90:
                 arrows.append({
                     'start': {'x': knee.x, 'y': knee.y},
                     'end': {'x': knee.x, 'y': knee.y - 0.1},
                     'color': 'yellow',
-                    'message': 'Knees too bent'
+                    'message': 'Squat deeper – knees not at 90°'
                 })
             
-            if shoulder_midfoot_diff > 0.1:
+            # Back lean (angle between shoulder‑hip‑knee)
+            back_angle = calculate_angle(shoulder, hip, knee)
+            if back_angle > 45:  # too much forward lean
+                arrows.append({
+                    'start': {'x': shoulder.x, 'y': shoulder.y},
+                    'end': {'x': hip.x, 'y': hip.y},
+                    'color': 'orange',
+                    'message': 'Chest up – reduce forward lean'
+                })
+            
+            # Shoulder over mid‑foot cue (horizontal diff)
+            if shoulder_midfoot_diff > 0.05:
                 arrows.append({
                     'start': {'x': shoulder.x, 'y': shoulder.y},
                     'end': {'x': ankle.x, 'y': shoulder.y},
                     'color': 'red',
-                    'message': 'Keep shoulders over midfoot'
+                    'message': 'Keep shoulders over mid‑foot'
                 })
             
             # Return processed frame data
