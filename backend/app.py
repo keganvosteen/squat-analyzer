@@ -540,13 +540,15 @@ def analyze_video():
             
             # Convert BGR to RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Create MediaPipe image and detect pose
+
+            # Log before pose inference
+            rss_mb = process.memory_info().rss / 1024 / 1024
+            app.logger.warning(f"[MEM_DIAG] BEFORE POSE INFERENCE: RSS={rss_mb:.1f} MB, frame={frame_idx}, time={time.time() - t_start:.2f}s")
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
-            
             # Use the global landmarker (reduces per‑frame memory usage)
             detection_result = pose_landmarker_global.detect(mp_image)
-            
+            rss_mb = process.memory_info().rss / 1024 / 1024
+            app.logger.warning(f"[MEM_DIAG] AFTER POSE INFERENCE: RSS={rss_mb:.1f} MB, frame={frame_idx}, time={time.time() - t_start:.2f}s")
             if not detection_result.pose_landmarks:
                 return None
                 
