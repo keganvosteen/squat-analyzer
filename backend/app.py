@@ -372,6 +372,11 @@ app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
 @app.route('/analyze', methods=['POST', 'OPTIONS'])
 @cross_origin()
 def analyze_video():
+    import psutil, os, time
+    process = psutil.Process(os.getpid())
+    rss_mb = process.memory_info().rss / 1024 / 1024
+    app.logger.warning(f"[MEM_DIAG] ENTRY: RSS={rss_mb:.1f} MB, PID={os.getpid()}, time={time.time()}")
+    t_start = time.time()
     # Minimize debug logging - log only critical info
     app.logger.info(f"Received /analyze request: method={request.method}, size={request.content_length or 0}")
 
@@ -408,6 +413,8 @@ def analyze_video():
     # Ensure pointer at start before saving
     file.seek(0)
     file.save(temp_path)
+    rss_mb = process.memory_info().rss / 1024 / 1024
+    app.logger.warning(f"[MEM_DIAG] AFTER FILE SAVE: RSS={rss_mb:.1f} MB, time={time.time() - t_start:.2f}s")
     
     try:
         app.logger.info(f"Processing video at {temp_path}")
@@ -524,6 +531,8 @@ def analyze_video():
         # Log memory usage after frame extraction
         mem_mb = process.memory_info().rss / 1024 / 1024
         app.logger.info(f"[MEMORY] After extraction: {mem_mb:.2f} MB")
+        rss_mb = process.memory_info().rss / 1024 / 1024
+        app.logger.warning(f"[MEM_DIAG] AFTER FRAME EXTRACTION: RSS={rss_mb:.1f} MB, time={time.time() - t_start:.2f}s")
         
         # Define function to process a single frame
         def process_frame(frame_data):
@@ -632,6 +641,8 @@ def analyze_video():
                 gc.collect()
                 mem_mb = process.memory_info().rss / 1024 / 1024
                 app.logger.info(f"[MEMORY] After processing {i+1} frames: {mem_mb:.2f} MB")
+                rss_mb = process.memory_info().rss / 1024 / 1024
+                app.logger.warning(f"[MEM_DIAG] AFTER {i+1} FRAMES: RSS={rss_mb:.1f} MB, time={time.time() - t_start:.2f}s")
         
         # Clean up
         if os.path.exists(temp_path):
@@ -643,7 +654,8 @@ def analyze_video():
         app.logger.info(f"[MEMORY] After analysis: {mem_mb:.2f} MB")
         
         app.logger.info(f"Analysis complete. Processed {len(results)} frames.")
-        
+        rss_mb = process.memory_info().rss / 1024 / 1024
+        app.logger.warning(f"[MEM_DIAG] BEFORE RETURN: RSS={rss_mb:.1f} MB, time={time.time() - t_start:.2f}s")
         # Sort results by frame number
         results.sort(key=lambda x: x['frame'])
         
@@ -655,6 +667,8 @@ def analyze_video():
         })
         
     except Exception as e:
+        rss_mb = process.memory_info().rss / 1024 / 1024
+        app.logger.error(f"[MEM_DIAG] EXCEPTION: RSS={rss_mb:.1f} MB, time={time.time() - t_start:.2f}s, error={str(e)}")
         app.logger.error(f"Error processing video: {str(e)}")
         # Clean up on error
         if os.path.exists(temp_path):
