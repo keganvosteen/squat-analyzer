@@ -99,7 +99,7 @@ def download_model(url, model_path):
     return model_path
 
 # Set up model paths (variant configurable to save memory on low-resource hosts like Render)
-MODEL_VARIANT = os.environ.get('POSE_MODEL_VARIANT', 'heavy')  # heavy|full|lite
+MODEL_VARIANT = os.environ.get('POSE_MODEL_VARIANT', 'lite')  # heavy|full|lite
 assert MODEL_VARIANT in ('heavy', 'full', 'lite'), "POSE_MODEL_VARIANT must be heavy, full, or lite"
 MODEL_URL = f'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_{MODEL_VARIANT}/float16/1/pose_landmarker_{MODEL_VARIANT}.task'
 MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', f'pose_landmarker_{MODEL_VARIANT}.task')
