@@ -813,41 +813,55 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
         </ErrorMessage>
       )}
       
-      <VideoContainer 
-        $isFullscreen={isFullscreen} 
-        ref={containerRef} 
-        onDoubleClick={toggleDebug}
-      >
-        {isImagePlayback ? (
-          <img 
-            src={videoUrl} 
-            alt="Recorded Squat Snapshot" 
-            style={{ maxWidth: '100%', maxHeight: '70vh', display: 'block' }} 
-          />
-        ) : (
-          <Video
-            ref={videoRef}
-            src={videoUrl}
-            playsInline
-            onClick={() => setIsPlaying(!isPlaying)}
-            onLoadedMetadata={handleLoadedMetadata}
-            onTimeUpdate={handleTimeUpdate}
-            onError={handleError}
-            onEnded={() => setIsPlaying(false)}
-            style={{ maxWidth: '100%', maxHeight: '70vh' }} 
-            controls={false}
-          />
-        )}
-        <CanvasOverlay ref={canvasRef} />
-        {isFullscreen && (
-          <button
-            onClick={() => setIsFullscreen(false)}
-            style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 1001 }}
-          >
-            <Minimize2 size={24} color="white" />
-          </button>
-        )}
-      </VideoContainer>
+      <div className="playback-container">
+        <div ref={videoContainerRef} style={{ position: 'relative' }}>
+          {isImagePlayback ? (
+            <img 
+              src={videoUrl} 
+              alt="Recorded Squat Snapshot" 
+              style={{ maxWidth: '100%', maxHeight: '70vh', display: 'block' }} 
+            />
+          ) : (
+            <Video
+              ref={videoRef}
+              src={videoUrl}
+              playsInline
+              onClick={() => setIsPlaying(!isPlaying)}
+              onLoadedMetadata={handleLoadedMetadata}
+              onTimeUpdate={handleTimeUpdate}
+              onError={handleError}
+              onEnded={() => setIsPlaying(false)}
+              style={{ maxWidth: '100%', maxHeight: '70vh' }} 
+              controls={false}
+            />
+          )}
+          <CanvasOverlay ref={canvasRef} />
+          {isLoading && (
+            <div style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: '100%',
+              backgroundColor: 'rgba(0,0,0,0.5)',
+              display: 'flex',
+              justifyContent: 'center',
+              alignItems: 'center',
+              zIndex: 1000
+            }}>
+              <p style={{ color: 'white', fontSize: '1.5em' }}>Analysis in progress...</p>
+            </div>
+          )}
+          {isFullscreen && (
+            <button
+              onClick={() => setIsFullscreen(false)}
+              style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 1001 }}
+            >
+              <Minimize2 size={24} color="white" />
+            </button>
+          )}
+        </div>
+      </div>
       
       {/* Add video orientation badge for debugging */}
       {showDebug && (
