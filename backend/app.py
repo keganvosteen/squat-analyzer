@@ -2,7 +2,7 @@
 #
 # Render.com deployment troubleshooting:
 # - Ensure your Render service allows large POST bodies (check 'Body Size Limit' in settings).
-# - Gunicorn: Use --timeout 120 and multiple workers (e.g., --workers 2).
+# - Gunicorn: Use --timeout 120 and multiple workers (e.g., --workers 2). For low-memory hosts, consider --worker-class=gthread.
 # - If uploads work locally but not on Render, the proxy may be stripping or truncating uploads.
 # - For debugging, log raw request data length if file upload fails (see below).
 #
@@ -98,9 +98,11 @@ def download_model(url, model_path):
             f.write(response.content)
     return model_path
 
-# Set up model paths
-MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task'
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', 'pose_landmarker_heavy.task')
+# Set up model paths (variant configurable to save memory on low-resource hosts like Render)
+MODEL_VARIANT = os.environ.get('POSE_MODEL_VARIANT', 'heavy')  # heavy|full|lite
+assert MODEL_VARIANT in ('heavy', 'full', 'lite'), "POSE_MODEL_VARIANT must be heavy, full, or lite"
+MODEL_URL = f'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_{MODEL_VARIANT}/float16/1/pose_landmarker_{MODEL_VARIANT}.task'
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', f'pose_landmarker_{MODEL_VARIANT}.task')
 
 # Download and get the model path
 model_path = download_model(MODEL_URL, MODEL_PATH)
@@ -377,6 +379,11 @@ app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
 
 @app.route('/analyze', methods=['POST', 'OPTIONS'])
 def analyze_video():
+    if request.method == 'OPTIONS':
+        # CORS pre‑flight request
+        resp = make_response('', 200)
+        return resp
+
     # Extra debug info for upload issues
     print("Request content_length:", request.content_length)
     print("Request headers:", dict(request.headers))
