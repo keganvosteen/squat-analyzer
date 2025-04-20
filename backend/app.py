@@ -37,6 +37,17 @@ CORS(app, origins=[
     "http://localhost:5173"
 ])
 
+# Enable CORS for all routes (temporary wide‑open while debugging)
+@app.after_request
+def add_cors_headers(response):
+    """Add CORS headers to every response so frontend on different domain can access resources."""
+    # TODO: tighten origins when domains are finalized
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
+    response.headers['Access-Control-Allow-Credentials'] = 'true'
+    return response
+
 # Add CORS headers to all responses manually as well
 @app.after_request
 def after_request(response):
