@@ -313,39 +313,57 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
   // Draw overlays on canvas - MEMOIZED with useCallback
   const drawOverlays = useCallback((ctx, time) => {
     if (!ctx || !ctx.canvas || !hasAnalysisData) return;
-    
+
     // Clear canvas first
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    
+
+    // Debug: Log analysisData and drawing context
+    if (window && window.DEBUG_OVERLAY) {
+      // Only log if explicitly enabled
+      console.log('[Overlay Debug] Drawing overlays at time:', time);
+      console.log('[Overlay Debug] analysisData:', analysisData);
+      console.log('[Overlay Debug] Canvas size:', ctx.canvas.width, ctx.canvas.height);
+    }
+
     // Update debug info
-    setDebugInfo({
+    setDebugInfo(prev => ({
+      ...prev,
       currentTime: time.toFixed(2),
       canvasWidth: ctx.canvas.width,
       canvasHeight: ctx.canvas.height,
       videoWidth: videoRef.current?.videoWidth || 0,
-      videoHeight: videoRef.current?.videoHeight || 0
-    });
-    
+      videoHeight: videoRef.current?.videoHeight || 0,
+      frameCount: analysisData.frames.length,
+      frameTimestamps: analysisData.frames.map(f => f.timestamp),
+      time,
+    }));
+
     // Find closest frame to current time
     const frames = analysisData.frames;
     if (!frames || frames.length === 0) return;
-    
+
     let closestFrame = frames[0];
     let smallestDiff = Math.abs(frames[0].timestamp - time);
-    
+    let closestIdx = 0;
     for (let i = 1; i < frames.length; i++) {
       const diff = Math.abs(frames[i].timestamp - time);
       if (diff < smallestDiff) {
         smallestDiff = diff;
         closestFrame = frames[i];
+        closestIdx = i;
       }
     }
-    
+
+    // Debug: Log frame matching
+    if (window && window.DEBUG_OVERLAY) {
+      console.log(`[Overlay Debug] Closest frame index: ${closestIdx}, timestamp: ${closestFrame.timestamp}, diff: ${smallestDiff}`);
+    }
+
     if (!closestFrame || !closestFrame.landmarks) return;
-    
+
     // Determine if video is in portrait
     const isPortrait = videoOrientation === 'portrait';
-    
+
     // Draw landmark connections (skeleton lines)
     if (closestFrame.landmarks) {
       // Define connections for the pose landmarks (simplified for squat analysis)
@@ -778,6 +796,8 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
   // Rerun this effect if the video element itself changes (via videoUrl) or drawing logic updates
   }, [videoUrl, isImagePlayback, drawOverlays, handleLoadedMetadata, handleTimeUpdate, handleError]);
 
+
+
   return (
     <Container ref={containerRef}>
       <BackButton onClick={onBack}>
@@ -956,6 +976,29 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
             </div>
           )}
       </AnalysisPanel>
+      
+      {/* Add a new debug panel for analysisData and frame/timestamp matching */}
+      {showDebug && (
+        <div style={{
+          position: 'absolute',
+          top: '50px',
+          right: '5px',
+          background: 'rgba(0,0,0,0.5)',
+          color: 'white',
+          padding: '2px 6px',
+          borderRadius: '4px',
+          fontSize: '12px'
+        }}>
+          <h4>Analysis Data Debug</h4>
+          <pre>
+            {JSON.stringify(analysisData, null, 2)}
+          </pre>
+          <h4>Frame/Timestamp Matching Debug</h4>
+          <pre>
+            {JSON.stringify(debugInfo.frameTimestamps, null, 2)}
+          </pre>
+        </div>
+      )}
     </Container>
   );
 };
