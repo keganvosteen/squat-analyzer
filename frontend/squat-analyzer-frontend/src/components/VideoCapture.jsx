@@ -1483,7 +1483,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             } else {
               lostTrackingFramesRef.current = 0;
             }
-            if (lostTrackingFramesRef.current > 30) { // require ~1s of lost tracking
+            if (lostTrackingFramesRef.current > 60) { // require ~2s of lost tracking
               if (detectorRef.current) {
                 console.warn('Tracking lost – resetting detector');
                 addDebugLog('Tracking lost – resetting detector');
@@ -1523,6 +1523,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       if (!poseDetectionIdRef.current) {
         poseDetectionIdRef.current = requestAnimationFrame(detectAndDraw);
         setIsPoseTracking(true);
+        resettingDetectorRef.current = false; // Clear resetting flag so detector resumes processing after reinit
       }
     } catch (err) {
       const errorMsg = handleError(err, "Error initializing pose detector", () => {

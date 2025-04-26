@@ -30,6 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 import traceback
 import uuid
 import tempfile
+from movenet_validator import infer_pose_bgr, _ort_sess
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -242,6 +243,22 @@ def analyze_frame(frame, session_id=None):
         if not detection_result.pose_landmarks:
             return feedback
         pose_landmarks = detection_result.pose_landmarks[0]
+        # ---------- MoveNet cross-check ----------
+        try:
+            mv_kp = infer_pose_bgr(frame)
+            mp_kp = np.array([[lm.x*frame.shape[1],
+                               lm.y*frame.shape[0],
+                               getattr(lm,'visibility',lm.presence)]
+                              for lm in pose_landmarks])
+            diff_px = np.linalg.norm(mp_kp[5:, :2] - mv_kp[5:, :2], axis=1).mean()
+            if diff_px > 20:
+                feedback["feedback"].append({
+                    "type": "warning",
+                    "message": f"MoveNet and MediaPipe differ (~{diff_px:.1f}px)"
+                })
+        except Exception as e:
+            app.logger.warning(f"MoveNet validator error: {e}")
+        # ------------------------------------------
         landmarks_list = extract_landmarks(pose_landmarks)
         feedback["landmarks"] = landmarks_list
         # Key points
@@ -252,6 +269,7 @@ def analyze_frame(frame, session_id=None):
         avg_knee_y = (left_knee['y'] + right_knee['y']) / 2
         feedback["squatState"] = detect_squat_state(session_id, avg_knee_y)
         feedback["feedback"] = generate_feedback(landmarks_list, session_id)
+        feedback["providers"] = _ort_sess.get_providers()
         return feedback
     except Exception as e:
         return {"error": f"Frame analysis failed: {str(e)}"}, 500
@@ -468,8 +486,7 @@ def analyze_video():
         # Check for large negative numbers or zero/small counts if duration is reasonable
         is_frame_count_invalid = frame_count < 0 or (duration_sec > 0.5 and frame_count <= 1)
         # Check for significant mismatch with duration
-        is_frame_count_mismatch = expected_frame_count > 0 and abs(frame_count - expected_frame_count) > (expected_frame_count * 0.5) # Allow 50% diff
-        
+        is_frame_count_mismatch = expected_frame_count > 0 and abs(frame_count - expected_frame_count) > (expected_frame_count * 0.5)
         if is_frame_count_invalid or is_frame_count_mismatch:
             app.logger.warning(f"Invalid/mismatched frame count: {frame_count}. Expected based on duration: ~{expected_frame_count}")
             if expected_frame_count > 0:
@@ -490,7 +507,7 @@ def analyze_video():
         
         # Calculate frame skip rate based on video length to reduce processing time
         # Process fewer frames for longer videos to stay within timeout limits
-        max_frames_to_process = 20  # Reduced from 30 to 20 for faster processing
+        max_frames_to_process = 30  # Increased from 20 to 30 for better tracking
         target_processing_time = 30  # Target to complete within 30 seconds (15s buffer for 45s timeout)
         
         # Calculate optimal frame skip based on video length and target processing time
@@ -499,7 +516,7 @@ def analyze_video():
         frame_skip = max(1, int(frame_count / total_frames_possible))
         
         # Ensure we don't skip too many frames for short videos
-        frame_skip = min(frame_skip, 10)  # Never skip more than 10 frames
+        frame_skip = min(frame_skip, 5)  # Reduced from 10 to 5 for denser frame coverage
             
         app.logger.info(f"Processing every {frame_skip}th frame, targeting {total_frames_possible} frames")
         
