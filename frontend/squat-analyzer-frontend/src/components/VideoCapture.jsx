@@ -249,17 +249,29 @@ const ErrorMessage = styled.div`
 const CameraContainer = styled.div`
   position: relative;
   width: 100%;
-  max-width: 640px;
+  max-width: 640px; /* Keep max-width for landscape/desktop */
   margin: 0 auto;
   background-color: #000;
   border-radius: 8px;
   overflow: hidden;
+  /* Add aspect-ratio for default landscape */
+  aspect-ratio: 16 / 9;
+
+  /* Adjust for portrait screens */
+  @media (orientation: portrait) {
+    /* Use viewport height for portrait, allow width to adjust */
+    height: 75vh; 
+    width: auto;
+    max-width: 100%; /* Allow full width in portrait */
+    aspect-ratio: unset; /* Remove fixed aspect ratio */
+  }
 `;
 
 const Video = styled.video`
-  width: 100%;
-  height: auto;
   display: block;
+  width: 100%;
+  height: 100%; /* Make video fill the container height */
+  object-fit: cover; /* Cover the container, cropping if needed */
 `;
 
 const PoseCanvas = styled.canvas`
@@ -975,7 +987,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             // Only show error on final attempt
             if (initAttempts + 1 >= maxAttempts) {
               setEnableLivePose(false);
-              setError("Could not initialize pose detection. The live tracking feature will be disabled.");
+              setError("Failed to initialize pose detection. The live tracking feature will be disabled.");
             }
           }
         }

@@ -338,34 +338,48 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
       time,
     }));
 
-    // Find closest frame to current time
+    // Find the closest frame based on timestamp
     const frames = analysisData.frames;
     if (!frames || frames.length === 0) return;
-
-    let closestFrame = frames[0];
-    let smallestDiff = Math.abs(frames[0].timestamp - time);
-    let closestIdx = 0;
-    for (let i = 1; i < frames.length; i++) {
-      const diff = Math.abs(frames[i].timestamp - time);
-      if (diff < smallestDiff) {
-        smallestDiff = diff;
-        closestFrame = frames[i];
-        closestIdx = i;
-      }
+    
+    const closestFrameIndex = frames.reduce((prev, curr, idx, arr) => {
+      return Math.abs(curr.timestamp - time) < Math.abs(arr[prev].timestamp - time) ? idx : prev;
+    }, 0);
+    
+    const frameData = frames[closestFrameIndex];
+    
+    // Debug: Log the frame data structure to see what properties it actually has
+    console.log(`Frame ${closestFrameIndex} data structure:`, frameData);
+    
+    // Looking for pose keypoints - they could be named landmarks, keypoints, or pose_keypoints
+    const keypointsData = frameData.landmarks || frameData.keypoints || frameData.pose_keypoints;
+    
+    if (!frameData || !keypointsData) {
+      console.warn(`No valid keypoints data in frame ${closestFrameIndex}. Available properties:`, 
+        Object.keys(frameData || {}).join(', '));
+      return;
     }
-
-    // Debug: Log frame matching
-    if (window && window.DEBUG_OVERLAY) {
-      console.log(`[Overlay Debug] Closest frame index: ${closestIdx}, timestamp: ${closestFrame.timestamp}, diff: ${smallestDiff}`);
+    
+    // Store the keypoints in a consistent property for later use
+    frameData.keypoints = keypointsData;
+    
+    // Draw debug info on canvas for debugging
+    if (showDebug || true) { // Always show for debugging
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+      ctx.fillRect(10, 10, 280, 100);
+      ctx.font = '12px monospace';
+      ctx.fillStyle = 'white';
+      ctx.fillText(`Video time: ${time.toFixed(2)}s / Duration: ${videoRef.current?.duration.toFixed(2)}s`, 20, 30);
+      ctx.fillText(`Frame index: ${closestFrameIndex} / Total frames: ${frames.length}`, 20, 50);
+      ctx.fillText(`Frame timestamp: ${frameData.timestamp?.toFixed(2) || 'N/A'}s`, 20, 70);
+      ctx.fillText(`Frame data: ${Object.keys(frameData || {}).join(', ')}`, 20, 90);
     }
-
-    if (!closestFrame || !closestFrame.landmarks) return;
-
+    
     // Determine if video is in portrait
     const isPortrait = videoOrientation === 'portrait';
 
     // Draw landmark connections (skeleton lines)
-    if (closestFrame.landmarks) {
+    if (frameData.keypoints) {
       // Define connections for the pose landmarks (simplified for squat analysis)
       const connections = [
         // Torso
@@ -398,8 +412,8 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
       
       // Draw skeleton lines
       connections.forEach(([i, j]) => {
-        const landmark1 = closestFrame.landmarks[i];
-        const landmark2 = closestFrame.landmarks[j];
+        const landmark1 = frameData.keypoints[i];
+        const landmark2 = frameData.keypoints[j];
         
         if (!landmark1 || !landmark2 || 
             typeof landmark1.x !== 'number' || 
@@ -435,7 +449,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
       
       // Draw only relevant landmark points
       relevantLandmarks.forEach((idx) => {
-        const landmark = closestFrame.landmarks[idx];
+        const landmark = frameData.keypoints[idx];
         if (!landmark || typeof landmark.x !== 'number' || landmark.visibility < 0.5) {
           return;
         }
@@ -479,8 +493,8 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     }
 
     // Draw measurements and analysis
-    if (closestFrame.measurements) {
-      const { kneeAngle, depthRatio, shoulderMidfootDiff } = closestFrame.measurements;
+    if (frameData.measurements) {
+      const { kneeAngle, depthRatio, shoulderMidfootDiff } = frameData.measurements;
       
       // Position text in top-left corner
       ctx.font = '16px Arial';
@@ -513,8 +527,8 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     }
 
     // Draw feedback arrows
-    if (closestFrame.arrows && Array.isArray(closestFrame.arrows)) {
-      closestFrame.arrows.forEach(arrow => {
+    if (frameData.arrows && Array.isArray(frameData.arrows)) {
+      frameData.arrows.forEach(arrow => {
         if (arrow.start && arrow.end && typeof arrow.start.x === 'number' && typeof arrow.end.x === 'number') {
           ctx.beginPath();
           ctx.strokeStyle = arrow.color || 'yellow';
@@ -567,7 +581,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     // Draw frame indicator
     ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
     ctx.font = '12px Arial';
-    ctx.fillText(`Frame: ${closestFrame.frame}, Time: ${closestFrame.timestamp.toFixed(2)}s`, 10, ctx.canvas.height - 10);
+    ctx.fillText(`Frame: ${closestFrameIndex}, Time: ${frameData.timestamp.toFixed(2)}s`, 10, ctx.canvas.height - 10);
     
   }, [hasAnalysisData, analysisData, videoOrientation, showDebug, transformCoordinates]);
 
