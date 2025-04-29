@@ -495,59 +495,75 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     // Draw measurements and analysis
     if (frameData.measurements) {
       const { kneeAngle, depthRatio, shoulderMidfootDiff } = frameData.measurements;
-      
+
+      // If all values are null, skip drawing the stats box
+      if (kneeAngle === null && depthRatio === null && shoulderMidfootDiff === null) {
+        return;
+      }
+
       // Position text in top-left corner
       ctx.font = '16px Arial';
       let yOffset = 30;
       const xOffset = 10;
-      
+
       // Draw background for text for better visibility
       ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
       ctx.fillRect(0, 0, 250, 100);
-      
+
       // Knee Angle
       ctx.fillStyle = 'white';
       ctx.fillText('Knee Angle:', xOffset, yOffset);
       ctx.fillStyle = '#00ff00';
-      ctx.fillText(` ${Math.round(kneeAngle)}°`, xOffset + 90, yOffset);
+      ctx.fillText(
+        kneeAngle !== null && typeof kneeAngle === 'number' ? ` ${Math.round(kneeAngle)}°` : ' N/A',
+        xOffset + 90, yOffset
+      );
       yOffset += 25;
-      
+
       // Depth Ratio
       ctx.fillStyle = 'white';
       ctx.fillText('Depth Ratio:', xOffset, yOffset);
       ctx.fillStyle = '#ff9900';
-      ctx.fillText(` ${depthRatio.toFixed(2)}`, xOffset + 100, yOffset);
+      ctx.fillText(
+        depthRatio !== null && typeof depthRatio === 'number' ? ` ${depthRatio.toFixed(2)}` : ' N/A',
+        xOffset + 100, yOffset
+      );
       yOffset += 25;
-      
+
       // Shoulder-Midfoot Difference
       ctx.fillStyle = 'white';
       ctx.fillText('Shoulder-Midfoot Diff:', xOffset, yOffset);
       ctx.fillStyle = '#00ffff';
-      ctx.fillText(` ${shoulderMidfootDiff.toFixed(1)}`, xOffset + 170, yOffset);
+      ctx.fillText(
+        shoulderMidfootDiff !== null && typeof shoulderMidfootDiff === 'number' ? ` ${shoulderMidfootDiff.toFixed(1)}` : ' N/A',
+        xOffset + 170, yOffset
+      );
     }
 
     // Draw feedback arrows
     if (frameData.arrows && Array.isArray(frameData.arrows)) {
       frameData.arrows.forEach(arrow => {
+        // Skip arrows with empty or undefined messages
+        if (!arrow.message) return;
         if (arrow.start && arrow.end && typeof arrow.start.x === 'number' && typeof arrow.end.x === 'number') {
           ctx.beginPath();
           ctx.strokeStyle = arrow.color || 'yellow';
           ctx.lineWidth = 3;
-          
+
           const startX = arrow.start.x * ctx.canvas.width;
           const startY = arrow.start.y * ctx.canvas.height;
           const endX = arrow.end.x * ctx.canvas.width;
           const endY = arrow.end.y * ctx.canvas.height;
-          
+
           // Draw line
           ctx.moveTo(startX, startY);
           ctx.lineTo(endX, endY);
           ctx.stroke();
-          
+
           // Draw arrowhead
           const angle = Math.atan2(endY - startY, endX - startX);
           const arrowLength = 15;
-          
+
           ctx.beginPath();
           ctx.moveTo(endX, endY);
           ctx.lineTo(
@@ -560,20 +576,18 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
             endY - arrowLength * Math.sin(angle + Math.PI / 6)
           );
           ctx.stroke();
-          
+
           // Draw message with background for visibility
-          if (arrow.message) {
-            ctx.font = '14px Arial';
-            const textWidth = ctx.measureText(arrow.message).width;
-            
-            // Draw background rectangle for text
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-            ctx.fillRect(endX + 10, endY - 15, textWidth + 10, 20);
-            
-            // Draw text
-            ctx.fillStyle = 'white';
-            ctx.fillText(arrow.message, endX + 15, endY);
-          }
+          ctx.font = '14px Arial';
+          const textWidth = ctx.measureText(arrow.message).width;
+
+          // Draw background rectangle for text
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+          ctx.fillRect(endX + 10, endY - 15, textWidth + 10, 20);
+
+          // Draw text
+          ctx.fillStyle = 'white';
+          ctx.fillText(arrow.message, endX + 15, endY);
         }
       });
     }
@@ -899,35 +913,22 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
           {isPlaying ? 'Pause' : 'Play'}
         </Button>
         
-        <Button
-          onClick={() => {
+        {/* Video progress bar */}
+        <input
+          type="range"
+          min={0}
+          max={videoRef.current && videoRef.current.duration ? videoRef.current.duration : 0}
+          step={0.01}
+          value={videoRef.current && videoRef.current.currentTime ? videoRef.current.currentTime : 0}
+          onChange={e => {
             if (videoRef.current) {
-              const video = videoRef.current;
-              // Make sure we have a valid duration and current time before updating
-              if (isFinite(video.duration) && isFinite(video.currentTime)) {
-                video.currentTime = Math.max(0, video.currentTime - 1);
-              }
+              videoRef.current.currentTime = parseFloat(e.target.value);
             }
           }}
-          >
-            <SkipBack size={20} />
-          Back 1s
-        </Button>
-        
-        <Button
-          onClick={() => {
-            if (videoRef.current) {
-              const video = videoRef.current;
-              // Make sure we have a valid duration and current time before updating
-              if (isFinite(video.duration) && isFinite(video.currentTime)) {
-                video.currentTime = Math.min(video.duration || 0, video.currentTime + 1);
-              }
-            }
-          }}
-          >
-            <SkipForward size={20} />
-          Forward 1s
-        </Button>
+          style={{ flex: 1, margin: '0 1rem' }}
+          disabled={!videoRef.current || !videoRef.current.duration}
+        />
+        {/* End video progress bar */}
         
         <Button onClick={() => setShowDebug(!showDebug)}>
           <Info size={20} />
@@ -949,23 +950,41 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
             </span>
           )}
         </h3>
-        
         {hasAnalysisData ? (
           <>
-            <StatBox>
-              <StatTitle>Measurements</StatTitle>
-              <div className="flex flex-wrap mt-2">
-                {analysisData.frames.length > 0 && analysisData.frames[0].measurements && (
-                  Object.entries(analysisData.frames[0].measurements).map(([key, value]) => (
-                    <div key={key} className="w-1/3 mb-2">
-                      <StatLabel>{key}</StatLabel>
-                      <StatValue>{typeof value === 'number' ? value.toFixed(1) : value}</StatValue>
-            </div>
-                  ))
-                )}
-              </div>
-            </StatBox>
-            
+            {/* Only show StatBox if at least one measurement is not null */}
+            {(() => {
+              const m = analysisData.frames[0]?.measurements || {};
+              const allNull =
+                m.kneeAngle === null &&
+                m.depthRatio === null &&
+                m.shoulderMidfootDiff === null;
+              if (allNull) return null;
+              return (
+                <StatBox>
+                  <StatTitle>Measurements</StatTitle>
+                  <div className="flex flex-wrap mt-2">
+                    {Object.entries(m).map(([key, value]) => (
+                      <div key={key} className="w-1/3 mb-2">
+                        <StatLabel>{key}</StatLabel>
+                        <StatValue>
+                          {value === null || value === undefined
+                            ? 'N/A'
+                            : typeof value === 'number'
+                              ? key === 'kneeAngle'
+                                ? Math.round(value) + '°'
+                                : key === 'depthRatio'
+                                  ? value.toFixed(2)
+                                  : value.toFixed(1)
+                              : value}
+                        </StatValue>
+                      </div>
+                    ))}
+                  </div>
+                </StatBox>
+              );
+            })()}
+
             <FeedbackSection>
               <h4>Feedback Tips</h4>
               {usingLocalAnalysis && (
@@ -1001,8 +1020,8 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
             <p className="text-sm text-gray-600">
               Tip: Try recording a shorter video (5-10 seconds) for better processing success.
             </p>
-            </div>
-          )}
+          </div>
+        )}
       </AnalysisPanel>
       
       {/* Add a new debug panel for analysisData and frame/timestamp matching */}

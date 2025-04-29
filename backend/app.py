@@ -130,38 +130,66 @@ def allowed_file(filename):
 
 def calculate_angle(a, b, c):
     """Calculate the angle between three points with stability checks."""
-    ba = np.array([a.x - b.x, a.y - b.y])
-    bc = np.array([c.x - b.x, c.y - b.y])
+    try:
+        # Handle both dictionary and object access patterns
+        if isinstance(a, dict):
+            ba = np.array([a['x'] - b['x'], a['y'] - b['y']])
+            bc = np.array([c['x'] - b['x'], c['y'] - b['y']])
+        else:
+            ba = np.array([a.x - b.x, a.y - b.y])
+            bc = np.array([c.x - b.x, c.y - b.y])
 
-    norm_ba = np.linalg.norm(ba)
-    norm_bc = np.linalg.norm(bc)
+        norm_ba = np.linalg.norm(ba)
+        norm_bc = np.linalg.norm(bc)
 
-    if norm_ba == 0 or norm_bc == 0:
-        return 0
+        if norm_ba == 0 or norm_bc == 0:
+            return 0
 
-    cosine_angle = np.clip(np.dot(ba, bc) / (norm_ba * norm_bc), -1.0, 1.0)
-    angle = np.arccos(cosine_angle)
+        cosine_angle = np.clip(np.dot(ba, bc) / (norm_ba * norm_bc), -1.0, 1.0)
+        angle = np.arccos(cosine_angle)
 
-    return np.degrees(angle)
+        return np.degrees(angle)
+    except (KeyError, AttributeError, TypeError) as e:
+        app.logger.error(f"Error calculating angle: {str(e)}")
+        return 0  # Default fallback value
 
 def calculate_depth_ratio(hip, knee, ankle):
     """Calculate the depth ratio based on hip, knee, and ankle positions."""
-    hip_height = hip.y
-    knee_height = knee.y
-    ankle_height = ankle.y
-    
-    total_leg_length = abs(hip_height - ankle_height)
-    if total_leg_length == 0:
-        return 0
-    
-    squat_depth = abs(knee_height - ankle_height)
-    return squat_depth / total_leg_length
+    try:
+        # Handle both dictionary and object access patterns
+        if isinstance(hip, dict):
+            hip_height = hip['y']
+            knee_height = knee['y']
+            ankle_height = ankle['y']
+        else:
+            hip_height = hip.y
+            knee_height = knee.y
+            ankle_height = ankle.y
+        
+        total_leg_length = abs(hip_height - ankle_height)
+        if total_leg_length == 0:
+            return 0
+        
+        squat_depth = abs(knee_height - ankle_height)
+        return squat_depth / total_leg_length
+    except (KeyError, AttributeError, TypeError, ZeroDivisionError) as e:
+        app.logger.error(f"Error calculating depth ratio: {str(e)}")
+        return 0  # Default fallback value
 
 def calculate_shoulder_midfoot_diff(shoulder, hip, knee, ankle):
     """Calculate the horizontal difference between shoulder and midfoot position."""
-    midfoot_x = ankle.x
-    shoulder_x = shoulder.x
-    return abs(shoulder_x - midfoot_x) * 100  # Convert to pixels
+    try:
+        # Handle both dictionary and object access patterns
+        if isinstance(shoulder, dict) and isinstance(ankle, dict):
+            midfoot_x = ankle['x']
+            shoulder_x = shoulder['x']
+        else:
+            midfoot_x = ankle.x
+            shoulder_x = shoulder.x
+        return abs(shoulder_x - midfoot_x) * 100  # Convert to pixels
+    except (KeyError, AttributeError, TypeError) as e:
+        app.logger.error(f"Error calculating shoulder-midfoot difference: {str(e)}")
+        return 0  # Default fallback value
 
 # --- Utility Functions (Refactored) ---
 def extract_landmarks(pose_landmarks):
@@ -507,23 +535,18 @@ def analyze_video():
         
         # Calculate frame skip rate based on video length to reduce processing time
         # Process fewer frames for longer videos to stay within timeout limits
-        max_frames_to_process = 30  # Increased from 20 to 30 for better tracking
-        target_processing_time = 30  # Target to complete within 30 seconds (15s buffer for 45s timeout)
-        
-        # Calculate optimal frame skip based on video length and target processing time
+        # Remove frame processing cap: process all frames according to frame_skip
+        # Calculate optimal frame skip for long videos to avoid excessive processing (optional: can set frame_skip=1)
         estimated_time_per_frame = 0.5  # Estimated processing time per frame in seconds
-        total_frames_possible = target_processing_time / estimated_time_per_frame
-        frame_skip = max(1, int(frame_count / total_frames_possible))
-        
-        # Ensure we don't skip too many frames for short videos
-        frame_skip = min(frame_skip, 5)  # Reduced from 10 to 5 for denser frame coverage
-            
-        app.logger.info(f"Processing every {frame_skip}th frame, targeting {total_frames_possible} frames")
-        
-        # Pre-calculate target frame indices to process
-        target_frames = list(range(0, frame_count, frame_skip))[:max_frames_to_process]
-        
-        # Extract frames to process in parallel
+        target_processing_time = 30  # (Optional, can be removed if not needed)
+        total_frames_possible = target_processing_time / estimated_time_per_frame  # (Optional)
+        frame_skip = 1  # Process every frame
+        app.logger.info(f"Processing every {frame_skip}th frame (all frames)")
+
+        # Pre-calculate target frame indices to process (all frames)
+        target_frames = list(range(0, frame_count, frame_skip))
+
+        # Extract frames to process
         frames_to_process = []
         for idx in target_frames:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
@@ -604,59 +627,94 @@ def analyze_video():
                         'visibility': 0
                     })
             
-            # Get key points for measurements
-            hip = pose_landmarks[POSE_LANDMARKS.RIGHT_HIP]
-            knee = pose_landmarks[POSE_LANDMARKS.RIGHT_KNEE]
-            ankle = pose_landmarks[POSE_LANDMARKS.RIGHT_ANKLE]
-            shoulder = pose_landmarks[POSE_LANDMARKS.RIGHT_SHOULDER]
-            
-            # Calculate all measurements at once
-            knee_angle = calculate_angle(hip, knee, ankle)
-            depth_ratio = calculate_depth_ratio(hip, knee, ankle)
-            shoulder_midfoot_diff = calculate_shoulder_midfoot_diff(shoulder, hip, knee, ankle)
-            
-            # Generate feedback arrows
+            VIS_THR = 0.5
+            def joints_visible(ids, lm):
+                return all(lm[i]['visibility'] >= VIS_THR for i in ids)
+
+            # Prepare indices for left/right and for each measurement
+            pose = POSE_LANDMARKS
+            lm = landmarks
+            # Indices for left and right
+            LHIP, LKNEE, LANKLE = pose.LEFT_HIP, pose.LEFT_KNEE, pose.LEFT_ANKLE
+            RHIP, RKNEE, RANKLE = pose.RIGHT_HIP, pose.RIGHT_KNEE, pose.RIGHT_ANKLE
+            LSHOULDER, RSHOULDER = pose.LEFT_SHOULDER, pose.RIGHT_SHOULDER
+
+            # Compute knee visibility for D
+            knees_visible = (lm[LKNEE]['visibility'] >= VIS_THR) and (lm[RKNEE]['visibility'] >= VIS_THR)
+
+            # A. Only compute measurements when all required joints are visible
+            knee_angle = None
+            depth_ratio = None
+            shoulder_midfoot_diff = None
+            # Right knee metrics
+            if joints_visible([RHIP, RKNEE, RANKLE], lm):
+                hip = lm[RHIP]
+                knee = lm[RKNEE]
+                ankle = lm[RANKLE]
+                knee_angle = calculate_angle(hip, knee, ankle)
+                depth_ratio = calculate_depth_ratio(hip, knee, ankle)
+            # Shoulder-midfoot diff (right side)
+            if joints_visible([RSHOULDER, RHIP, RKNEE, RANKLE], lm):
+                shoulder = lm[RSHOULDER]
+                hip = lm[RHIP]
+                knee = lm[RKNEE]
+                ankle = lm[RANKLE]
+                shoulder_midfoot_diff = calculate_shoulder_midfoot_diff(shoulder, hip, knee, ankle)
+
+            # B. Return None for missing values (will be serialized as null in JSON)
+            # This ensures all consumers (e.g., React) can use a neutral style for missing data.
+            # Do NOT use 'N/A' or string sentinel values, only float or null.
+
+            # C. Generate arrows only when metric is valid and breaches threshold
             arrows = []
-            
-            # Depth (knee angle)
-            if knee_angle < 90:
-                arrows.append({
-                    'start': {'x': knee.x, 'y': knee.y},
-                    'end': {'x': knee.x, 'y': knee.y - 0.1},
-                    'color': 'yellow',
-                    'message': 'Squat deeper – knees not at 90°'
-                })
-            
-            # Back lean (angle between shoulder‑hip‑knee)
-            back_angle = calculate_angle(shoulder, hip, knee)
-            if back_angle > 45:  # too much forward lean
-                arrows.append({
-                    'start': {'x': shoulder.x, 'y': shoulder.y},
-                    'end': {'x': hip.x, 'y': hip.y},
-                    'color': 'orange',
-                    'message': 'Chest up – reduce forward lean'
-                })
-            
-            # Shoulder over mid‑foot cue (horizontal diff)
-            if shoulder_midfoot_diff > 0.05:
-                arrows.append({
-                    'start': {'x': shoulder.x, 'y': shoulder.y},
-                    'end': {'x': ankle.x, 'y': shoulder.y},
-                    'color': 'red',
-                    'message': 'Keep shoulders over mid‑foot'
-                })
-            
-            # Return processed frame data
+            try:
+                # Depth (knee angle)
+                if knee_angle is not None and knee_angle < 90 and RKNEE < len(lm) and lm[RKNEE]['visibility'] >= VIS_THR:
+                    arrows.append({
+                        'start': {'x': lm[RKNEE]['x'], 'y': lm[RKNEE]['y']},
+                        'end': {'x': lm[RKNEE]['x'], 'y': lm[RKNEE]['y'] - 0.1},
+                        'color': 'yellow',
+                        'message': 'Squat deeper – knees not at 90°'
+                    })
+                # Back lean (angle between shoulder‑hip‑knee)
+                if joints_visible([RSHOULDER, RHIP, RKNEE], lm):
+                    try:
+                        back_angle = calculate_angle(lm[RSHOULDER], lm[RHIP], lm[RKNEE])
+                        if back_angle > 45:
+                            arrows.append({
+                                'start': {'x': lm[RSHOULDER]['x'], 'y': lm[RSHOULDER]['y']},
+                                'end': {'x': lm[RHIP]['x'], 'y': lm[RHIP]['y']},
+                                'color': 'orange',
+                                'message': 'Chest up – reduce forward lean'
+                            })
+                    except Exception as e:
+                        app.logger.error(f"Error calculating back angle: {str(e)}")
+                # Shoulder over mid-foot cue
+                if shoulder_midfoot_diff not in (None, 'N/A') and shoulder_midfoot_diff > 0.07 and \
+                   RSHOULDER < len(lm) and RANKLE < len(lm) and \
+                   lm[RSHOULDER]['visibility'] >= VIS_THR and lm[RANKLE]['visibility'] >= VIS_THR:
+                    arrows.append({
+                        'start': {'x': lm[RSHOULDER]['x'], 'y': lm[RSHOULDER]['y']},
+                        'end': {'x': lm[RANKLE]['x'], 'y': lm[RSHOULDER]['y']},
+                        'color': 'red',
+                        'message': 'Keep shoulders over mid-foot'
+                    })
+            except Exception as e:
+                app.logger.error(f"Error generating arrows: {str(e)}")
+                # Continue processing even if arrows generation fails
+
+            # D. Add kneesVisible boolean to frame payload
             return {
                 'frame': frame_idx,
                 'timestamp': frame_idx / fps,
                 'landmarks': landmarks,
                 'measurements': {
-                    'kneeAngle': float(knee_angle),
-                    'depthRatio': float(depth_ratio),
-                    'shoulderMidfootDiff': float(shoulder_midfoot_diff)
+                    'kneeAngle': knee_angle,
+                    'depthRatio': depth_ratio,
+                    'shoulderMidfootDiff': shoulder_midfoot_diff
                 },
-                'arrows': arrows
+                'arrows': arrows,
+                'kneesVisible': knees_visible
             }
         
         # Sequentially process frames while periodically freeing memory
