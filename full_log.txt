@@ -1,0 +1,185 @@
+3f03e94 - Kegan Vosteen, 2025-04-29 : Commit modified files
+bf4acdc - Kegan Vosteen, 2025-04-26 : Update code before testing instructions
+7a40c95 - Kegan Vosteen, 2025-04-26 : Fix pose tracking issues: 1) Prevent tracking loss by increasing reset threshold from 30 to 60 frames 2) Fix detector reset by clearing resettingDetectorRef 3) Improve playback smoothness by increasing frame density (reducing skip from 10 to 5)
+a3a1818 - Kegan Vosteen, 2025-04-20 : Improve pose tracking robustness and feedback cues\n\n- Frontend: Adds detector reset guard, relaxed thresholds, and keeps animation loop alive during lost tracking.\n- Backend: Expands feedback cues for squat depth, forward lean, and shoulder-midfoot alignment.\n- All changes clearly commented for maintainability.
+70d2195 - Kegan Vosteen, 2025-04-20 : Add granular memory diagnostics before and after pose inference per frame
+3c96282 - Kegan Vosteen, 2025-04-20 : Add detailed memory and timing diagnostics to analyze_video route for OOM debugging
+08dfa06 - Kegan Vosteen, 2025-04-20 : fix: improve CORS config, reduce logging, and optimize Gunicorn Procfile for Render
+c92adee - Kegan Vosteen, 2025-04-20 : refactor: simplify CORS handling in backend/app.py
+277ee42 - Kegan Vosteen, 2025-04-20 : feat: add loading overlay to ExercisePlayback component
+f4ccac2 - Kegan Vosteen, 2025-04-20 : Improve video upload/codec handling: preserve extension, use FFMPEG backend, faster empty checks
+1b2aa39 - Kegan Vosteen, 2025-04-20 : Add global CORS headers handler in app.py
+b239cef - Kegan Vosteen, 2025-04-20 : Add Procfile: increase Gunicorn timeout to 180s and 2 workers
+bbd5d25 - Kegan Vosteen, 2025-04-20 : Debug: Add overlay and analysis data debug panels, fix duplicate drawOverlays error, improve troubleshooting for overlays not appearing in playback.
+7f0523a - Kegan Vosteen, 2025-04-20 : fix: reuse global MediaPipe landmarker, process frames sequentially for lower memory usage and Render stability
+e18eb71 - Kegan Vosteen, 2025-04-20 : feat: memory logging and batch frame processing for stability; add psutil
+5773c16 - Kegan Vosteen, 2025-04-20 : fix: use lite pose model by default for Render stability
+1186ade - Kegan Vosteen, 2025-04-20 : fix: handle CORS OPTIONS & configurable model variant
+f8cfced - Kegan Vosteen, 2025-04-20 : fix: restore video playback handlers & sync isPlaying state
+bfcaeea - Kegan Vosteen, 2025-04-18 : debug: add robust file stream and error logging for empty uploads
+6101765 - Kegan Vosteen, 2025-04-18 : debug: add raw request data logging for empty uploads; add Render.com troubleshooting tips
+905dc5b - Kegan Vosteen, 2025-04-18 : debug: add upload diagnostics and increase MAX_CONTENT_LENGTH for video upload troubleshooting
+36d6646 - Kegan Vosteen, 2025-04-18 : fix: do not set Content-Type manually for FormData video upload, let browser set boundary
+e60c591 - Kegan Vosteen, 2025-04-18 : fix: Always return Promise for WebM in onRecordingComplete, ensure patched Blob is used for upload and playback
+ec2ccb5 - Kegan Vosteen, 2025-04-18 : fix: Await blob in handleRecordingComplete to ensure valid video upload
+daa4b55 - Kegan Vosteen, 2025-04-18 : Fix WebM duration in Chrome recordings using webm-duration-fix for playback and backend compatibility
+686204e - Kegan Vosteen, 2025-04-18 : Update requirements.txt for backend dependencies
+d2035d8 - Kegan Vosteen, 2025-04-18 : Add debug logging and validation for video uploads (frontend & backend). Improves error handling and diagnostics for squat analyzer.
+c4f7632 - Kegan Vosteen, 2025-04-18 : Add gunicorn to requirements.txt for production deployment (Render compatibility)
+0c2bbc0 - Kegan Vosteen, 2025-04-18 : Improve file upload validation, restrict CORS, and add Gunicorn for production
+68e2ecd - keganvosteen, 2025-04-18 : Fix: Correct MediaRecorder event handler order and state updates
+082ed46 - keganvosteen, 2025-04-18 : Fix: Reorder function definitions in ExercisePlayback to prevent initialization error
+2bb61cf - keganvosteen, 2025-04-17 : Refactor: Improve video/image source handling in ExercisePlayback
+d978c52 - keganvosteen, 2025-04-17 : Fix: Correct playback overlay drawing using useCallback and rAF
+6748574 - keganvosteen, 2025-04-17 : Fix: Define handlePlay/handlePause in ExercisePlayback component scope
+de681a5 - keganvosteen, 2025-04-17 : Add early logging to /analyze route for debugging
+5606b64 - keganvosteen, 2025-04-17 : Fix: Enable video playback by setting videoUrl in App.jsx and using it in ExercisePlayback.jsx
+1133036 - keganvosteen, 2025-04-17 : Increase MediaRecorder.onstop fallback timeout to 5 seconds
+c74631a - keganvosteen, 2025-04-17 : Fix: Correctly validate server analysis response format in App.jsx
+051b30c - keganvosteen, 2025-04-17 : Refactor: Strictly reorder function declarations to fix initialization error
+7a008b4 - keganvosteen, 2025-04-17 : Fix duplicate keys in getKeypointColor function
+8da1fc5 - keganvosteen, 2025-04-17 : Fix 'Cannot access Ee before initialization' error by reordering function declarations
+4798fce - keganvosteen, 2025-04-17 : Update favicon configuration to match Columbia University's standard
+a97f097 - keganvosteen, 2025-04-17 : Comprehensive improvements to VideoCapture component: Fixed memory management, optimized performance, improved error handling, enhanced cleanup logic, and strengthened TensorFlow initialization
+219e1bf - keganvosteen, 2025-04-16 : Fix: Completely restructure frame capture to avoid initialization issues
+6635eae - keganvosteen, 2025-04-16 : Refactor: Wrap handleStartRecording in useCallback to prevent initialization errors
+4b7c7a4 - keganvosteen, 2025-04-16 : Fix: Initialize frame capture correctly to prevent 'Cannot access ue before initialization' error
+ac2bd37 - keganvosteen, 2025-04-16 : Fix: Define manualCleanup with useCallback for proper scope access
+1ed7495 - keganvosteen, 2025-04-15 : Fix VideoCapture.jsx: Add missing processRecordingForAnalysis function and fix recording functionality
+d6ff991 - keganvosteen, 2025-04-15 : Enhance recording reliability with snapshot fallbacks and improve error handling
+ecc0575 - keganvosteen, 2025-04-15 : Fix stop recording issues and player control errors
+0b0d425 - keganvosteen, 2025-04-14 : Fix recording timer NaN issues and improve error handling
+aa6eee3 - keganvosteen, 2025-04-14 : Fix: Correct recording timer display and improve fallback logic
+31f616e - keganvosteen, 2025-04-14 : Fix backend connection and URL handling for improved compatibility
+7d16166 - keganvosteen, 2025-04-14 : Fix recording fallback mechanism and improve error handling
+a9523fd - keganvosteen, 2025-04-14 : Fix ReferenceError: replace mobileDevice with isMobile in MediaRecorder configuration
+ad980ee - keganvosteen, 2025-04-14 : Disable local analysis mode
+1991480 - keganvosteen, 2025-04-14 : Fix CORS issues and improve recording functionality
+716112b - keganvosteen, 2025-04-14 : Improve mobile support and fix recording functionality
+93e048c - keganvosteen, 2025-04-14 : Fix CORS header errors and improve Firefox compatibility
+4e91748 - keganvosteen, 2025-04-14 : Fix CORS issues and improve backend connectivity
+9c1a58e - keganvosteen, 2025-04-14 : Fix handleLoadedMetadata undefined error and improve CORS handling
+47d6e81 - keganvosteen, 2025-04-14 : Fix mobile recording and playback issues - comprehensive update
+952c8c8 - keganvosteen, 2025-04-13 : Fix mobile recording and video playback issues
+183d015 - keganvosteen, 2025-04-12 : Fix CORS issues and implement missing recording functions
+12c65d2 - keganvosteen, 2025-04-12 : Fix mobile recording issues: improve MediaRecorder, enhance UI, add fallbacks
+af9fc59 - keganvosteen, 2025-04-12 : Fix pose landmark alignment in video analysis by improving coordinate mapping
+fb4d78f - keganvosteen, 2025-04-12 : Fix VideoCapture component: add missing UI elements, implement toggle functions, add CSS styles
+b8a1606 - keganvosteen, 2025-04-12 : Fix reference errors in VideoCapture component: add missing recordedVideo state
+5ba3778 - keganvosteen, 2025-04-12 : Fix undefined dark variable in VideoCapture component
+5586144 - keganvosteen, 2025-04-12 : Improve mobile camera handling and recording functionality: - Enhanced mobile device detection and optimization - Fixed recording button issues on touch devices - Improved error handling and camera toggling - Optimized TensorFlow initialization for mobile - Added visual feedback during recording
+6af097a - keganvosteen, 2025-04-12 : Fix mobile recording issues on Chrome and Safari with iOS-specific optimizations and fallbacks
+77ea891 - keganvosteen, 2025-04-12 : Fix record button on mobile devices by improving touch handling and optimizing MediaRecorder
+312e9c1 - keganvosteen, 2025-04-12 : Fix video capture and improve server status handling: 1) Fix MediaRecorder issues by ensuring proper event handling, 2) Add dynamic server status indicator, 3) Improve error handling
+1a40bc1 - keganvosteen, 2025-04-12 : Fix setRecordingStartTime and setCurrentRecordingId reference errors
+7c20365 - keganvosteen, 2025-04-12 : Fix chunksRef reference error in recording functionality
+d115f6b - keganvosteen, 2025-04-12 : Fix startRecording reference error by adding handleStopRecording function
+0161e56 - keganvosteen, 2025-04-12 : Update Columbia Business image
+68f0acc - keganvosteen, 2025-04-12 : Fix safety timeout and MediaRecorder issues
+f07f19d - keganvosteen, 2025-04-11 : Redesign UI: Change title to SmartSquat, make logos bigger, redesign buttons, improve recording UI
+dfe3ea6 - keganvosteen, 2025-04-11 : Fix pose tracking coordinate mapping and canvas resizing
+808faa0 - keganvosteen, 2025-04-11 : Update favicon to use new Columbia Crown PNG
+8eb1a74 - keganvosteen, 2025-04-11 : Add Columbia Business School and Engineering logos to header
+54807c0 - keganvosteen, 2025-04-11 : Fix button functionality - recording, camera switching, and pose tracking
+d4f99e3 - keganvosteen, 2025-04-11 : Fix security vulnerability in Vite dependency
+b44248c - keganvosteen, 2025-04-11 : Fix pose tracking display - make limb landmarks always visible in real-time
+ff49bb8 - keganvosteen, 2025-04-11 : Simplify crown favicon to plain blue crown
+b3c8bf1 - keganvosteen, 2025-04-11 : Update page title to SmartSquat and add Columbia crown favicon
+0a788d6 - keganvosteen, 2025-04-11 : Add warmupServer function to ServerWarmup utility
+881e58e - keganvosteen, 2025-04-11 : Fix pose detection errors and local analysis compatibility
+9bdde93 - keganvosteen, 2025-04-11 : Add terser as explicit dependency for production builds
+8ab208f - keganvosteen, 2025-04-11 : Optimize Vite config for better mobile performance and chunk management
+3bb1645 - keganvosteen, 2025-04-11 : Add dark mode support and update Columbia Engineering logo for better visibility
+1a6fcba - keganvosteen, 2025-04-11 : Fix mobile camera initialization with better error handling and fallbacks
+d1b6381 - keganvosteen, 2025-04-11 : Add live pose tracking during recording and fix Columbia logos
+fac1706 - keganvosteen, 2025-04-10 : Optimize pose detection to focus only on body parts relevant for squat analysis
+ca2d2eb - keganvosteen, 2025-04-10 : Add TensorFlow.js dependencies for pose detection
+fa67361 - keganvosteen, 2025-04-10 : Fix video rotation and orientation issues for mobile recordings
+77ece34 - keganvosteen, 2025-04-10 : Fix video rotation issues and overlay positioning in playback mode
+58ed93a - keganvosteen, 2025-04-10 : Fix TensorFlow.js pose detection on Chrome and Firefox browsers
+fc32e69 - keganvosteen, 2025-04-10 : Fix domain resolution error by using local SVG placeholder logos
+ce1b6e4 - keganvosteen, 2025-04-10 : Add TensorFlow.js dependencies and update packages
+855c3fb - keganvosteen, 2025-04-10 : Optimize frontend and backend for performance, stability, and concurrency
+f88a44b - keganvosteen, 2025-04-10 : Add live pose tracking during recording and fix Columbia logos
+6d0dbb5 - keganvosteen, 2025-04-10 : Fix analysis issues with empty frames and add validation
+5acac91 - keganvosteen, 2025-04-10 : Fix axios timeout issue by enforcing 45-second timeout globally and in requests
+169c41f - keganvosteen, 2025-04-09 : Add video compression and canvas-based optimization to frontend components
+96177c8 - keganvosteen, 2025-04-09 : Add Columbia logos, parallel processing in backend, video compression, and server warmup
+564ca4e - keganvosteen, 2025-04-09 : Fix local analysis to handle invalid video duration
+90485d2 - keganvosteen, 2025-04-09 : Add local analysis fallback mode for when backend times out
+6e5a9f8 - keganvosteen, 2025-04-09 : Fix camera initialization errors with enhanced error handling and retry options
+96d8e56 - keganvosteen, 2025-04-09 : Improve instructions layout and add recording limits information
+e96d7e7 - keganvosteen, 2025-04-09 : Improve recording UX with blinking indicator and fix analysis flow
+6368e34 - keganvosteen, 2025-04-09 : Fix stop recording button functionality with enhanced error handling
+ef5ade5 - keganvosteen, 2025-04-09 : Fix formatting in ExercisePlayback component
+4b97126 - keganvosteen, 2025-04-09 : Optimize video recording and backend processing for better performance
+cd18b65 - keganvosteen, 2025-04-08 : Improve backend performance and frontend error handling
+eb8408f - keganvosteen, 2025-04-08 : Make video overlays dynamic using requestAnimationFrame for better performance
+183c4b4 - keganvosteen, 2025-04-08 : Fix video recording issue by removing conflicting code causing automatic stop
+f404004 - keganvosteen, 2025-04-08 : Fix video recording functionality to ensure continuous recording
+8cbad22 - keganvosteen, 2025-04-08 : Improve frontend error handling and fix video playback issues
+ba2b48f - keganvosteen, 2025-04-08 : Fix CORS issues and improve backend API for video analysis
+f1d2060 - keganvosteen, 2025-04-08 : Fix missing Circle import in VideoCapture component
+c58d74d - keganvosteen, 2025-04-08 : Fix camera initialization and recording issues for HTTPS deployments
+99c6e2b - keganvosteen, 2025-04-08 : Fix video recording and playback issues: Add proper error handling, improve MediaRecorder lifecycle, update backend URL configuration
+f79e6e0 - keganvosteen, 2025-04-08 : Add debug logging and fix overlay rendering in ExercisePlayback component
+85b0d9d - keganvosteen, 2025-04-08 : Update ExercisePlayback component with measurement overlays and improved visualization
+3cc3fa3 - keganvosteen, 2025-04-08 : Add real-time measurements display: knee angle, depth ratio, and shoulder-midfoot difference
+6ca0265 - keganvosteen, 2025-04-08 : Fix video playback issues: metadata handling, error management, and Firefox compatibility
+d864407 - keganvosteen, 2025-04-08 : Fix frontend issues: StatLabel component, MediaRecorder initialization, and CORS configuration
+ff1ceb0 - keganvosteen, 2025-04-08 : Fix MediaPipe model loading and add local model caching
+35cb6f2 - keganvosteen, 2025-04-08 : Update app.py to use MediaPipe Tasks API and fix pose detection
+5bc56ac - keganvosteen, 2025-04-08 : Implement NYT-style overlays with body landmarks, connecting lines, and feedback annotations
+ab14784 - keganvosteen, 2025-04-08 : Fix MediaRecorder initialization and recording issues
+b7183ac - keganvosteen, 2025-04-08 : Fix video recording and playback issues: MediaRecorder state, API URL, and analysis data handling
+b960d59 - keganvosteen, 2025-04-08 : Fix CORS configuration and video playback component
+151a9b4 - keganvosteen, 2025-04-08 : Fix video recording issues: MediaRecorder state, API URL, and analysis data handling
+2bce35c - keganvosteen, 2025-04-07 : Fix video recording and playback issues: FormData handling, video URL handling, and error management
+116eef0 - keganvosteen, 2025-04-07 : Add styled-components dependency for NYT-style visualization
+70e4daf - keganvosteen, 2025-04-07 : Add NYT-style visualization features: body landmarks, analysis arrows, and feedback tips
+38e5f06 - Kegan Vosteen, 2025-04-07 : Fix: Complete rewrite of video recording and playback system
+11f2d56 - Kegan Vosteen, 2025-04-07 : Fix: Resolve video playback issues in ExercisePlayback
+ef665d3 - Kegan Vosteen, 2025-04-07 : Fix: Improve timestamp synchronization and remove CORS fallback handling
+96981ec - Kegan Vosteen, 2025-04-06 : Fix: Implement fallback to local processing for CORS issues
+08a0986 - Kegan Vosteen, 2025-04-06 : Fix: Improve CORS handling in frontend API requests
+52fa4ec - Kegan Vosteen, 2025-04-06 : Remove unused ExerciseRecorder component
+2a3b6c8 - Kegan Vosteen, 2025-04-06 : Fix: Add CORS headers to backend to allow cross-origin requests
+95d075b - Kegan Vosteen, 2025-04-06 : Fix: Ensure continuous video recording and make UI fully responsive
+b7831b0 - Kegan Vosteen, 2025-04-06 : Fix: Ensure continuous video recording and improve mobile responsiveness
+b9d7a8c - Kegan Vosteen, 2025-04-06 : Fix: match React and ReactDOM at 19.1.0
+7f12aca - Kegan Vosteen, 2025-04-03 : Fix: Add lucide-react dependency for Render build
+22c4928 - Kegan Vosteen, 2025-04-03 : Add lucide-react for icons
+cbc0271 - Kegan Vosteen, 2025-04-02 : Complete squat analyzer implementation with enhanced UI and form analysis
+9e428e7 - Christian Shields, 2025-04-02 : back to the old one
+20b75c1 - Christian Shields, 2025-04-02 : Finally it works
+07ba2e1 - Christian Shields, 2025-04-02 : putting feedback back in
+4de9c55 - Christian Shields, 2025-04-02 : finishe product
+7f0264b - Christian Shields, 2025-04-02 : maybe this works?
+dedfd4c - Christian Shields, 2025-04-02 : even more ui changes!!!!!!
+a5a46a2 - Christian Shields, 2025-04-02 : more ui changes!!!
+b62bca7 - Christian Shields, 2025-04-02 : ui changes apr 2
+3e1f02d - Kegan Vosteen, 2025-03-24 : update video icons
+882acd6 - Kegan Vosteen, 2025-03-24 : Enhance ExercisePlayback: add iOS detection and debug info display, update video rotation logic, and ignore dist folder in .gitignore
+b265382 - Christian Shields, 2025-03-24 : Update camera UI: Add fullscreen mode and icon buttons
+a4ade3c - Kegan Vosteen, 2025-03-13 : Rotate video -90deg on iOS in ExercisePlayback
+7510df8 - Kegan Vosteen, 2025-03-13 : Rotate video 90deg on iOS in ExercisePlayback
+fc1d170 - Kegan Vosteen, 2025-03-13 : Remove forced rotation in ExercisePlayback
+98e50b7 - Kegan Vosteen, 2025-03-13 : Update ExerciseRecorder: use ref for chunks, increase onstop delay to 1000ms for reliable Blob creation
+69f3a5b - Kegan Vosteen, 2025-03-13 : Increase onstop delay to 500ms and log feedback for complete recording
+9b71fec - Kegan Vosteen, 2025-03-13 : Update ExerciseRecorder to include delay in onstop and real-time feedback logging
+0945f2b - Kegan Vosteen, 2025-03-13 : Update App.jsx to correctly handle recording object structure
+3f6c934 - Kegan Vosteen, 2025-03-13 : Update ExercisePlayback: conditionally rotate video on mobile and format feedback display
+fbbcc18 - Kegan Vosteen, 2025-03-13 : Reintegrate real-time feedback capture during recording in ExerciseRecorder
+cf673ba - Kegan Vosteen, 2025-03-13 : Integrate real-time feedback logging during recording in ExerciseRecorder
+eb83b35 - Kegan Vosteen, 2025-03-13 : Add conditional video rotation for mobile in ExercisePlayback
+f2bc64a - Kegan Vosteen, 2025-03-13 : Integrate updated recording UI with video preview, start/stop, blinking indicator, camera toggle, and video library
+a801654 - Kegan Vosteen, 2025-03-13 : Add exercise recording and playback with timeline markers for detailed feedback
+9c32074 - Kegan Vosteen, 2025-03-04 : Remove stray URL from VideoCapture.jsx
+ee6caaf - Kegan Vosteen, 2025-03-04 : Update API endpoint to use /analyze-squat route
+aec9fb9 - Kegan Vosteen, 2025-03-04 : Remove dist folder from tracking and update .gitignore
+24adc34 - Kegan Vosteen, 2025-03-04 : Build production site: update source and add dist directory
+710cdd8 - Kegan Vosteen, 2025-03-04 : Update app.py to use PORT environment variable for Render deployment
+0e3e99c - Kegan Vosteen, 2025-03-04 : Add requirements.txt for backend dependencies
+829b798 - Kegan Vosteen, 2025-03-03 : Remove venv from tracking and update .gitignore
+55779aa - Kegan Vosteen, 2025-03-03 : Initial commit: project structure without venv and unnecessary files
+a7d39de - Kegan Vosteen, 2025-03-03 : Initial commit: project structure with backend and frontend

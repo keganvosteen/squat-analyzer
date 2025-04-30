@@ -4,8 +4,11 @@ MODEL_PATH = os.environ.get(
     "MOVENET_PATH",
     os.path.expanduser("~/models/movenet_thunder.onnx")
 )
+options = ort.SessionOptions()
+options.log_severity_level = 2  # Only warnings and errors
 sess = ort.InferenceSession(
     MODEL_PATH,
+    sess_options=options,
     providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
 )
 

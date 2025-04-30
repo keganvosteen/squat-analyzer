@@ -30,9 +30,20 @@ from concurrent.futures import ThreadPoolExecutor
 import traceback
 import uuid
 import tempfile
+import logging
 from movenet_validator import infer_pose_bgr, _ort_sess
 
 app = Flask(__name__)
+import logging
+# Only show warnings and above in Flask logs
+app.logger.setLevel(logging.WARNING)
+# Suppress Werkzeug request logs
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
+class MemoryFilter(logging.Filter):
+    def filter(self, record):
+        # Suppress logs containing memory diagnostics tag
+        return "[MEM_DIAG]" not in record.getMessage()
+app.logger.addFilter(MemoryFilter())
 CORS(app, resources={
     r"/*": {
         "origins": ["https://squat-analyzer-frontend.onrender.com", "http://localhost:5173"],
@@ -131,63 +142,133 @@ def allowed_file(filename):
 def calculate_angle(a, b, c):
     """Calculate the angle between three points with stability checks."""
     try:
-        # Handle both dictionary and object access patterns
-        if isinstance(a, dict):
-            ba = np.array([a['x'] - b['x'], a['y'] - b['y']])
-            bc = np.array([c['x'] - b['x'], c['y'] - b['y']])
-        else:
-            ba = np.array([a.x - b.x, a.y - b.y])
-            bc = np.array([c.x - b.x, c.y - b.y])
-
-        norm_ba = np.linalg.norm(ba)
-        norm_bc = np.linalg.norm(bc)
-
-        if norm_ba == 0 or norm_bc == 0:
+        # Get coordinates with fallbacks for all possible data formats
+        try:
+            # Try dictionary access first with proper conditional expressions
+            a_x = a.get('x', 0) if isinstance(a, dict) else (a.x if hasattr(a, 'x') else 0)
+            a_y = a.get('y', 0) if isinstance(a, dict) else (a.y if hasattr(a, 'y') else 0)
+            
+            b_x = b.get('x', 0) if isinstance(b, dict) else (b.x if hasattr(b, 'x') else 0)
+            b_y = b.get('y', 0) if isinstance(b, dict) else (b.y if hasattr(b, 'y') else 0)
+            
+            c_x = c.get('x', 0) if isinstance(c, dict) else (c.x if hasattr(c, 'x') else 0)
+            c_y = c.get('y', 0) if isinstance(c, dict) else (c.y if hasattr(c, 'y') else 0)
+        except Exception:
+            # More explicit approach if the above fails
+            if isinstance(a, dict):
+                a_x, a_y = a.get('x', 0), a.get('y', 0)
+            elif hasattr(a, 'x') and hasattr(a, 'y'):
+                a_x, a_y = a.x, a.y
+            else:
+                a_x, a_y = 0, 0
+                
+            if isinstance(b, dict):
+                b_x, b_y = b.get('x', 0), b.get('y', 0)
+            elif hasattr(b, 'x') and hasattr(b, 'y'):
+                b_x, b_y = b.x, b.y
+            else:
+                b_x, b_y = 0, 0
+                
+            if isinstance(c, dict):
+                c_x, c_y = c.get('x', 0), c.get('y', 0)
+            elif hasattr(c, 'x') and hasattr(c, 'y'):
+                c_x, c_y = c.x, c.y
+            else:
+                c_x, c_y = 0, 0
+            
+        # Calculate vectors
+        ba_x, ba_y = a_x - b_x, a_y - b_y
+        bc_x, bc_y = c_x - b_x, c_y - b_y
+        
+        # Calculate dot product
+        dot_product = (ba_x * bc_x + ba_y * bc_y)
+        
+        # Calculate magnitudes
+        magnitude_ba = math.sqrt(ba_x**2 + ba_y**2)
+        magnitude_bc = math.sqrt(bc_x**2 + bc_y**2)
+        
+        # Handle division by zero
+        if magnitude_ba < 1e-6 or magnitude_bc < 1e-6:
             return 0
-
-        cosine_angle = np.clip(np.dot(ba, bc) / (norm_ba * norm_bc), -1.0, 1.0)
-        angle = np.arccos(cosine_angle)
-
-        return np.degrees(angle)
-    except (KeyError, AttributeError, TypeError) as e:
+            
+        # Calculate cosine of angle
+        cosine_angle = dot_product / (magnitude_ba * magnitude_bc)
+        
+        # Clamp to valid range to handle floating point errors
+        cosine_angle = max(-1, min(1, cosine_angle))
+        
+        # Calculate angle in degrees
+        angle_rad = math.acos(cosine_angle)
+        angle_deg = math.degrees(angle_rad)
+        
+        return angle_deg
+    except Exception as e:
         app.logger.error(f"Error calculating angle: {str(e)}")
         return 0  # Default fallback value
 
 def calculate_depth_ratio(hip, knee, ankle):
     """Calculate the depth ratio based on hip, knee, and ankle positions."""
     try:
-        # Handle both dictionary and object access patterns
+        # Get coordinates safely, handling all possible data formats
+        hip_y = 0
+        knee_y = 0
+        ankle_y = 0
+        
+        # Get hip y-coordinate
         if isinstance(hip, dict):
-            hip_height = hip['y']
-            knee_height = knee['y']
-            ankle_height = ankle['y']
-        else:
-            hip_height = hip.y
-            knee_height = knee.y
-            ankle_height = ankle.y
+            hip_y = hip.get('y', 0)
+        elif hasattr(hip, 'y'):
+            hip_y = hip.y
         
-        total_leg_length = abs(hip_height - ankle_height)
-        if total_leg_length == 0:
+        # Get knee y-coordinate
+        if isinstance(knee, dict):
+            knee_y = knee.get('y', 0)
+        elif hasattr(knee, 'y'):
+            knee_y = knee.y
+            
+        # Get ankle y-coordinate
+        if isinstance(ankle, dict):
+            ankle_y = ankle.get('y', 0)
+        elif hasattr(ankle, 'y'):
+            ankle_y = ankle.y
+            
+        # Calculate distances
+        hip_to_knee = abs(hip_y - knee_y)
+        knee_to_ankle = abs(knee_y - ankle_y)
+        hip_to_ankle = abs(hip_y - ankle_y)
+        
+        if hip_to_ankle < 1e-6:
             return 0
+            
+        # Calculate ratio
+        depth_ratio = knee_y / hip_to_ankle
         
-        squat_depth = abs(knee_height - ankle_height)
-        return squat_depth / total_leg_length
-    except (KeyError, AttributeError, TypeError, ZeroDivisionError) as e:
+        return depth_ratio * 100  # Scale for readability
+    except Exception as e:
         app.logger.error(f"Error calculating depth ratio: {str(e)}")
         return 0  # Default fallback value
 
 def calculate_shoulder_midfoot_diff(shoulder, hip, knee, ankle):
     """Calculate the horizontal difference between shoulder and midfoot position."""
     try:
-        # Handle both dictionary and object access patterns
-        if isinstance(shoulder, dict) and isinstance(ankle, dict):
-            midfoot_x = ankle['x']
-            shoulder_x = shoulder['x']
-        else:
-            midfoot_x = ankle.x
+        # Get coordinates safely, handling all possible data formats
+        shoulder_x = 0
+        midfoot_x = 0
+        
+        # Get shoulder x-coordinate
+        if isinstance(shoulder, dict):
+            shoulder_x = shoulder.get('x', 0)
+        elif hasattr(shoulder, 'x'):
             shoulder_x = shoulder.x
+        
+        # Get ankle x-coordinate
+        if isinstance(ankle, dict):
+            midfoot_x = ankle.get('x', 0)
+        elif hasattr(ankle, 'x'):
+            midfoot_x = ankle.x
+            
         return abs(shoulder_x - midfoot_x) * 100  # Convert to pixels
-    except (KeyError, AttributeError, TypeError) as e:
+    except Exception as e:
         app.logger.error(f"Error calculating shoulder-midfoot difference: {str(e)}")
         return 0  # Default fallback value
 
@@ -469,10 +550,47 @@ def analyze_video():
         mem_mb = process.memory_info().rss / 1024 / 1024
         app.logger.info(f"[MEMORY] Before extraction: {mem_mb:.2f} MB")
         # Initialize video capture (explicitly request FFMPEG backend for better codec support)
+        # Try multiple video backends if first one fails
         cap = cv2.VideoCapture(temp_path, cv2.CAP_FFMPEG)
         if not cap.isOpened():
             app.logger.error(f"OpenCV could not open video file with FFMPEG backend: {temp_path}")
-            return jsonify({'error': 'Could not open video file – codec unsupported'}), 500
+            # Try again with default backend
+            cap = cv2.VideoCapture(temp_path)
+            if not cap.isOpened():
+                app.logger.error(f"OpenCV could not open video file with any backend: {temp_path}")
+                
+                # Try to read as a static image instead (fallback for corrupted videos)
+                try:
+                    # Try to use PIL to open the file (more lenient)
+                    from PIL import Image
+                    try:
+                        img = Image.open(temp_path)
+                        img_array = np.array(img)
+                        if img_array is not None and img_array.size > 0:
+                            # Convert PIL image to OpenCV BGR format if needed
+                            if len(img_array.shape) == 3 and img_array.shape[2] == 3:
+                                frame = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+                            else:
+                                frame = img_array
+                                
+                            app.logger.warning(f"Processed file as static image instead of video: {temp_path}")
+                            # Create an array with just this one frame
+                            frames_to_process = [(0, frame)]
+                            # Skip regular video processing
+                            goto_processing = True
+                        else:
+                            raise ValueError("Empty image array")
+                    except Exception as img_err:
+                        app.logger.error(f"Failed to open as image too: {str(img_err)}")
+                        return jsonify({'error': 'Could not open video file or image – file may be corrupted'}), 400
+                except Exception as fallback_err:
+                    app.logger.error(f"All fallback attempts failed: {str(fallback_err)}")
+                    return jsonify({'error': 'Could not open video file – file may be corrupted or in an unsupported format'}), 400
+            else:
+                app.logger.warning(f"Opened with default backend instead of FFMPEG: {temp_path}")
+        
+        # Store flag to skip video processing if we used the image fallback
+        goto_processing = False
         
         # Get video properties
         fps = int(cap.get(cv2.CAP_PROP_FPS))
@@ -538,31 +656,198 @@ def analyze_video():
         # Remove frame processing cap: process all frames according to frame_skip
         # Calculate optimal frame skip for long videos to avoid excessive processing (optional: can set frame_skip=1)
         estimated_time_per_frame = 0.5  # Estimated processing time per frame in seconds
-        target_processing_time = 30  # (Optional, can be removed if not needed)
-        total_frames_possible = target_processing_time / estimated_time_per_frame  # (Optional)
-        frame_skip = 1  # Process every frame
+        target_processing_time = 30  # Target processing time in seconds
+        
+        # For videos longer than 20 seconds, use smarter frame selection
+        if duration_sec > 20:
+            # Dynamically adjust frame_skip based on video length to stay under target time
+            ideal_frames = target_processing_time / estimated_time_per_frame
+            frame_skip = max(1, int(frame_count / ideal_frames))
+            app.logger.info(f"Video duration {duration_sec:.1f}s - adjusting frame_skip to {frame_skip}")
+        else:
+            frame_skip = 1  # Process every frame for shorter videos
         app.logger.info(f"Processing every {frame_skip}th frame (all frames)")
 
         # Pre-calculate target frame indices to process (all frames)
         target_frames = list(range(0, frame_count, frame_skip))
 
-        # Extract frames to process
-        frames_to_process = []
-        for idx in target_frames:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            success, frame = cap.read()
-            if success:
-                # Handle rotated video from mobile devices
-                if is_portrait_video:
-                    # Rotate 90 degrees counterclockwise if video is in portrait mode
-                    # This is common for mobile recordings
-                    frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-                    app.logger.info(f"Rotated frame from {height}x{width} to {frame.shape[1]}x{frame.shape[0]}")
+        # Skip if we already have frames from image fallback
+        if not goto_processing:
+            # Extract frames to process with robust multi-method approach
+            frames_to_process = []
+            
+            # Try multiple methods for frame extraction in order of reliability
+            extraction_methods = [
+                "keyframe_extraction",
+                "sequential_reading",
+                "ffmpeg_frames" 
+            ]
+            
+            # Pre-calculate target frames as a set for faster lookup
+            target_frame_set = set(target_frames)
+            
+            # First method: Keyframe extraction - often works better with certain codecs
+            if "keyframe_extraction" in extraction_methods:
+                app.logger.info("Trying keyframe extraction method first")
+                keyframe_frames = []
                 
-                # Resize frame to reduce memory usage
+                # Release and reopen the capture to ensure clean state
+                cap.release()
+                cap = cv2.VideoCapture(temp_path)
+                
+                # Get video properties again
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                
+                # Calculate interval between keyframes
+                keyframe_interval = max(1, frame_count // min(60, len(target_frames)))
+                
+                # Extract keyframes at regular intervals
+                for frame_idx in range(0, frame_count, keyframe_interval):
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                    ret, frame = cap.read()
+                    if ret:
+                        # Handle rotated video from mobile devices
+                        if is_portrait_video:
+                            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                        keyframe_frames.append((frame_idx, frame))
+                    if len(keyframe_frames) >= min(60, len(target_frames)):
+                        break
+                        
+                app.logger.info(f"Keyframe extraction method yielded {len(keyframe_frames)} frames")
+                if len(keyframe_frames) >= min(30, len(target_frames) // 2):
+                    frames_to_process = keyframe_frames
+                    app.logger.info("Using keyframe extraction results")
+            
+            # Second method: Sequential reading if first method didn't yield enough frames
+            if len(frames_to_process) < min(30, len(target_frames) // 2) and "sequential_reading" in extraction_methods:
+                app.logger.info("Trying sequential reading method")
+                
+                # Release and reopen the capture to ensure clean state
+                cap.release()
+                cap = cv2.VideoCapture(temp_path)
+                
+                # Reset to beginning of video for sequential reading
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                
+                sequential_frames = []
+                consecutive_failures = 0
+                max_consecutive_failures = 30  # Increased threshold
+                frames_read = 0
+                current_frame_idx = 0
+                sample_interval = max(1, frame_count // min(100, len(target_frames)))
+                
+                # Read frames sequentially, sampling at regular intervals
+                while frames_read < frame_count:
+                    # Only process frames at our sampling interval
+                    if current_frame_idx % sample_interval == 0:
+                        ret, frame = cap.read()
+                        if ret:
+                            if is_portrait_video:
+                                frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                            sequential_frames.append((current_frame_idx, frame))
+                            consecutive_failures = 0
+                        else:
+                            consecutive_failures += 1
+                            if consecutive_failures >= max_consecutive_failures:
+                                app.logger.warning(f"Too many consecutive failures in sequential reading at frame {current_frame_idx}")
+                                break
+                    else:
+                        # Skip frames we're not interested in
+                        ret = cap.grab()
+                        if not ret:
+                            consecutive_failures += 1
+                            if consecutive_failures >= max_consecutive_failures:
+                                break
+                    
+                    current_frame_idx += 1
+                    frames_read += 1
+                    
+                    # Exit if we have enough frames
+                    if len(sequential_frames) >= min(100, len(target_frames)):
+                        break
+                
+                app.logger.info(f"Sequential reading method yielded {len(sequential_frames)} frames")
+                if len(sequential_frames) > len(frames_to_process):
+                    frames_to_process = sequential_frames
+                    app.logger.info("Using sequential reading results")
+            
+            # Third method: Try using FFmpeg directly as a last resort
+            if len(frames_to_process) < min(20, len(target_frames) // 4) and "ffmpeg_frames" in extraction_methods:
+                try:
+                    app.logger.info("Trying FFmpeg direct extraction as last resort")
+                    # Create a temp directory for extracted frames
+                    with tempfile.TemporaryDirectory() as tmpdirname:
+                        # Use FFmpeg to extract frames
+                        extract_count = min(50, frame_count)
+                        extraction_interval = max(1, frame_count // extract_count)
+                        ffmpeg_cmd = f"ffmpeg -i {temp_path} -vf 'select=not(mod(n,{extraction_interval}))' -vsync vfr {tmpdirname}/frame_%04d.jpg"
+                        os.system(ffmpeg_cmd)
+                        
+                        # Load the extracted frames
+                        ffmpeg_frames = []
+                        frame_files = sorted([f for f in os.listdir(tmpdirname) if f.startswith('frame_')])
+                        for i, frame_file in enumerate(frame_files):
+                            frame_path = os.path.join(tmpdirname, frame_file)
+                            frame = cv2.imread(frame_path)
+                            if frame is not None:
+                                frame_idx = i * extraction_interval
+                                if is_portrait_video:
+                                    frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                                ffmpeg_frames.append((frame_idx, frame))
+                        
+                        app.logger.info(f"FFmpeg extraction method yielded {len(ffmpeg_frames)} frames")
+                        if len(ffmpeg_frames) > len(frames_to_process):
+                            frames_to_process = ffmpeg_frames
+                            app.logger.info("Using FFmpeg extraction results")
+                except Exception as e:
+                    app.logger.error(f"FFmpeg extraction failed: {str(e)}")
+            
+            # Final assessment of frame extraction results
+            app.logger.info(f"Final frame extraction yielded {len(frames_to_process)} frames out of target {len(target_frames)}")
+            
+            # If we still couldn't extract enough frames, try one last approach: take whatever frames we can get
+            if len(frames_to_process) < 10 and frame_count > 0:
+                app.logger.warning("Insufficient frames extracted, trying emergency fallback extraction")
+                emergency_frames = []
+                
+                # Release and reopen the capture
+                cap.release()
+                cap = cv2.VideoCapture(temp_path)
+                
+                # Try to extract frames at key positions (beginning, middle, end)
+                for pos in [0, frame_count//4, frame_count//2, 3*frame_count//4, frame_count-1]:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, min(frame_count-1, pos)))
+                    ret, frame = cap.read()
+                    if ret:
+                        if is_portrait_video:
+                            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+                        emergency_frames.append((pos, frame))
+                
+                if len(emergency_frames) > 0:
+                    frames_to_process = emergency_frames
+                    app.logger.warning(f"Emergency extraction yielded {len(emergency_frames)} frames")
+                        
+            # Check if we got any usable frames
+            if len(frames_to_process) == 0:
+                app.logger.error(f"Could not extract any valid frames from video: {temp_path}")
+                return jsonify({
+                    'success': False,
+                    'error': 'Could not extract any valid frames from the video. The file may be corrupted.',
+                    'details': 'No valid frames could be processed. Try recording again with better lighting or a different device.'
+                }), 400
+            
+            # If we got fewer than expected frames but still have some to work with
+            if len(frames_to_process) < len(target_frame_set) / 2:
+                app.logger.warning(f"Extracted only {len(frames_to_process)} frames out of {len(target_frame_set)} target frames, but continuing with available frames")
+                
+            # Sort frames by index to ensure chronological order
+            frames_to_process.sort(key=lambda x: x[0])
+            
+            # Resize frames to reduce memory usage if they're large
+            for i, (idx, frame) in enumerate(frames_to_process):
                 if frame.shape[0] > 720 or frame.shape[1] > 1280:
-                    frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
-                frames_to_process.append((idx, frame))
+                    frames_to_process[i] = (idx, cv2.resize(frame, (0, 0), fx=0.5, fy=0.5))
         
         # Release the capture as soon as we've extracted frames
         cap.release()

@@ -2,15 +2,36 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 from pathlib import Path
+import urllib.request
 
 # Load MoveNet Thunder ONNX model
+MODEL_URL = "https://raw.githubusercontent.com/onnx/models/main/vision/body_analysis/movenet/model/movenet_thunder.onnx"
 MODEL_PATH = Path.home() / "models" / "movenet_thunder.onnx"
-if not MODEL_PATH.exists():
-    raise FileNotFoundError(f"MoveNet model not found at {MODEL_PATH}")
 
-_ort_sess   = ort.InferenceSession(
-    MODEL_PATH.as_posix(),
-    providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+def download_model():
+    MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    print(f"[Squat] Downloading MoveNet model from {MODEL_URL} to {MODEL_PATH}")
+    urllib.request.urlretrieve(MODEL_URL, MODEL_PATH.as_posix())
+
+if not MODEL_PATH.exists():
+    download_model()
+
+try:
+    _ort_sess = ort.InferenceSession(
+        MODEL_PATH.as_posix(),
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+    )
+except Exception as e:
+    if "INVALID_PROTOBUF" in str(e):
+        print(f"[Squat] Invalid protobuf model at {MODEL_PATH}, re-downloading...")
+        MODEL_PATH.unlink(missing_ok=True)
+        download_model()
+        _ort_sess = ort.InferenceSession(
+            MODEL_PATH.as_posix(),
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+        )
+    else:
+        raise
 
 _INP  = _ort_sess.get_inputs()[0].name
 _OUT  = _ort_sess.get_outputs()[0].name

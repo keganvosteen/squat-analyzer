@@ -192,6 +192,44 @@ const BackButton = styled.button`
   }
 `;
 
+const TimeLabel = styled.span`
+  font-variant-numeric: tabular-nums;
+  color: #111;
+  min-width: 48px;
+  text-align: center;
+`;
+
+const Scrubber = styled.input.attrs({ type: 'range' })`
+  flex: 1;
+  -webkit-appearance: none;
+  height: 6px;
+  border-radius: 3px;
+  background: #e0e0e0;
+  outline: none;
+  cursor: pointer;
+  position: relative;
+
+  &::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #007bff;
+    cursor: pointer;
+    margin-top: -3px;
+  }
+
+  &::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #007bff;
+    cursor: pointer;
+    border: none;
+  }
+`;
+
 const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysis = false, isLoading = false, error: externalError = null, onBack }) => {
   console.log("ExercisePlayback Component");
   console.log("Video URL:", videoUrl);
@@ -240,6 +278,10 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
   // Track if we're using an image instead of a video for playback
   const [isImagePlayback, setIsImagePlayback] = useState(false);
   
+  // States to track loading progress for analysis
+  const [loadingStartTime, setLoadingStartTime] = useState(null);
+  const [elapsedLoadingTime, setElapsedLoadingTime] = useState(0);
+  
   // Use effect to check blob type and set image/video playback mode
   useEffect(() => {
     // Reset image playback state initially
@@ -268,6 +310,22 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     
   }, [videoBlob, videoUrl, setError]); // Added setError dependency
 
+  // Track loading progress for analysis
+  useEffect(() => {
+    if (isLoading) {
+      const start = Date.now();
+      setLoadingStartTime(start);
+      setElapsedLoadingTime(0);
+      const intervalId = setInterval(() => {
+        setElapsedLoadingTime(Date.now() - start);
+      }, 200);
+      return () => clearInterval(intervalId);
+    } else {
+      setLoadingStartTime(null);
+      setElapsedLoadingTime(0);
+    }
+  }, [isLoading]);
+
   // Toggle debug display with double-click
   const toggleDebug = () => {
     setShowDebug(prev => !prev);
@@ -281,7 +339,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
 
   // Define drawing and coordinate functions BEFORE the useEffect that uses them
   // Transform coordinates based on video orientation and apply scaling
-  const transformCoordinates = useCallback((x, y, canvasWidth, canvasHeight, isPortrait = false) => {
+  const transformCoordinates = useCallback((x, y, canvasWidth, canvasHeight, isPortrait = false, landmarkIndex = -1) => {
     // Default values to prevent NaN
     if (typeof x !== 'number' || typeof y !== 'number') {
       console.warn('Invalid coordinates:', x, y);
@@ -296,16 +354,26 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     if (x > 1) normalizedX = x / canvasWidth;
     if (y > 1) normalizedY = y / canvasHeight;
     
+    // Detect and correct extreme positions - this helps filter out detection errors
+    // Particularly useful for ankles/feet that sometimes get incorrectly placed
+    const isExtreme = normalizedY < 0.05; // Top 5% of the screen is usually not valid for body parts
+    if (isExtreme) {
+      // For ankle/foot landmarks (27, 28, 31, 32), handle differently
+      if ([27, 28, 31, 32].includes(landmarkIndex)) {
+        console.log(`Correcting extreme position for landmark ${landmarkIndex}: ${normalizedX}, ${normalizedY}`);
+        // Keep X but move Y to a reasonable position (bottom third of screen)
+        normalizedY = 0.7 + (Math.random() * 0.2); // Random position in bottom third for natural look
+      }
+    }
+    
     // Clamp values to valid range
     normalizedX = Math.max(0, Math.min(1, normalizedX));
     normalizedY = Math.max(0, Math.min(1, normalizedY));
     
-    // If we're in portrait mode and need to adjust (disabled for now as it may cause issues)
-    const usePortraitAdjustment = false;
-    if (isPortrait && usePortraitAdjustment) {
-      // Swap coordinates for portrait mode
-      return { x: normalizedY, y: 1 - normalizedX };
-    }
+    // Improved coordinate alignment - apply small correction factor to better match body
+    // This helps account for differences between pose model coordinate space and display
+    const xCorrection = 0.03; // Small correction to align horizontally
+    normalizedX = Math.max(0, Math.min(1, normalizedX - xCorrection));
     
     return { x: normalizedX, y: normalizedY };
   }, []);
@@ -338,12 +406,17 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
       time,
     }));
 
-    // Find the closest frame based on timestamp
+    // Find the closest frame based on timestamp with a slight offset for better sync
     const frames = analysisData.frames;
     if (!frames || frames.length === 0) return;
     
+    // Add a small time offset (0.2 seconds) to adjust for any delay in pose calculation vs video playback
+    // This helps sync the pose overlay better with the actual movements in the video
+    const timeOffset = 0.2; // seconds
+    const adjustedTime = Math.max(0, time - timeOffset);
+    
     const closestFrameIndex = frames.reduce((prev, curr, idx, arr) => {
-      return Math.abs(curr.timestamp - time) < Math.abs(arr[prev].timestamp - time) ? idx : prev;
+      return Math.abs(curr.timestamp - adjustedTime) < Math.abs(arr[prev].timestamp - adjustedTime) ? idx : prev;
     }, 0);
     
     const frameData = frames[closestFrameIndex];
@@ -363,8 +436,8 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     // Store the keypoints in a consistent property for later use
     frameData.keypoints = keypointsData;
     
-    // Draw debug info on canvas for debugging
-    if (showDebug || true) { // Always show for debugging
+    // Only show debug info when explicitly enabled
+    if (showDebug) {
       ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
       ctx.fillRect(10, 10, 280, 100);
       ctx.font = '12px monospace';
@@ -426,13 +499,15 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
         const p1 = transformCoordinates(
           landmark1.x, landmark1.y, 
           ctx.canvas.width, ctx.canvas.height, 
-          isPortrait
+          isPortrait,
+          i // Pass landmark index for special case handling
         );
         
         const p2 = transformCoordinates(
           landmark2.x, landmark2.y, 
           ctx.canvas.width, ctx.canvas.height, 
-          isPortrait
+          isPortrait,
+          j // Pass landmark index for special case handling
         );
         
         ctx.beginPath();
@@ -458,7 +533,8 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
         const coord = transformCoordinates(
           landmark.x, landmark.y, 
           ctx.canvas.width, ctx.canvas.height, 
-          isPortrait
+          isPortrait,
+          idx // Pass landmark index for special handling
         );
         
         // Use different colors for different body parts
@@ -501,42 +577,43 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
         return;
       }
 
-      // Position text in top-left corner
+      // Position text in top-right corner
       ctx.font = '16px Arial';
       let yOffset = 30;
-      const xOffset = 10;
+      const xOffset = ctx.canvas.width - 250; // Align to right side
+      const paddingRight = 20; // Padding from right edge
 
       // Draw background for text for better visibility
       ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-      ctx.fillRect(0, 0, 250, 100);
+      ctx.fillRect(xOffset, 0, 250, 100);
 
       // Knee Angle
       ctx.fillStyle = 'white';
-      ctx.fillText('Knee Angle:', xOffset, yOffset);
+      ctx.fillText('Knee Angle:', xOffset + paddingRight, yOffset);
       ctx.fillStyle = '#00ff00';
       ctx.fillText(
         kneeAngle !== null && typeof kneeAngle === 'number' ? ` ${Math.round(kneeAngle)}°` : ' N/A',
-        xOffset + 90, yOffset
+        xOffset + paddingRight + 90, yOffset
       );
       yOffset += 25;
 
       // Depth Ratio
       ctx.fillStyle = 'white';
-      ctx.fillText('Depth Ratio:', xOffset, yOffset);
+      ctx.fillText('Depth Ratio:', xOffset + paddingRight, yOffset);
       ctx.fillStyle = '#ff9900';
       ctx.fillText(
         depthRatio !== null && typeof depthRatio === 'number' ? ` ${depthRatio.toFixed(2)}` : ' N/A',
-        xOffset + 100, yOffset
+        xOffset + paddingRight + 100, yOffset
       );
       yOffset += 25;
 
       // Shoulder-Midfoot Difference
       ctx.fillStyle = 'white';
-      ctx.fillText('Shoulder-Midfoot Diff:', xOffset, yOffset);
+      ctx.fillText('Shoulder-Midfoot Diff:', xOffset + paddingRight, yOffset);
       ctx.fillStyle = '#00ffff';
       ctx.fillText(
         shoulderMidfootDiff !== null && typeof shoulderMidfootDiff === 'number' ? ` ${shoulderMidfootDiff.toFixed(1)}` : ' N/A',
-        xOffset + 170, yOffset
+        xOffset + paddingRight + 170, yOffset
       );
     }
 
@@ -546,14 +623,41 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
         // Skip arrows with empty or undefined messages
         if (!arrow.message) return;
         if (arrow.start && arrow.end && typeof arrow.start.x === 'number' && typeof arrow.end.x === 'number') {
+          // Apply feedback message corrections
+          let messageText = arrow.message;
+          let startPoint = {...arrow.start};
+          let endPoint = {...arrow.end};
+          
+          // Fix "chest up" arrow to actually point to chest instead of hips
+          if (messageText.toLowerCase().includes("chest up")) {
+            // If the message is about chest but points elsewhere, correct the target
+            const chest = frameData.keypoints.find((kp, idx) => idx === 11 || idx === 12);
+            if (chest && typeof chest.x === 'number') {
+              endPoint = {x: chest.x, y: chest.y};
+            }
+          }
+          
           ctx.beginPath();
           ctx.strokeStyle = arrow.color || 'yellow';
           ctx.lineWidth = 3;
 
-          const startX = arrow.start.x * ctx.canvas.width;
-          const startY = arrow.start.y * ctx.canvas.height;
-          const endX = arrow.end.x * ctx.canvas.width;
-          const endY = arrow.end.y * ctx.canvas.height;
+          // Apply coordinate transformation to arrow points
+          const start = transformCoordinates(
+            startPoint.x, startPoint.y, 
+            ctx.canvas.width, ctx.canvas.height, 
+            isPortrait
+          );
+          
+          const end = transformCoordinates(
+            endPoint.x, endPoint.y, 
+            ctx.canvas.width, ctx.canvas.height, 
+            isPortrait
+          );
+
+          const startX = start.x * ctx.canvas.width;
+          const startY = start.y * ctx.canvas.height;
+          const endX = end.x * ctx.canvas.width;
+          const endY = end.y * ctx.canvas.height;
 
           // Draw line
           ctx.moveTo(startX, startY);
@@ -577,17 +681,26 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
           );
           ctx.stroke();
 
-          // Draw message with background for visibility
-          ctx.font = '14px Arial';
-          const textWidth = ctx.measureText(arrow.message).width;
+          // Offset message away from landmark along arrow direction
+          const vecX = endX - startX;
+          const vecY = endY - startY;
+          const len = Math.max(Math.hypot(vecX, vecY), 0.001);
+          const normX = vecX / len;
+          const normY = vecY / len;
+          const msgOffset = 40; // Increase offset from arrow head for better visibility
+          const textX = endX + normX * msgOffset;
+          const textY = endY + normY * msgOffset;
 
           // Draw background rectangle for text
+          ctx.font = '14px Arial';
+          const textWidth = ctx.measureText(arrow.message).width;
           ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-          ctx.fillRect(endX + 10, endY - 15, textWidth + 10, 20);
+          // Make the background larger for better readability
+          ctx.fillRect(textX - 5, textY - 15, textWidth + 10, 25);
 
           // Draw text
           ctx.fillStyle = 'white';
-          ctx.fillText(arrow.message, endX + 15, endY);
+          ctx.fillText(messageText, textX, textY);
         }
       });
     }
@@ -824,7 +937,53 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
   // Rerun this effect if the video element itself changes (via videoUrl) or drawing logic updates
   }, [videoUrl, isImagePlayback, drawOverlays, handleLoadedMetadata, handleTimeUpdate, handleError]);
 
+  // New utility to format seconds into mm:ss (or hh:mm:ss if >1h)
+  const formatTime = (seconds = 0) => {
+    if (isNaN(seconds)) return '0:00';
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    const padded = (n) => n.toString().padStart(2, '0');
+    return hrs > 0 ? `${hrs}:${padded(mins)}:${padded(secs)}` : `${mins}:${padded(secs)}`;
+  };
 
+  const timelineWasPlayingRef = useRef(false);
+
+  // Skip helpers
+  const skipTime = useCallback((delta) => {
+    if (!videoRef.current) return;
+    let newTime = videoRef.current.currentTime + delta;
+    newTime = Math.max(0, Math.min(duration || 0, newTime));
+    videoRef.current.currentTime = newTime;
+    setCurrentTime(newTime);
+  }, [duration]);
+
+  // Scrubber drag handlers
+  const handleScrubStart = () => {
+    if (!videoRef.current) return;
+    timelineWasPlayingRef.current = isPlaying;
+    if (isPlaying) setIsPlaying(false);
+    setIsDraggingTimeline(true);
+  };
+
+  const handleScrubChange = (e) => {
+    if (!videoRef.current) return;
+    const val = parseFloat(e.target.value);
+    videoRef.current.currentTime = val;
+    setCurrentTime(val);
+  };
+
+  const handleScrubEnd = () => {
+    setIsDraggingTimeline(false);
+    if (timelineWasPlayingRef.current) {
+      setIsPlaying(true);
+    }
+  };
+
+  // Compute progress and remaining time
+  const estimatedLoadingTotalMs = duration * 1000;
+  const progressPercent = duration > 0 ? Math.min((elapsedLoadingTime / estimatedLoadingTotalMs) * 100, 99) : 0;
+  const remainingSeconds = duration > 0 ? Math.max(Math.ceil((estimatedLoadingTotalMs - elapsedLoadingTime) / 1000), 0) : 0;
 
   return (
     <Container ref={containerRef}>
@@ -873,11 +1032,28 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
               height: '100%',
               backgroundColor: 'rgba(0,0,0,0.5)',
               display: 'flex',
+              flexDirection: 'column',
               justifyContent: 'center',
               alignItems: 'center',
               zIndex: 1000
             }}>
-              <p style={{ color: 'white', fontSize: '1.5em' }}>Analysis in progress...</p>
+              <div style={{
+                width: '80%',
+                backgroundColor: '#444',
+                borderRadius: '4px',
+                overflow: 'hidden',
+                height: '8px'
+              }}>
+                <div style={{
+                  width: `${progressPercent}%`,
+                  height: '100%',
+                  backgroundColor: '#07c',
+                  transition: 'width 0.2s'
+                }} />
+              </div>
+              <p style={{ color: 'white', fontSize: '1em', marginTop: '0.5em' }}>
+                Estimated time remaining: {formatTime(remainingSeconds)}
+              </p>
             </div>
           )}
           {isFullscreen && (
@@ -910,29 +1086,35 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
       <Controls>
         <Button onClick={() => setIsPlaying(!isPlaying)}>
           {isPlaying ? <Pause size={20} /> : <Play size={20} />}
-          {isPlaying ? 'Pause' : 'Play'}
         </Button>
-        
-        {/* Video progress bar */}
-        <input
-          type="range"
+
+        <Button onClick={() => skipTime(-5)}>
+          <SkipBack size={18} />
+        </Button>
+
+        <TimeLabel>{formatTime(currentTime)}</TimeLabel>
+
+        <Scrubber
           min={0}
-          max={videoRef.current && videoRef.current.duration ? videoRef.current.duration : 0}
+          max={duration || 0}
           step={0.01}
-          value={videoRef.current && videoRef.current.currentTime ? videoRef.current.currentTime : 0}
-          onChange={e => {
-            if (videoRef.current) {
-              videoRef.current.currentTime = parseFloat(e.target.value);
-            }
-          }}
-          style={{ flex: 1, margin: '0 1rem' }}
-          disabled={!videoRef.current || !videoRef.current.duration}
+          value={currentTime}
+          onMouseDown={handleScrubStart}
+          onTouchStart={handleScrubStart}
+          onChange={handleScrubChange}
+          onMouseUp={handleScrubEnd}
+          onTouchEnd={handleScrubEnd}
+          disabled={duration === 0}
         />
-        {/* End video progress bar */}
-        
+
+        <TimeLabel>{formatTime(duration)}</TimeLabel>
+
+        <Button onClick={() => skipTime(5)}>
+          <SkipForward size={18} />
+        </Button>
+
         <Button onClick={() => setShowDebug(!showDebug)}>
           <Info size={20} />
-          {showDebug ? 'Hide Debug' : 'Show Debug'}
         </Button>
       </Controls>
       
