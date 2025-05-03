@@ -32,6 +32,8 @@ import uuid
 import tempfile
 import logging
 from movenet_validator import infer_pose_bgr, _ort_sess
+import subprocess
+import json
 
 app = Flask(__name__)
 import logging
@@ -390,45 +392,208 @@ def validate_video_metadata(cap, video_file):
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    # Detect if video is rotated (mobile portrait mode)
     is_portrait_video = height > width
-    duration_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+    app.logger.info(f"Video dimensions: {width}x{height}, orientation: {'portrait' if is_portrait_video else 'landscape'}")
+
+    # --- Improved Metadata Validation ---
+    duration_msec = cap.get(cv2.CAP_PROP_POS_MSEC) # Get duration in milliseconds
     if duration_msec <= 0:
-        cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 1)
-        duration_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
-        cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0)
+       cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 1) # Seek to end if needed
+       duration_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
+       cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0) # Reset to beginning
+    
     duration_sec = duration_msec / 1000.0 if duration_msec > 0 else 0.0
-    if fps <= 0 or fps > 120 or fps == 1000:
+    app.logger.info(f"Raw metadata: FPS={fps}, FrameCount={frame_count}, Duration={duration_sec:.2f}s")
+
+    # Validate FPS
+    if fps <= 0 or fps > 120 or fps == 1000: # 1000 is an invalid value often seen
+        app.logger.warning(f"Invalid FPS: {fps}. Attempting recalculation or using default.")
         if duration_sec > 0 and frame_count > 0 and frame_count < 100000:
             calculated_fps = frame_count / duration_sec
-            fps = round(calculated_fps) if 0 < calculated_fps <= 120 else 30
+            if calculated_fps > 0 and calculated_fps <= 120:
+                fps = round(calculated_fps)
+                app.logger.warning(f"Recalculated FPS based on duration/frameCount: {fps}")
+            else:
+               fps = 30 # Default FPS
+               app.logger.warning(f"Recalculation failed, defaulting FPS to {fps}")
         else:
-            fps = 30
+            fps = 30 # Default FPS
+            app.logger.warning(f"Cannot recalculate, defaulting FPS to {fps}")
+    
+    # Validate Frame Count - recalculate if invalid or inconsistent with duration
     expected_frame_count = int(duration_sec * fps) if duration_sec > 0 and fps > 0 else 0
+    # Check for large negative numbers or zero/small counts if duration is reasonable
     is_frame_count_invalid = frame_count < 0 or (duration_sec > 0.5 and frame_count <= 1)
+    # Check for significant mismatch with duration
     is_frame_count_mismatch = expected_frame_count > 0 and abs(frame_count - expected_frame_count) > (expected_frame_count * 0.5)
     if is_frame_count_invalid or is_frame_count_mismatch:
-        frame_count = expected_frame_count if expected_frame_count > 0 else 30
-    frame_count = max(10, min(frame_count, 1500))
+        app.logger.warning(f"Invalid/mismatched frame count: {frame_count}. Expected based on duration: ~{expected_frame_count}")
+        if expected_frame_count > 0:
+            frame_count = expected_frame_count
+            app.logger.warning(f"Using frame count calculated from duration: {frame_count}")
+        else:
+             # If duration is also zero, estimate based on file size (rough)
+             file_size_mb = video_file.content_length / (1024 * 1024)
+             estimated_duration = max(1, file_size_mb * 8) # Assume ~8s per MB, min 1s
+             frame_count = int(estimated_duration * fps)
+             app.logger.warning(f"Estimating frame count based on file size: {frame_count}")
+
+    # Ensure frame_count is reasonable after all calculations
+    frame_count = max(10, min(frame_count, 1500)) # Allow slightly more frames, up to 1500
+    # --- End Improved Metadata Validation ---
+
+    app.logger.info(f"Validated video properties: FPS={fps}, frame_count={frame_count}, duration={duration_sec:.2f}s")
+    
     return fps, frame_count, width, height, is_portrait_video, duration_sec
 
 def extract_frames(cap, frame_skip, frame_count, is_portrait_video):
-    """Extract frames from the video, rotating if portrait."""
+    """Extract frames sequentially with skipping to improve reliability on codecs where random seeks fail."""
     frames_to_process = []
-    for idx in range(0, frame_count, frame_skip):
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-        success, frame = cap.read()
-        if success:
+    current_idx = 0
+    success, frame = cap.read()
+    while success and current_idx < frame_count:
+        if current_idx % frame_skip == 0:
+            # Rotate portrait videos so landmarks are upright
             if is_portrait_video:
                 frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+
+            # Downscale very large frames to save memory / speed
             if frame.shape[0] > 720 or frame.shape[1] > 1280:
                 frame = cv2.resize(frame, (0, 0), fx=0.5, fy=0.5)
-            frames_to_process.append((idx, frame))
+
+            frames_to_process.append((current_idx, frame))
+
+        # Read next frame
+        success, frame = cap.read()
+        current_idx += 1
+
     return frames_to_process
 
 def aggregate_results(processed_frames):
-    """Aggregate results from processed frames."""
-    # Placeholder: implement aggregation logic as needed
+    """Aggregate results from processed frames and add status information (spine / knee)."""
+    
+    # Thresholds (degrees for spine, ratio for depth). DepthRatio coming from measurements is scaled *100 – normalize first.
+    SPINE_GOOD = 45
+    SPINE_WARN = 55
+    DEPTH_GOOD = 0.85
+    DEPTH_WARN = 0.6
+
+    pose = POSE_LANDMARKS  # alias for readability
+
+    for f in processed_frames:
+        # Default statuses
+        spine_status = knee_status = 'warn'
+
+        try:
+            # Retrieve landmarks & measurements
+            lm = f.get('landmarks') or []
+            meas = f.get('measurements') or {}
+
+            # ---- Spine status (torso/back angle)
+            back_angle = None
+            if len(lm) > pose.RIGHT_KNEE:
+                # Prefer right side for consistency, fallback to left
+                rs, rh, rk = pose.RIGHT_SHOULDER, pose.RIGHT_HIP, pose.RIGHT_KNEE
+                ls, lh, lk = pose.LEFT_SHOULDER, pose.LEFT_HIP, pose.LEFT_KNEE
+
+                def ok(idx):
+                    return idx < len(lm) and lm[idx]['visibility'] >= 0.5
+
+                if ok(rs) and ok(rh) and ok(rk):
+                    back_angle = calculate_angle(lm[rs], lm[rh], lm[rk])
+                elif ok(ls) and ok(lh) and ok(lk):
+                    back_angle = calculate_angle(lm[ls], lm[lh], lm[lk])
+
+            if back_angle is not None:
+                if back_angle <= SPINE_GOOD:
+                    spine_status = 'good'
+                elif back_angle <= SPINE_WARN:
+                    spine_status = 'warn'
+                else:
+                    spine_status = 'bad'
+            else:
+                spine_status = 'warn'  # Unknown – treat as warn
+
+            # ---- Knee / depth status
+            depth_raw = meas.get('depthRatio')
+            if depth_raw is not None:
+                # Un-scale if necessary (>1 implies percentage *100)
+                depth_ratio = depth_raw / 100 if depth_raw > 1.5 else depth_raw
+                if depth_ratio >= DEPTH_GOOD:
+                    knee_status = 'good'
+                elif depth_ratio >= DEPTH_WARN:
+                    knee_status = 'warn'
+                else:
+                    knee_status = 'bad'
+            else:
+                knee_status = 'warn'
+
+        except Exception as e:
+            app.logger.error(f"aggregate_results status calc error: {str(e)}")
+            spine_status = knee_status = 'warn'
+
+        # Attach status object
+        f['status'] = {
+            'spine': spine_status,
+            'knee': knee_status
+        }
+
     return processed_frames
+
+def get_video_properties(video_path):
+    """Uses ffprobe to get video duration and frame count."""
+    cmd = [
+        'ffprobe',
+        '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'stream=duration,nb_frames,r_frame_rate',
+        '-of', 'json',
+        video_path
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        data = json.loads(result.stdout)
+        stream_data = data.get('streams', [{}])[0]
+        
+        duration_str = stream_data.get('duration')
+        duration = float(duration_str) if duration_str else None
+        
+        nb_frames_str = stream_data.get('nb_frames')
+        # nb_frames can be 'N/A' for some formats/streams
+        try:
+            nb_frames = int(nb_frames_str) if nb_frames_str and nb_frames_str != 'N/A' else None
+        except (ValueError, TypeError):
+            nb_frames = None
+            
+        # Calculate FPS from r_frame_rate (e.g., "30000/1001")
+        fps = None
+        r_frame_rate = stream_data.get('r_frame_rate')
+        if r_frame_rate and '/' in r_frame_rate:
+            num, den = map(int, r_frame_rate.split('/'))
+            if den > 0:
+                fps = num / den
+
+        # If nb_frames is missing but duration and fps are available, estimate nb_frames
+        if nb_frames is None and duration is not None and fps is not None and fps > 0:
+             nb_frames = int(duration * fps)
+             app.logger.warning(f"ffprobe missing nb_frames, estimated as {nb_frames} from duration/fps")
+
+        # If duration is missing but nb_frames and fps are available, estimate duration
+        elif duration is None and nb_frames is not None and fps is not None and fps > 0:
+            duration = nb_frames / fps
+            app.logger.warning(f"ffprobe missing duration, estimated as {duration:.2f}s from nb_frames/fps")
+            
+        app.logger.info(f"ffprobe results: duration={duration}, nb_frames={nb_frames}, fps={fps}")
+        return duration, nb_frames, fps
+        
+    except subprocess.CalledProcessError as e:
+        app.logger.error(f"ffprobe error: {e.stderr}")
+        return None, None, None
+    except Exception as e:
+        app.logger.error(f"Error parsing ffprobe output: {e}")
+        return None, None, None
 
 @app.route('/', methods=['GET'])
 def home():
@@ -542,7 +707,37 @@ def analyze_video():
     file.save(temp_path)
     rss_mb = process.memory_info().rss / 1024 / 1024
     app.logger.warning(f"[MEM_DIAG] AFTER FILE SAVE: RSS={rss_mb:.1f} MB, time={time.time() - t_start:.2f}s")
-    
+
+    # --- Get Original Video Properties using ffprobe --- 
+    original_duration, original_frame_count, original_fps = get_video_properties(temp_path)
+    if original_duration is None or original_frame_count is None or original_frame_count <= 0:
+        app.logger.warning("Could not get reliable duration/frame count via ffprobe. Timestamps might be inaccurate.")
+        # Use OpenCV as fallback? For now, proceed but warn.
+        # Let's try to get *something* from OpenCV if ffprobe failed completely
+        cap_check = cv2.VideoCapture(temp_path)
+        if cap_check.isOpened():
+            if original_frame_count is None or original_frame_count <= 0:
+                 ocv_frames = int(cap_check.get(cv2.CAP_PROP_FRAME_COUNT))
+                 if ocv_frames > 0:
+                      original_frame_count = ocv_frames
+                      app.logger.warning(f"Using OpenCV frame count as fallback: {original_frame_count}")
+            if original_duration is None:
+                ocv_fps = cap_check.get(cv2.CAP_PROP_FPS)
+                if ocv_fps > 0 and original_frame_count > 0:
+                    original_duration = original_frame_count / ocv_fps
+                    app.logger.warning(f"Using OpenCV duration as fallback: {original_duration:.2f}s")        
+            cap_check.release()
+        # If still no valid duration/frame count, we have a problem for timestamping
+        if original_duration is None or original_frame_count is None or original_frame_count <= 0:
+             app.logger.error("FATAL: Cannot determine video duration or frame count for accurate timestamping.")
+             # Perhaps default duration to avoid crashing? Set to arbitrary 10s?
+             original_duration = 10.0 # Arbitrary default
+             original_frame_count = 300 # Arbitrary default (assumes 30fps for 10s)
+             app.logger.error(f"Defaulting to arbitrary duration={original_duration}s, frame_count={original_frame_count}")
+             # Fallback failed, maybe return error?
+             # return jsonify({'error': 'Could not determine video properties for analysis.'}), 500
+    # ------------------------------------------------------
+
     try:
         app.logger.info(f"Processing video at {temp_path}")
         # Log memory usage before processing
@@ -677,11 +872,18 @@ def analyze_video():
             frames_to_process = []
             
             # Try multiple methods for frame extraction in order of reliability
-            extraction_methods = [
-                "keyframe_extraction",
-                "sequential_reading",
-                "ffmpeg_frames" 
-            ]
+            # Choose extraction strategies based on video length
+            if frame_count < 120:  # ~4 seconds at 30 fps – keep things simple
+                extraction_methods = [
+                    "sequential_reading",
+                    "ffmpeg_frames"
+                ]
+            else:
+                extraction_methods = [
+                    "keyframe_extraction",
+                    "sequential_reading",
+                    "ffmpeg_frames"
+                ]
             
             # Pre-calculate target frames as a set for faster lookup
             target_frame_set = set(target_frames)
@@ -781,7 +983,9 @@ def analyze_video():
                         # Use FFmpeg to extract frames
                         extract_count = min(50, frame_count)
                         extraction_interval = max(1, frame_count // extract_count)
-                        ffmpeg_cmd = f"ffmpeg -i {temp_path} -vf 'select=not(mod(n,{extraction_interval}))' -vsync vfr {tmpdirname}/frame_%04d.jpg"
+                        # Use a simpler approach with -r to avoid filter syntax issues
+                        target_fps = max(1, min(30, int(fps / extraction_interval)))
+                        ffmpeg_cmd = f"ffmpeg -i {temp_path} -r {target_fps} -q:v 1 {tmpdirname}/frame_%04d.jpg"
                         os.system(ffmpeg_cmd)
                         
                         # Load the extracted frames
@@ -803,39 +1007,34 @@ def analyze_video():
                 except Exception as e:
                     app.logger.error(f"FFmpeg extraction failed: {str(e)}")
             
+            # Fourth method: imageio fallback when ffmpeg binary not available
+            if len(frames_to_process) < min(10, len(target_frames) // 4):
+                try:
+                    import imageio.v2 as iio
+                    app.logger.info("Trying imageio reader fallback extraction")
+                    reader = iio.get_reader(temp_path, format='ffmpeg')  # type: ignore
+                    imgio_frames = []
+                    for idx, frame in enumerate(reader.iter_data()):
+                        if idx >= frame_count:
+                            break
+                        if idx % frame_skip != 0:
+                            continue
+                        # imageio returns RGB numpy array
+                        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                        if is_portrait_video:
+                            frame_bgr = cv2.rotate(frame_bgr, cv2.ROTATE_90_CLOCKWISE)
+                        imgio_frames.append((idx, frame_bgr))
+                        if len(imgio_frames) >= len(target_frames):
+                            break
+                    app.logger.info(f"imageio extraction yielded {len(imgio_frames)} frames")
+                    if len(imgio_frames) > len(frames_to_process):
+                        frames_to_process = imgio_frames
+                        app.logger.info("Using imageio extraction results")
+                except Exception as e:
+                    app.logger.error(f"imageio extraction failed: {str(e)}")
+ 
             # Final assessment of frame extraction results
             app.logger.info(f"Final frame extraction yielded {len(frames_to_process)} frames out of target {len(target_frames)}")
-            
-            # If we still couldn't extract enough frames, try one last approach: take whatever frames we can get
-            if len(frames_to_process) < 10 and frame_count > 0:
-                app.logger.warning("Insufficient frames extracted, trying emergency fallback extraction")
-                emergency_frames = []
-                
-                # Release and reopen the capture
-                cap.release()
-                cap = cv2.VideoCapture(temp_path)
-                
-                # Try to extract frames at key positions (beginning, middle, end)
-                for pos in [0, frame_count//4, frame_count//2, 3*frame_count//4, frame_count-1]:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, min(frame_count-1, pos)))
-                    ret, frame = cap.read()
-                    if ret:
-                        if is_portrait_video:
-                            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-                        emergency_frames.append((pos, frame))
-                
-                if len(emergency_frames) > 0:
-                    frames_to_process = emergency_frames
-                    app.logger.warning(f"Emergency extraction yielded {len(emergency_frames)} frames")
-                        
-            # Check if we got any usable frames
-            if len(frames_to_process) == 0:
-                app.logger.error(f"Could not extract any valid frames from video: {temp_path}")
-                return jsonify({
-                    'success': False,
-                    'error': 'Could not extract any valid frames from the video. The file may be corrupted.',
-                    'details': 'No valid frames could be processed. Try recording again with better lighting or a different device.'
-                }), 400
             
             # If we got fewer than expected frames but still have some to work with
             if len(frames_to_process) < len(target_frame_set) / 2:
@@ -866,10 +1065,13 @@ def analyze_video():
             # Convert BGR to RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
+            # Ensure the array is C-contiguous, which can sometimes help with external libraries
+            frame_rgb_contiguous = np.ascontiguousarray(frame_rgb)
+
             # Log before pose inference
             rss_mb = process.memory_info().rss / 1024 / 1024
             app.logger.warning(f"[MEM_DIAG] BEFORE POSE INFERENCE: RSS={rss_mb:.1f} MB, frame={frame_idx}, time={time.time() - t_start:.2f}s")
-            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb_contiguous) # Use contiguous array
             # Use the global landmarker (reduces per‑frame memory usage)
             detection_result = pose_landmarker_global.detect(mp_image)
             rss_mb = process.memory_info().rss / 1024 / 1024
@@ -953,42 +1155,58 @@ def analyze_video():
             # C. Generate arrows only when metric is valid and breaches threshold
             arrows = []
             try:
-                # Depth (knee angle)
-                if knee_angle is not None and knee_angle < 90 and RKNEE < len(lm) and lm[RKNEE]['visibility'] >= VIS_THR:
+                # Depth (knee angle) - Corrected condition: angle > 90 means not deep enough
+                if knee_angle is not None and knee_angle > 90 and joints_visible([RKNEE], lm):
                     arrows.append({
                         'start': {'x': lm[RKNEE]['x'], 'y': lm[RKNEE]['y']},
-                        'end': {'x': lm[RKNEE]['x'], 'y': lm[RKNEE]['y'] - 0.1},
+                        'end': {'x': lm[RKNEE]['x'], 'y': lm[RKNEE]['y'] + 0.1}, # Point down for 'deeper'
                         'color': 'yellow',
                         'message': 'Squat deeper – knees not at 90°'
                     })
+
                 # Back lean (angle between shoulder‑hip‑knee)
                 if joints_visible([RSHOULDER, RHIP, RKNEE], lm):
                     try:
-                        back_angle = calculate_angle(lm[RSHOULDER], lm[RHIP], lm[RKNEE])
-                        if back_angle > 45:
-                            arrows.append({
-                                'start': {'x': lm[RSHOULDER]['x'], 'y': lm[RSHOULDER]['y']},
-                                'end': {'x': lm[RHIP]['x'], 'y': lm[RHIP]['y']},
-                                'color': 'orange',
-                                'message': 'Chest up – reduce forward lean'
-                            })
+                        # Only show back lean feedback when actually squatting (knee angle < 150)
+                        if knee_angle is not None and knee_angle < 150:
+                            back_angle = calculate_angle(lm[RSHOULDER], lm[RHIP], lm[RKNEE])
+                            # Check if back angle indicates excessive forward lean (larger angle means more lean relative to vertical?)
+                            if back_angle > 45: # Keep original threshold for now
+                                arrows.append({
+                                    'start': {'x': lm[RHIP]['x'], 'y': lm[RHIP]['y']},           # Starts at Hip
+                                    'end': {'x': lm[RSHOULDER]['x'], 'y': lm[RSHOULDER]['y']},   # Points to Shoulder
+                                    'color': 'orange',
+                                    'message': 'Chest up – reduce forward lean'
+                                })
                     except Exception as e:
-                        app.logger.error(f"Error calculating back angle: {str(e)}")
-                # Shoulder over mid-foot cue
-                if shoulder_midfoot_diff not in (None, 'N/A') and shoulder_midfoot_diff > 0.07 and \
-                   RSHOULDER < len(lm) and RANKLE < len(lm) and \
-                   lm[RSHOULDER]['visibility'] >= VIS_THR and lm[RANKLE]['visibility'] >= VIS_THR:
-                    arrows.append({
-                        'start': {'x': lm[RSHOULDER]['x'], 'y': lm[RSHOULDER]['y']},
-                        'end': {'x': lm[RANKLE]['x'], 'y': lm[RSHOULDER]['y']},
-                        'color': 'red',
-                        'message': 'Keep shoulders over mid-foot'
-                    })
-            except Exception as e:
-                app.logger.error(f"Error generating arrows: {str(e)}")
-                # Continue processing even if arrows generation fails
+                        app.logger.error(f"Error calculating back angle or generating arrow: {e}")
 
-            # D. Add kneesVisible boolean to frame payload
+                # *** NEW: Knee forward over ankle ***
+                if joints_visible([RKNEE, RANKLE], lm):
+                    knee_x = lm[RKNEE]['x']
+                    ankle_x = lm[RANKLE]['x']
+                    # Check if knee is significantly forward of the ankle horizontally
+                    # Only trigger when squatting (e.g., knee angle < 150)
+                    if knee_angle is not None and knee_angle < 150 and knee_x > ankle_x + 0.05: # Threshold of 0.05 normalized coord diff
+                        arrows.append({
+                            'start': {'x': lm[RKNEE]['x'], 'y': lm[RKNEE]['y']},   # Starts at knee
+                            'end': {'x': lm[RKNEE]['x'] - 0.1, 'y': lm[RKNEE]['y']}, # Points backward horizontally
+                            'color': 'cyan', # Use a distinct color
+                            'message': 'Knee too far forward'
+                        })
+                # *** END NEW CHECK ***
+
+            except Exception as e:
+                app.logger.error(f"Error generating arrows: {e}")
+
+            # D. Status indicators for coloring segments (simplified logic)
+            status = {
+                'spine': 'ok' if not any(a['message'] == 'Chest up – reduce forward lean' for a in arrows) else 'warn',
+                # Updated knee status to include the new check
+                'knee': 'ok' if not any(a['message'] == 'Squat deeper – knees not at 90°' or a['message'] == 'Knee too far forward' for a in arrows) else 'warn',
+            }
+        
+            # E. Add kneesVisible boolean to frame payload
             return {
                 'frame': frame_idx,
                 'timestamp': frame_idx / fps,
@@ -999,7 +1217,8 @@ def analyze_video():
                     'shoulderMidfootDiff': shoulder_midfoot_diff
                 },
                 'arrows': arrows,
-                'kneesVisible': knees_visible
+                'kneesVisible': knees_visible,
+                'status': status
             }
         
         # Sequentially process frames while periodically freeing memory
@@ -1033,12 +1252,38 @@ def analyze_video():
         # Sort results by frame number
         results.sort(key=lambda x: x['frame'])
         
-        return jsonify({
-            'success': True,
-            'frames': results,
-            'fps': fps,
-            'frame_count': frame_count
-        })
+        # --- Correct Timestamps using Original Video Properties ---            
+        if original_duration is not None and original_frame_count is not None and original_frame_count > 0:
+            app.logger.info(f"Correcting timestamps based on Duration: {original_duration:.2f}s, Frame Count: {original_frame_count}")
+            for frame_result in results:
+                original_index = frame_result.get('frame') # Get the original index processed
+                if original_index is not None:
+                    # Calculate timestamp based on the frame's original position in the video
+                    frame_result['timestamp'] = original_index * (original_duration / original_frame_count)
+                else:
+                    app.logger.warning("Frame result missing 'frame' index, cannot correct timestamp.")
+                    # Keep potentially incorrect timestamp from process_frame as fallback
+        else:
+            app.logger.warning("Skipping timestamp correction due to missing video properties. Using potentially inaccurate timestamps.")
+            # Timestamps calculated inside process_frame (using assumed FPS) will be used
+        # -----------------------------------------------------------
+
+        # Sort frames by corrected timestamp just in case processing order wasn't perfect
+        results.sort(key=lambda x: x.get('timestamp', 0))
+        
+        # --- Assemble Final Result ---
+        analysis_result = {
+            # Use original FPS if available, else the backend default (30)
+            'fps': original_fps if original_fps is not None and original_fps > 0 else 30,
+            'frames': aggregate_results(results),
+            'analysisDuration': time.time() - t_start,
+            'totalFramesProcessed': len(results),
+            'originalDuration': original_duration, # Add original duration info
+            'originalFrameCount': original_frame_count # Add original frame count info
+        }
+
+        # Memory logging after processing
+        return jsonify(analysis_result)
         
     except Exception as e:
         rss_mb = process.memory_info().rss / 1024 / 1024
@@ -1049,6 +1294,62 @@ def analyze_video():
             os.remove(temp_path)
         return jsonify({'error': str(e)}), 500
 
+def print_server_ready_message(port):
+    """
+    Print a clear message showing the server is ready with formatted URLs
+    """
+    local_url = f"http://127.0.0.1:{port}"
+    network_url = f"http://0.0.0.0:{port}"
+    
+    message = """
+    ✅ Squat Analyzer Server is LIVE and ready to use!
+    
+    Running on:
+      - Local:   {local}
+      - Network: {network}
+    
+    Press CTRL+C to quit
+    """.format(local=local_url, network=network_url)
+    
+    print("\n" + "=" * 60)
+    print(message)
+    print("=" * 60 + "\n")
+
+class ServerStartupHandler(logging.StreamHandler):
+    """Custom handler to detect and print the server ready message"""
+    def __init__(self, ready_callback):
+        super().__init__()
+        self.ready_callback = ready_callback
+        self.ready_detected = False
+        
+    def emit(self, record):
+        msg = self.format(record)
+        # Look for the startup message Flask emits
+        if not self.ready_detected and 'Running on' in msg:
+            self.ready_callback()
+            self.ready_detected = True
+        super().emit(record)
+
 if __name__ == '__main__':
     debug_mode = os.environ.get('FLASK_ENV') == 'development'
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=debug_mode)
+    port = int(os.environ.get('PORT', 5000))
+    
+    # Add our custom handler to detect when server is ready
+    if not debug_mode:  # Only use custom handler in production mode
+        werkzeug_logger = logging.getLogger('werkzeug')
+        # Save the current log level and restore it after adding our handler
+        current_level = werkzeug_logger.level
+        werkzeug_logger.setLevel(logging.INFO)
+        handler = ServerStartupHandler(lambda: print_server_ready_message(port))
+        werkzeug_logger.addHandler(handler)
+        
+        try:
+            app.run(host='0.0.0.0', port=port, debug=debug_mode)
+        finally:
+            # Clean up and restore previous settings
+            werkzeug_logger.removeHandler(handler)
+            werkzeug_logger.setLevel(current_level)
+    else:
+        # In debug mode, print the message upfront since Flask will restart after detected changes
+        print_server_ready_message(port)
+        app.run(host='0.0.0.0', port=port, debug=debug_mode)

@@ -11,8 +11,17 @@ import * as poseDetection from '@tensorflow-models/pose-detection';
 import '@tensorflow/tfjs-backend-webgl';
 import '@tensorflow/tfjs-backend-cpu';
 
+// Threshold constants and colour helper
+import { SPINE_THRESH, DEPTH_THRESH } from '../thresholds.js';
+
+const statusColour = (status) => {
+  if (status === 'good') return '#22c55e';
+  if (status === 'warn') return '#facc15';
+  return '#ef4444';
+};
+
 // API URL with fallback for local development
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://squat-analyzer-backend.onrender.com';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:5000';
 
 // Detect if browser is Firefox
 const isFirefox = () => navigator.userAgent.toLowerCase().indexOf('firefox') > -1;
@@ -2573,6 +2582,9 @@ if (typeof onRecordingComplete === 'function') {
     
     // Draw landmarks
     if (pose && pose.keypoints) {
+      // Define face landmarks to skip
+      const faceLandmarks = ['nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear'];
+      
       // Draw the keypoints
       pose.keypoints.forEach(keypoint => {
         if ((keypoint.score ?? 0) > 0.3) { // Only draw keypoints with confidence above threshold
@@ -2593,6 +2605,11 @@ if (typeof onRecordingComplete === 'function') {
         return;
       }
       
+          // Skip face landmarks
+          if (faceLandmarks.includes(keypoint.part || keypoint.name)) {
+            return; // Skip drawing this face landmark
+          }
+          
           // Scale coordinates to match display size
           const scaledX = x * scaleX;
           const scaledY = y * scaleY;
@@ -2670,7 +2687,7 @@ if (typeof onRecordingComplete === 'function') {
 
   // Get adjacent keypoints for skeleton drawing
   const getAdjacentKeyPoints = (keypoints) => {
-    return poseConnections.map(([a, b]) => {
+    return poseConnections.map(([a, b]) => { 
       // Find keypoints by part name, handling both naming conventions
       const keyPointA = keypoints.find(kp => (kp.part === a) || (kp.name === a));
       const keyPointB = keypoints.find(kp => (kp.part === b) || (kp.name === b));
@@ -2679,15 +2696,11 @@ if (typeof onRecordingComplete === 'function') {
         return [keyPointA, keyPointB];
       }
       return null;
-    }).filter(pair => pair !== null);
+    }).filter(pair => pair !== null); // Filter out null pairs after mapping
   };
 
   // Define connections between keypoints for drawing skeleton
   const poseConnections = [
-    // Face connections
-    ['nose', 'left_eye'], ['left_eye', 'left_ear'], ['nose', 'right_eye'],
-    ['right_eye', 'right_ear'], 
-    
     // Torso
     ['left_shoulder', 'right_shoulder'],
     ['left_shoulder', 'left_hip'], ['right_shoulder', 'right_hip'],
@@ -2709,13 +2722,6 @@ if (typeof onRecordingComplete === 'function') {
     
     // Map of keypoint names to colors (including potential alternative names)
     const colors = {
-      // Face
-      'nose': 'red',
-      'left_eye': 'yellow',
-      'right_eye': 'yellow',
-      'left_ear': 'yellow',
-      'right_ear': 'yellow',
-      
       // Upper body
       'left_shoulder': 'green',
       'right_shoulder': 'green',

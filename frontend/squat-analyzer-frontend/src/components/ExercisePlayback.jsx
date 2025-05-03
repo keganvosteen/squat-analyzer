@@ -3,6 +3,16 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Play, Pause, SkipForward, SkipBack, AlertTriangle, CheckCircle, Info, Maximize2, Minimize2, ArrowLeft } from 'lucide-react';
 import styled from 'styled-components';
 
+// Thresholds for form status colours
+import { SPINE_THRESH, DEPTH_THRESH } from '../thresholds.js';
+
+// Map status → color (Tailwind palette refs)
+const statusColour = (status) => {
+  if (status === 'good') return '#22c55e'; // green-500
+  if (status === 'warn') return '#facc15'; // yellow-400
+  return '#ef4444'; // red-500
+};
+
 // Styled components
 const Container = styled.div`
   display: flex;
@@ -333,54 +343,60 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
   
   // Check if we have valid analysis data
   const hasAnalysisData = analysisData && 
-                        analysisData.success && 
                         Array.isArray(analysisData.frames) && 
                         analysisData.frames.length > 0;
+                        
+  // Log hasAnalysisData state for debugging
+  useEffect(() => {
+    if (analysisData) {
+      console.log('[Debug] hasAnalysisData set to:', hasAnalysisData);
+      console.log('[Debug] Analysis frames count:', analysisData.frames?.length || 0);
+    }
+  }, [analysisData, hasAnalysisData]);
 
   // Define drawing and coordinate functions BEFORE the useEffect that uses them
   // Transform coordinates based on video orientation and apply scaling
-  const transformCoordinates = useCallback((x, y, canvasWidth, canvasHeight, isPortrait = false, landmarkIndex = -1) => {
-    // Default values to prevent NaN
+  const transformCoordinates = useCallback((x, y, canvasWidth, canvasHeight, isPortrait = false, _landmarkIndex = -1) => {
+    // Validate input
     if (typeof x !== 'number' || typeof y !== 'number') {
-      console.warn('Invalid coordinates:', x, y);
-      return { x: 0.5, y: 0.5 };
+      console.warn('[Overlay] Invalid coordinates received:', x, y);
+      return { x: 0.5, y: 0.5 }; // fallback to centre
     }
-    
-    // Better handling for coordinates that are in decimal format (0-1)
-    // or in pixel format (0-width/height)
+
+    // If coordinates are in pixel space (>1) convert to 0-1 range
     let normalizedX = x;
     let normalizedY = y;
-    
-    if (x > 1) normalizedX = x / canvasWidth;
-    if (y > 1) normalizedY = y / canvasHeight;
-    
-    // Detect and correct extreme positions - this helps filter out detection errors
-    // Particularly useful for ankles/feet that sometimes get incorrectly placed
-    const isExtreme = normalizedY < 0.05; // Top 5% of the screen is usually not valid for body parts
-    if (isExtreme) {
-      // For ankle/foot landmarks (27, 28, 31, 32), handle differently
-      if ([27, 28, 31, 32].includes(landmarkIndex)) {
-        console.log(`Correcting extreme position for landmark ${landmarkIndex}: ${normalizedX}, ${normalizedY}`);
-        // Keep X but move Y to a reasonable position (bottom third of screen)
-        normalizedY = 0.7 + (Math.random() * 0.2); // Random position in bottom third for natural look
-      }
+    if (x > 1 || y > 1) {
+      normalizedX = x / canvasWidth;
+      normalizedY = y / canvasHeight;
     }
-    
-    // Clamp values to valid range
+
+    // Clamp to [0,1]
     normalizedX = Math.max(0, Math.min(1, normalizedX));
     normalizedY = Math.max(0, Math.min(1, normalizedY));
-    
-    // Improved coordinate alignment - apply small correction factor to better match body
-    // This helps account for differences between pose model coordinate space and display
-    const xCorrection = 0.03; // Small correction to align horizontally
-    normalizedX = Math.max(0, Math.min(1, normalizedX - xCorrection));
-    
+
+    // Apply rotation for portrait videos (90° clockwise)
+    if (isPortrait) {
+      const tmpX = normalizedX;
+      normalizedX = normalizedY;
+      normalizedY = 1 - tmpX;
+    }
+
     return { x: normalizedX, y: normalizedY };
   }, []);
-  
+
   // Draw overlays on canvas - MEMOIZED with useCallback
   const drawOverlays = useCallback((ctx, time) => {
-    if (!ctx || !ctx.canvas || !hasAnalysisData) return;
+    console.log('[Debug] drawOverlays called with time:', time);
+    if (!ctx || !ctx.canvas) {
+      console.warn('[Debug] Missing context or canvas');
+      return;
+    }
+    
+    if (!hasAnalysisData) {
+      console.warn('[Debug] No analysis data available');
+      return;
+    }
 
     // Clear canvas first
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
@@ -406,177 +422,230 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
       time,
     }));
 
-    // Find the closest frame based on timestamp with a slight offset for better sync
-    const frames = analysisData.frames;
-    if (!frames || frames.length === 0) return;
-    
-    // Add a small time offset (0.2 seconds) to adjust for any delay in pose calculation vs video playback
-    // This helps sync the pose overlay better with the actual movements in the video
-    const timeOffset = 0.2; // seconds
-    const adjustedTime = Math.max(0, time - timeOffset);
-    
-    const closestFrameIndex = frames.reduce((prev, curr, idx, arr) => {
-      return Math.abs(curr.timestamp - adjustedTime) < Math.abs(arr[prev].timestamp - adjustedTime) ? idx : prev;
-    }, 0);
-    
-    const frameData = frames[closestFrameIndex];
-    
-    // Debug: Log the frame data structure to see what properties it actually has
-    console.log(`Frame ${closestFrameIndex} data structure:`, frameData);
-    
-    // Looking for pose keypoints - they could be named landmarks, keypoints, or pose_keypoints
-    const keypointsData = frameData.landmarks || frameData.keypoints || frameData.pose_keypoints;
-    
-    if (!frameData || !keypointsData) {
-      console.warn(`No valid keypoints data in frame ${closestFrameIndex}. Available properties:`, 
-        Object.keys(frameData || {}).join(', '));
-      return;
-    }
-    
-    // Store the keypoints in a consistent property for later use
-    frameData.keypoints = keypointsData;
-    
-    // Only show debug info when explicitly enabled
-    if (showDebug) {
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-      ctx.fillRect(10, 10, 280, 100);
-      ctx.font = '12px monospace';
-      ctx.fillStyle = 'white';
-      ctx.fillText(`Video time: ${time.toFixed(2)}s / Duration: ${videoRef.current?.duration.toFixed(2)}s`, 20, 30);
-      ctx.fillText(`Frame index: ${closestFrameIndex} / Total frames: ${frames.length}`, 20, 50);
-      ctx.fillText(`Frame timestamp: ${frameData.timestamp?.toFixed(2) || 'N/A'}s`, 20, 70);
-      ctx.fillText(`Frame data: ${Object.keys(frameData || {}).join(', ')}`, 20, 90);
-    }
-    
     // Determine if video is in portrait
     const isPortrait = videoOrientation === 'portrait';
 
-    // Draw landmark connections (skeleton lines)
-    if (frameData.keypoints) {
-      // Define connections for the pose landmarks (simplified for squat analysis)
-      const connections = [
-        // Torso
-        [11, 12], // Left shoulder to right shoulder
-        [11, 23], // Left shoulder to left hip
-        [12, 24], // Right shoulder to right hip
-        [23, 24], // Left hip to right hip
-        
-        // Left arm
-        [11, 13], // Left shoulder to left elbow
-        [13, 15], // Left elbow to left wrist
-        
-        // Right arm
-        [12, 14], // Right shoulder to right elbow
-        [14, 16], // Right elbow to right wrist
-        
-        // Left leg
-        [23, 25], // Left hip to left knee
-        [25, 27], // Left knee to left ankle
-        [27, 31], // Left ankle to left foot
-        
-        // Right leg
-        [24, 26], // Right hip to right knee
-        [26, 28], // Right knee to right ankle
-        [28, 32], // Right ankle to right foot
-      ];
+    // MISSING CODE: Find the current frame data based on the current time
+    // Find the *last* frame whose timestamp is less than or equal to the current time
+    const adjustedTime = time;
+    
+    // DEBUG: Log the frames array structure
+    console.log('[Debug] Analysis frames count:', analysisData.frames.length);
+    console.log('[Debug] First frame sample:', analysisData.frames[0]);
+    
+    let currentFrameIndex = -1;
+    for (let i = 0; i < analysisData.frames.length; i++) {
+      if (analysisData.frames[i].timestamp <= adjustedTime) {
+        currentFrameIndex = i;
+      } else {
+        // Stop searching once we pass the current time
+        break;
+      }
+    }
+
+    // If no frame is found (e.g., time is before the first frame), use the first frame
+    if (currentFrameIndex === -1 && analysisData.frames.length > 0) {
+      currentFrameIndex = 0;
+      console.log('[Debug] Using first frame as fallback');
+    }
+    
+    // Handle edge case where video time might exceed last frame timestamp
+    if (currentFrameIndex === -1) {
+      console.warn("[Debug] Could not find a suitable frame for time:", adjustedTime);
+      return; // No frame data to draw
+    }
+
+    const frameData = analysisData.frames[currentFrameIndex];
+    console.log(`[Debug] Selected frame ${currentFrameIndex} for time ${adjustedTime}s`);
+    console.log('[Debug] Frame data structure:', JSON.stringify(frameData).substring(0, 200) + '...');
+    
+    // Check if landmarks exist and are in expected format
+    if (!frameData.landmarks) {
+      console.error('[Debug] No landmarks in frame data!');
+    } else {
+      console.log('[Debug] Landmarks count:', frameData.landmarks.length);
+      console.log('[Debug] First landmark sample:', frameData.landmarks[0]);
+    }
+    
+    // Debugging
+    if (window && window.DEBUG_OVERLAY) {
+      console.log(`Using frame ${currentFrameIndex} at time ${adjustedTime}s, frame timestamp: ${frameData.timestamp}s`);
+    }
+
+    const spineConnections = [
+      // Torso (spine)
+      [11, 12], // shoulders
+      [11, 23], [12, 24], // shoulder→hip
+      [23, 24], // hips
+    ];
+
+    const legConnections = [
+      // Legs
+      [23, 25], [25, 27], [27, 31], // left
+      [24, 26], [26, 28], [28, 32], // right
+    ];
+
+    const armConnections = [
+      // Arms (remain white)
+      [11, 13], [13, 15], // left
+      [12, 14], [14, 16], // right
+    ];
+
+    // DEBUG: Log expected data structure for connections
+    console.log('[Debug] Connection groups:', {
+      spine: spineConnections,
+      legs: legConnections,
+      arms: armConnections
+    });
+
+    const drawConnGroup = (connectionsArr, stroke) => {
+      ctx.strokeStyle = stroke;
+      console.log(`[Debug] Drawing connection group with stroke: ${stroke}`);
       
-      ctx.strokeStyle = 'white';
-      ctx.lineWidth = 2;
+      // Check keypoints vs landmarks naming
+      if (!frameData.keypoints && frameData.landmarks) {
+        console.warn('[Debug] Frame data has landmarks but not keypoints - using landmarks instead');
+        frameData.keypoints = frameData.landmarks;
+      }
       
-      // Draw skeleton lines
-      connections.forEach(([i, j]) => {
-        const landmark1 = frameData.keypoints[i];
-        const landmark2 = frameData.keypoints[j];
+      if (!frameData.keypoints) {
+        console.error('[Debug] No keypoints/landmarks found in frame data!');
+        return;
+      }
+      
+      console.log('[Debug] Keypoints array length:', frameData.keypoints.length);
+      
+      connectionsArr.forEach(([i, j]) => {
+        console.log(`[Debug] Trying to draw connection between points ${i} and ${j}`);
+        const l1 = frameData.keypoints[i];
+        const l2 = frameData.keypoints[j];
         
-        if (!landmark1 || !landmark2 || 
-            typeof landmark1.x !== 'number' || 
-            typeof landmark2.x !== 'number' ||
-            landmark1.visibility < 0.5 || 
-            landmark2.visibility < 0.5) {
+        if (!l1 || !l2) {
+          console.warn(`[Debug] Missing keypoint at index ${i} or ${j}`);
           return;
         }
         
-        const p1 = transformCoordinates(
-          landmark1.x, landmark1.y, 
-          ctx.canvas.width, ctx.canvas.height, 
-          isPortrait,
-          i // Pass landmark index for special case handling
-        );
+        console.log(`[Debug] Keypoint ${i} visibility: ${l1.visibility}, Keypoint ${j} visibility: ${l2.visibility}`);
         
-        const p2 = transformCoordinates(
-          landmark2.x, landmark2.y, 
-          ctx.canvas.width, ctx.canvas.height, 
-          isPortrait,
-          j // Pass landmark index for special case handling
-        );
+        if (l1.visibility < 0.5 || l2.visibility < 0.5) {
+          console.log(`[Debug] Skipping connection ${i}-${j} due to low visibility`);
+          return;
+        }
+        const p1 = transformCoordinates(l1.x, l1.y, ctx.canvas.width, ctx.canvas.height, isPortrait);
+        const p2 = transformCoordinates(l2.x, l2.y, ctx.canvas.width, ctx.canvas.height, isPortrait);
         
+        // --- Mitigation for stuck landmarks --- 
+        // Skip drawing if either point is suspiciously close to the edge (0,0 or 1,1)
+        const isPointInvalid = (p) => p.x < 0.01 || p.x > 0.99 || p.y < 0.01 || p.y > 0.99;
+        if (isPointInvalid(p1) || isPointInvalid(p2)) {
+            console.warn(`Skipping connection [${i}, ${j}] due to potentially invalid coordinates:`, p1, p2);
+            return; 
+        }
+        // --- End Mitigation --- 
+
         ctx.beginPath();
         ctx.moveTo(p1.x * ctx.canvas.width, p1.y * ctx.canvas.height);
         ctx.lineTo(p2.x * ctx.canvas.width, p2.y * ctx.canvas.height);
+        ctx.lineWidth = 2;
         ctx.stroke();
       });
-      
-      // Define relevant landmark indices for squat analysis (exclude facial features)
-      const relevantLandmarks = [
-        11, 12, 13, 14, 15, 16, // shoulders and arms
-        23, 24, 25, 26, 27, 28, 31, 32 // hips, knees, ankles, feet
-      ];
-      
-      // Draw only relevant landmark points
-      relevantLandmarks.forEach((idx) => {
-        const landmark = frameData.keypoints[idx];
-        if (!landmark || typeof landmark.x !== 'number' || landmark.visibility < 0.5) {
-          return;
-        }
-        
-        // Transform coordinates
-        const coord = transformCoordinates(
-          landmark.x, landmark.y, 
-          ctx.canvas.width, ctx.canvas.height, 
-          isPortrait,
-          idx // Pass landmark index for special handling
-        );
-        
-        // Use different colors for different body parts
-        if (idx === 11 || idx === 12) { // Shoulders
-          ctx.fillStyle = 'red';
-        } else if (idx === 23 || idx === 24) { // Hips
-          ctx.fillStyle = 'blue';
-        } else if (idx === 25 || idx === 26) { // Knees
-          ctx.fillStyle = 'green';
-        } else if (idx === 27 || idx === 28 || idx === 31 || idx === 32) { // Ankles and feet
-          ctx.fillStyle = 'yellow';
-        } else {
-          ctx.fillStyle = 'white';
-        }
-        
-        // Draw landmark point
+    };
+
+    const spineColor = statusColour(frameData.status?.spine || 'warn');
+    const kneeColor = statusColour(frameData.status?.knee || 'warn');
+
+    drawConnGroup(spineConnections, spineColor);
+    drawConnGroup(legConnections, kneeColor);
+    drawConnGroup(armConnections, 'white');
+
+    // Draw feedback arrows
+    if (frameData.arrows && Array.isArray(frameData.arrows)) {
+      frameData.arrows.forEach((arrow) => {
+        const { start, end, color = 'yellow', message = '' } = arrow || {};
+        if (!start || !end) return;
+
+        const pStart = transformCoordinates(start.x, start.y, ctx.canvas.width, ctx.canvas.height, isPortrait);
+        const pEnd = transformCoordinates(end.x, end.y, ctx.canvas.width, ctx.canvas.height, isPortrait);
+
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = 3;
+
         ctx.beginPath();
-        ctx.arc(
-          coord.x * ctx.canvas.width, 
-          coord.y * ctx.canvas.height, 
-          5, 0, 2 * Math.PI
-        );
-        ctx.fill();
-        
-        // Add index number for debugging
-        if (showDebug) {
-          ctx.fillStyle = 'white';
-          ctx.font = '10px Arial';
-          ctx.fillText(`${idx}`, coord.x * ctx.canvas.width + 7, coord.y * ctx.canvas.height);
+        ctx.moveTo(pStart.x * ctx.canvas.width, pStart.y * ctx.canvas.height);
+        ctx.lineTo(pEnd.x * ctx.canvas.width, pEnd.y * ctx.canvas.height);
+        ctx.stroke();
+
+        // Draw arrow head
+        const angle = Math.atan2(pEnd.y - pStart.y, pEnd.x - pStart.x);
+        const headLen = 10;
+        const hx = pEnd.x * ctx.canvas.width - headLen * Math.cos(angle - Math.PI / 6);
+        const hy = pEnd.y * ctx.canvas.height - headLen * Math.sin(angle - Math.PI / 6);
+        const hx2 = pEnd.x * ctx.canvas.width - headLen * Math.cos(angle + Math.PI / 6);
+        const hy2 = pEnd.y * ctx.canvas.height - headLen * Math.sin(angle + Math.PI / 6);
+        ctx.beginPath();
+        ctx.moveTo(pEnd.x * ctx.canvas.width, pEnd.y * ctx.canvas.height);
+        ctx.lineTo(hx, hy);
+        ctx.moveTo(pEnd.x * ctx.canvas.width, pEnd.y * ctx.canvas.height);
+        ctx.lineTo(hx2, hy2);
+        ctx.stroke();
+
+        // Message text with improved positioning and background
+        if (message) {
+          const textPadding = 4;
+          ctx.font = '14px Arial';
+          const textMetrics = ctx.measureText(message);
+          const textWidth = textMetrics.width;
+          const textHeight = 14; // Approximate height based on font size
+
+          // Position text closer to the frame edges for better readability
+          const margin = 20; // Minimum distance from canvas edge
+          let textX;
+          if (pEnd.x * ctx.canvas.width < ctx.canvas.width / 2) {
+            // Arrow ends on left half – push text to left edge
+            textX = margin;
+          } else {
+            // Arrow ends on right half – push text to right edge
+            textX = ctx.canvas.width - textWidth - margin;
+          }
+
+          // Keep vertical position roughly in line with arrow end but inside margins
+          let textY = pEnd.y * ctx.canvas.height;
+          textY = Math.max(textHeight + margin, Math.min(textY, ctx.canvas.height - margin));
+
+          // Draw semi-transparent background for readability
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+          ctx.fillRect(
+            textX - textPadding,
+            textY - textHeight,
+            textWidth + 2 * textPadding,
+            textHeight + 2 * textPadding
+          );
+
+          // Draw text
+          ctx.fillStyle = color; // Use arrow color for text
+          ctx.fillText(message, textX, textY);
         }
       });
     }
+    
+    // *** ADD CALL TO DRAW KNEE ANGLE ARC ***
+    let arcDrawn = drawKneeAngleArc(ctx, frameData, 'left', isPortrait);
+    if (!arcDrawn) {
+      // If left side failed, try right side
+      drawKneeAngleArc(ctx, frameData, 'right', isPortrait);
+    }
+    // *** END KNEE ANGLE ARC DRAWING ***
 
     // Draw measurements and analysis
     if (frameData.measurements) {
       const { kneeAngle, depthRatio, shoulderMidfootDiff } = frameData.measurements;
-
+      
       // If all values are null, skip drawing the stats box
       if (kneeAngle === null && depthRatio === null && shoulderMidfootDiff === null) {
         return;
       }
-
+      
       // Position text in top-right corner
       ctx.font = '16px Arial';
       let yOffset = 30;
@@ -588,12 +657,20 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
       ctx.fillRect(xOffset, 0, 250, 100);
 
       // Knee Angle
+      let kneeAngleColor = 'white'; // Default
+      if (kneeAngle !== null) {
+        if (kneeAngle < 90) {
+          kneeAngleColor = '#00ff00'; // Green for good depth
+        } else if (kneeAngle < 150) {
+          kneeAngleColor = '#00ffff'; // Cyan for shallow
+        }
+      }
       ctx.fillStyle = 'white';
       ctx.fillText('Knee Angle:', xOffset + paddingRight, yOffset);
-      ctx.fillStyle = '#00ff00';
+      ctx.fillStyle = kneeAngleColor; // Use dynamic color
       ctx.fillText(
         kneeAngle !== null && typeof kneeAngle === 'number' ? ` ${Math.round(kneeAngle)}°` : ' N/A',
-        xOffset + paddingRight + 90, yOffset
+        xOffset + paddingRight + 90, yOffset // Adjusted position slightly
       );
       yOffset += 25;
 
@@ -617,110 +694,94 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
       );
     }
 
-    // Draw feedback arrows
-    if (frameData.arrows && Array.isArray(frameData.arrows)) {
-      frameData.arrows.forEach(arrow => {
-        // Skip arrows with empty or undefined messages
-        if (!arrow.message) return;
-        if (arrow.start && arrow.end && typeof arrow.start.x === 'number' && typeof arrow.end.x === 'number') {
-          // Apply feedback message corrections
-          let messageText = arrow.message;
-          let startPoint = {...arrow.start};
-          let endPoint = {...arrow.end};
-          
-          // Fix "chest up" arrow to actually point to chest instead of hips
-          if (messageText.toLowerCase().includes("chest up")) {
-            // If the message is about chest but points elsewhere, correct the target
-            const chest = frameData.keypoints.find((kp, idx) => idx === 11 || idx === 12);
-            if (chest && typeof chest.x === 'number') {
-              endPoint = {x: chest.x, y: chest.y};
-            }
-          }
-          
-          ctx.beginPath();
-          ctx.strokeStyle = arrow.color || 'yellow';
-          ctx.lineWidth = 3;
-
-          // Apply coordinate transformation to arrow points
-          const start = transformCoordinates(
-            startPoint.x, startPoint.y, 
-            ctx.canvas.width, ctx.canvas.height, 
-            isPortrait
-          );
-          
-          const end = transformCoordinates(
-            endPoint.x, endPoint.y, 
-            ctx.canvas.width, ctx.canvas.height, 
-            isPortrait
-          );
-
-          const startX = start.x * ctx.canvas.width;
-          const startY = start.y * ctx.canvas.height;
-          const endX = end.x * ctx.canvas.width;
-          const endY = end.y * ctx.canvas.height;
-
-          // Draw line
-          ctx.moveTo(startX, startY);
-          ctx.lineTo(endX, endY);
-          ctx.stroke();
-
-          // Draw arrowhead
-          const angle = Math.atan2(endY - startY, endX - startX);
-          const arrowLength = 15;
-
-          ctx.beginPath();
-          ctx.moveTo(endX, endY);
-          ctx.lineTo(
-            endX - arrowLength * Math.cos(angle - Math.PI / 6),
-            endY - arrowLength * Math.sin(angle - Math.PI / 6)
-          );
-          ctx.moveTo(endX, endY);
-          ctx.lineTo(
-            endX - arrowLength * Math.cos(angle + Math.PI / 6),
-            endY - arrowLength * Math.sin(angle + Math.PI / 6)
-          );
-          ctx.stroke();
-
-          // Offset message away from landmark along arrow direction
-          const vecX = endX - startX;
-          const vecY = endY - startY;
-          const len = Math.max(Math.hypot(vecX, vecY), 0.001);
-          const normX = vecX / len;
-          const normY = vecY / len;
-          const msgOffset = 40; // Increase offset from arrow head for better visibility
-          const textX = endX + normX * msgOffset;
-          const textY = endY + normY * msgOffset;
-
-          // Draw background rectangle for text
-          ctx.font = '14px Arial';
-          const textWidth = ctx.measureText(arrow.message).width;
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-          // Make the background larger for better readability
-          ctx.fillRect(textX - 5, textY - 15, textWidth + 10, 25);
-
-          // Draw text
-          ctx.fillStyle = 'white';
-          ctx.fillText(messageText, textX, textY);
-        }
-      });
-    }
-    
     // Draw frame indicator
     ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
     ctx.font = '12px Arial';
-    ctx.fillText(`Frame: ${closestFrameIndex}, Time: ${frameData.timestamp.toFixed(2)}s`, 10, ctx.canvas.height - 10);
+    ctx.fillText(`Frame: ${currentFrameIndex}, Time: ${frameData.timestamp.toFixed(2)}s`, 10, ctx.canvas.height - 10);
     
   }, [hasAnalysisData, analysisData, videoOrientation, showDebug, transformCoordinates]);
+
+  // *** ADD HELPER FUNCTION TO DRAW KNEE ANGLE ARC ***
+  const drawKneeAngleArc = useCallback((ctx, frameData, side, isPortrait) => {
+    const hipIndex = side === 'left' ? 23 : 24;
+    const kneeIndex = side === 'left' ? 25 : 26;
+    const ankleIndex = side === 'left' ? 27 : 28;
+
+    const { keypoints, measurements } = frameData;
+    const kneeAngle = measurements?.kneeAngle;
+
+    if (kneeAngle === null || kneeAngle === undefined || !keypoints) return false; // No angle or keypoints
+
+    const hip = keypoints[hipIndex];
+    const knee = keypoints[kneeIndex];
+    const ankle = keypoints[ankleIndex];
+
+    // Check visibility
+    const minConfidence = 0.3;
+    if (!hip || !knee || !ankle || (hip.score ?? 0) < minConfidence || (knee.score ?? 0) < minConfidence || (ankle.score ?? 0) < minConfidence) {
+      // console.debug(`[Squat] Skipping knee arc draw for ${side} side due to low confidence or missing points.`);
+      return false; // Indicate failure to draw for this side
+    }
+
+    // Transform coordinates
+    const pHip = transformCoordinates(hip.x, hip.y, ctx.canvas.width, ctx.canvas.height, isPortrait);
+    const pKnee = transformCoordinates(knee.x, knee.y, ctx.canvas.width, ctx.canvas.height, isPortrait);
+    const pAnkle = transformCoordinates(ankle.x, ankle.y, ctx.canvas.width, ctx.canvas.height, isPortrait);
+
+    // Calculate angles of segments relative to horizontal
+    const thighAngleRad = Math.atan2(pHip.y - pKnee.y, pHip.x - pKnee.x);
+    const shinAngleRad = Math.atan2(pAnkle.y - pKnee.y, pAnkle.x - pKnee.x);
+
+    // Determine start and end angles for the arc to represent the internal angle
+    let startAngle = thighAngleRad;
+    let endAngle = shinAngleRad;
+
+    let angleDiff = endAngle - startAngle;
+    while (angleDiff <= -Math.PI) angleDiff += 2 * Math.PI;
+    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+    
+    // The actual knee angle from backend (0-180 degrees usually)
+    const internalAngleRad = kneeAngle * (Math.PI / 180);
+    
+    // Determine if the calculated sweep matches the internal angle direction
+    // This heuristic assumes flexion reduces the angle towards zero
+    const sweepAngle = Math.abs(angleDiff);
+    const counterClockwise = angleDiff < 0; // Define sweep direction based on angle difference
+
+    const radius = 40; // Radius of the arc in pixels
+    ctx.strokeStyle = '#00ffff'; // Cyan color for the arc
+    ctx.lineWidth = 3;
+    ctx.setLineDash([]); // Ensure solid line
+
+    // Draw the arc
+    ctx.beginPath();
+    // We draw from thigh to shin angle. Sweep direction determined by angleDiff sign.
+    ctx.arc(pKnee.x, pKnee.y, radius, startAngle, endAngle, counterClockwise);
+    ctx.stroke();
+
+    // Draw the angle value near the arc
+    ctx.fillStyle = '#00ffff';
+    ctx.font = '14px Arial';
+    const textAngle = startAngle + angleDiff / 2; // Midpoint angle for text
+    const textDist = radius + 15;
+    const textX = pKnee.x + textDist * Math.cos(textAngle);
+    const textY = pKnee.y + textDist * Math.sin(textAngle);
+    // Add background for text
+    const text = `${Math.round(kneeAngle)}°`;
+    const textMetrics = ctx.measureText(text);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+    ctx.fillRect(textX - 5, textY - 14, textMetrics.width + 10, 18);
+    ctx.fillStyle = '#00ffff';
+    ctx.fillText(text, textX, textY);
+
+    return true; // Indicate success
+  }, [transformCoordinates]); // Added dependency
 
   // Log any issues with analysis data
   useEffect(() => {
     if (analysisData && (!analysisData.frames || analysisData.frames.length === 0)) {
       console.warn("Analysis data has no valid frames", analysisData);
       setError("Analysis completed but no valid frames were found. Try recording a clearer video.");
-    }
-    
-    if (analysisData && (analysisData.frame_count < 0 || !isFinite(analysisData.frame_count))) {
-      console.warn("Analysis data has invalid frame count:", analysisData.frame_count);
     }
   }, [analysisData, setError]); // Added setError dependency
 

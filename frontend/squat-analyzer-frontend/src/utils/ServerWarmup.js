@@ -6,20 +6,16 @@
 import axios from 'axios';
 
 // Get the backend URL from environment or use default
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://squat-analyzer-backend.onrender.com';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:5000';
 
 // Determine if we're in development mode
 const isDevelopment = import.meta.env.DEV;
 
 // Create a URL that uses the local proxy in development
 const getApiUrl = (endpoint) => {
-  if (isDevelopment) {
-    // In development, use the Vite proxy (relative URL)
-    return endpoint; // e.g., '/ping' will be proxied by Vite
-  } else {
-    // In production, use the full URL
-    return `${BACKEND_URL}${endpoint}`;
-  }
+  // Always use the full backend URL, even in development
+  // This bypasses the need for Vite proxy for ping requests
+  return `${BACKEND_URL}${endpoint}`;
 };
 
 // Flag to determine if we should use local analysis instead of server
@@ -27,7 +23,7 @@ let useLocalAnalysis = false;
 
 // Create an axios instance with shorter timeout for pings
 const pingApi = axios.create({
-  baseURL: isDevelopment ? '' : BACKEND_URL, // In dev mode, use relative URLs for proxy
+  baseURL: BACKEND_URL, 
   timeout: 5000, // 5 seconds is enough for a ping
 });
 

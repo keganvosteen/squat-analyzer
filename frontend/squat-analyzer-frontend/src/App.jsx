@@ -14,7 +14,7 @@ import seasLogo from '/SEASLogo.png';
 import crownIcon from '/ColumbiaCrown.png';
 
 // Define the backend URL with a fallback
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'https://squat-analyzer-backend.onrender.com';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:5000';
 
 // Determine if we're in development mode
 const isDevelopment = import.meta.env.DEV;
@@ -410,49 +410,82 @@ const App = () => {
     } else {
       console.log('Letting browser set Content-Type for FormData (should be multipart/form-data with boundary)');
     }
+    console.log('[App.jsx] About to send fetch request to analyze endpoint: ', `${BACKEND_URL}/analyze`); // Log the URL
+    console.log('[App.jsx] Sending fetch request now...'); // ADDED LOG
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      console.error('[App.jsx] Request timeout reached - aborting fetch');
+      controller.abort();
+    }, 120000); // 2-minute timeout
+    
     fetch(`${BACKEND_URL}/analyze`, {
       method: "POST",
       body: formData,
+      signal: controller.signal,
       // headers: DO NOT include Content-Type here!
     })
     .then(response => {
+      console.log('[App.jsx] Entered .then block'); // ADDED LOG
+      clearTimeout(timeoutId);
+      console.log(`[App.jsx] Received response status: ${response.status}`);
       if (!response.ok) {
-        // Create a better error message for CORS issues
-        if (response.status === 0) {
-          throw new Error("Network error: This could be a CORS issue. Please make sure the server is running and CORS is configured correctly.");
-        }
-        
-        // Handle specific HTTP error codes
-        if (response.status === 413) {
-          throw new Error("Video file too large. Please record a shorter video or reduce the resolution.");
-        }
-        
-        // For other HTTP errors
-        throw new Error(`Server error: ${response.status} ${response.statusText}`);
+        // Log non-OK status and potentially response text for debugging
+        return response.text().then(text => {
+          console.error(`[App.jsx] Server responded with status: ${response.status}. Response text: ${text}`);
+          throw new Error(`Server responded with status: ${response.status}`);
+        });
       }
-      return response.json();
+      // Clone the response to allow reading the text and then parsing as JSON
+      return response.clone().text().then(text => {
+        console.log(`[App.jsx] Raw response text:`, text); // Log raw text first
+        try {
+          const data = JSON.parse(text); // Manually parse after logging text
+          console.log('[App.jsx] Successfully parsed JSON:', data);
+          // Basic validation
+          if (!data || typeof data !== 'object') {
+              console.error('[App.jsx] Invalid data structure received:', data);
+              throw new Error('Invalid data structure received from server.');
+          }
+          return data; // Return parsed data
+        } catch (e) {
+          console.error('[App.jsx] Error parsing JSON:', e);
+          console.error('[App.jsx] Raw text that failed parsing:', text); // Log text again on error
+          throw new Error('Failed to parse JSON response from server.');
+        }
+      });
     })
     .then(data => {
-      console.log("Received analysis data:", data);
-      
-      // Validate the response data based on actual structure
-      // Check for essential keys like 'success' and 'frames' (or adjust as needed)
-      if (!data || typeof data.success === 'undefined' || !data.frames) { 
-        console.error("Validation failed: Unexpected data structure", data);
-        throw new Error("Invalid response format from server");
+      if (!data) {
+          console.error('[App.jsx] Parsed data is null or undefined before setting state.');
+          // Handle case where data might be unexpectedly null/undefined after parsing step
+          throw new Error('Received null or undefined data after processing response.');
       }
-      
-      setAnalysisData(data); // The received 'data' object seems correct now
-      setLoading(false);
-      
-      // Clear any warning errors for fallback images that were successfully analyzed
-      if (isFallbackImage && data.success === true) {
-        setError(null);
-      }
+      console.log('[App.jsx] About to set analysis data state with:', data);
+      setAnalysisData(data);
+      setLoading(false); // Corrected typo: setLoading instead of setAnalysisLoading
     })
-    .catch(err => {
-      console.error("Error during analysis:", err);
-      const errorMessage = err.message || "Unknown error occurred";
+    .catch(error => {
+      console.log('[App.jsx] Entered .catch block'); // ADDED LOG
+      clearTimeout(timeoutId);
+      setIsLoading(false);
+      console.error("[App.jsx] Error in analysis fetch/processing:", error);
+      
+      // Log stack trace for better debugging
+      if (error.stack) {
+        console.error("[App.jsx] Error stack trace:", error.stack);
+      }
+      
+      // Check for specific error types
+      if (error.name === 'AbortError') {
+        console.error('[App.jsx] Request was aborted (timeout or user action)');
+      } else if (error instanceof TypeError) {
+        console.error('[App.jsx] TypeError may indicate network connectivity issue');
+      } else if (error instanceof SyntaxError) {
+        console.error('[App.jsx] SyntaxError may indicate invalid JSON response');
+      }
+      
+      const errorMessage = error.message || "Unknown error occurred";
+      console.error(`[App.jsx] Error message: ${errorMessage}`);
       
       // Enhanced error message that's more user-friendly
       let userErrorMessage = errorMessage;
@@ -461,15 +494,25 @@ const App = () => {
         userErrorMessage = "Connection to analysis server failed. This may be due to network security settings.";
       } else if (errorMessage.includes("Failed to fetch") || errorMessage.includes("Network error")) {
         userErrorMessage = "Unable to connect to the analysis server. Please check your internet connection and try again.";
-      } else if (errorMessage.includes("Invalid response format")) {
+      } else if (errorMessage.includes("Invalid response format") || errorMessage.includes("parse") || err instanceof SyntaxError) {
         userErrorMessage = "The server returned an invalid response. This may be due to the recording quality. Please try again with a clearer recording.";
+      } else if (err.name === 'AbortError') {
+        userErrorMessage = "The analysis request timed out. The video may be too large or the server is under heavy load.";
+      } else if (err instanceof TypeError) {
+        userErrorMessage = "A network error occurred. Please check your connection and that the server is running.";
       }
       
+      console.error(`[App.jsx] Final user-friendly error message: ${userErrorMessage}`);
       setError(userErrorMessage);
       setAnalysisData(null);
       setLoading(false);
     });
   };
+
+  // Add useEffect to track analysisData state changes
+  useEffect(() => {
+    console.log("[App.jsx] analysisData state changed:", analysisData);
+  }, [analysisData]);
 
   // Handle going back to the recording screen
   const handleBackToRecord = () => {

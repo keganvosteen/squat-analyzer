@@ -9,3 +9,4 @@ pillow==10.2.0
 werkzeug==3.0.1
 requests==2.31.0
 gunicorn>=20.1.0,<21.0.0
+imageio==2.37.0
