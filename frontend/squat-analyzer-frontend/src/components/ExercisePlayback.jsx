@@ -240,12 +240,11 @@ const Scrubber = styled.input.attrs({ type: 'range' })`
   }
 `;
 
-const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysis = false, isLoading = false, error: externalError = null, onBack }) => {
+const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false, error: externalError = null, onBack }) => {
   console.log("ExercisePlayback Component");
   console.log("Video URL:", videoUrl);
   console.log("Video Blob type:", videoBlob?.type);
   console.log("Analysis data:", analysisData);
-  console.log("Using local analysis:", usingLocalAnalysis);
   
   const containerRef = useRef(null);
   const videoContainerRef = useRef(null);
@@ -277,7 +276,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
   const [hoverPosition, setHoverPosition] = useState(null);
   const [isDraggingTimeline, setIsDraggingTimeline] = useState(false);
   const [error, setError] = useState(externalError);
-  const [debugInfo, setDebugInfo] = useState({});
+  const debugInfoRef = useRef({}); // new ref to avoid re-renders
   const [showDebug, setShowDebug] = useState(false);
   const [videoOrientation, setVideoOrientation] = useState(null);
   
@@ -371,6 +370,14 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
       normalizedY = y / canvasHeight;
     }
 
+    // Improved normalization to handle various input ranges
+    // Some pose estimators output values in [0,1], others in [0,width/height]
+    if (normalizedX < 0 || normalizedX > 1 || normalizedY < 0 || normalizedY > 1) {
+      console.log('[Overlay] Normalizing out-of-range coordinates:', normalizedX, normalizedY);
+      normalizedX = normalizedX < 0 ? 0 : normalizedX > 1 ? normalizedX / canvasWidth : normalizedX;
+      normalizedY = normalizedY < 0 ? 0 : normalizedY > 1 ? normalizedY / canvasHeight : normalizedY;
+    }
+
     // Clamp to [0,1]
     normalizedX = Math.max(0, Math.min(1, normalizedX));
     normalizedY = Math.max(0, Math.min(1, normalizedY));
@@ -387,7 +394,6 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
 
   // Draw overlays on canvas - MEMOIZED with useCallback
   const drawOverlays = useCallback((ctx, time) => {
-    console.log('[Debug] drawOverlays called with time:', time);
     if (!ctx || !ctx.canvas) {
       console.warn('[Debug] Missing context or canvas');
       return;
@@ -410,8 +416,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     }
 
     // Update debug info
-    setDebugInfo(prev => ({
-      ...prev,
+    debugInfoRef.current = {
       currentTime: time.toFixed(2),
       canvasWidth: ctx.canvas.width,
       canvasHeight: ctx.canvas.height,
@@ -420,57 +425,83 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
       frameCount: analysisData.frames.length,
       frameTimestamps: analysisData.frames.map(f => f.timestamp),
       time,
-    }));
+    };
 
     // Determine if video is in portrait
     const isPortrait = videoOrientation === 'portrait';
 
-    // MISSING CODE: Find the current frame data based on the current time
-    // Find the *last* frame whose timestamp is less than or equal to the current time
-    const adjustedTime = time;
-    
-    // DEBUG: Log the frames array structure
-    console.log('[Debug] Analysis frames count:', analysisData.frames.length);
-    console.log('[Debug] First frame sample:', analysisData.frames[0]);
-    
+    // Get video duration for proportional mapping
+    const videoDuration = videoRef.current?.duration || 0;
+    const lastAnalysisTs = analysisData.frames[analysisData.frames.length - 1].timestamp;
+
     let currentFrameIndex = -1;
-    for (let i = 0; i < analysisData.frames.length; i++) {
-      if (analysisData.frames[i].timestamp <= adjustedTime) {
-        currentFrameIndex = i;
-      } else {
-        // Stop searching once we pass the current time
-        break;
+
+    // If analysis timestamps cover most of the video, use timestamp matching; otherwise use proportional mapping
+    const analysisCoverage = lastAnalysisTs / (videoDuration || 1);
+    if (videoDuration > 0 && analysisCoverage < 0.9) {
+      // Proportional mapping fallback across whole video
+      const ratio = Math.min(time / videoDuration, 1);
+      currentFrameIndex = Math.floor(ratio * (analysisData.frames.length - 1));
+    } else {
+      // Timestamp search
+      const adjustedTime = time;
+      for (let i = 0; i < analysisData.frames.length; i++) {
+        if (analysisData.frames[i].timestamp <= adjustedTime) {
+          currentFrameIndex = i;
+        } else {
+          break;
+        }
+      }
+      if (currentFrameIndex === -1) currentFrameIndex = 0;
+      // If we've reached the last analysis frame but video keeps playing, fallback to proportional mapping to avoid freeze
+      if (currentFrameIndex === analysisData.frames.length - 1 && adjustedTime - lastAnalysisTs > 0.05 && videoDuration > 0) {
+        const ratio = Math.min(time / videoDuration, 1);
+        currentFrameIndex = Math.floor(ratio * (analysisData.frames.length - 1));
       }
     }
 
-    // If no frame is found (e.g., time is before the first frame), use the first frame
-    if (currentFrameIndex === -1 && analysisData.frames.length > 0) {
-      currentFrameIndex = 0;
-      console.log('[Debug] Using first frame as fallback');
-    }
-    
-    // Handle edge case where video time might exceed last frame timestamp
-    if (currentFrameIndex === -1) {
-      console.warn("[Debug] Could not find a suitable frame for time:", adjustedTime);
-      return; // No frame data to draw
-    }
+    if (currentFrameIndex < 0 || currentFrameIndex >= analysisData.frames.length) return;
 
     const frameData = analysisData.frames[currentFrameIndex];
-    console.log(`[Debug] Selected frame ${currentFrameIndex} for time ${adjustedTime}s`);
-    console.log('[Debug] Frame data structure:', JSON.stringify(frameData).substring(0, 200) + '...');
-    
+
+    // Interpolate with next frame if available for smoother motion
+    let blendedKeypoints = frameData.keypoints || frameData.landmarks || [];
+    if (currentFrameIndex < analysisData.frames.length - 1) {
+      const nextFrame = analysisData.frames[currentFrameIndex + 1];
+      const nextTs = nextFrame.timestamp;
+      const currTs = frameData.timestamp;
+      const span = nextTs - currTs;
+      if (span > 0) {
+        const ratio = Math.min(Math.max((time - currTs) / span, 0), 1);
+        if (frameData.keypoints && nextFrame.keypoints && frameData.keypoints.length === nextFrame.keypoints.length) {
+          blendedKeypoints = frameData.keypoints.map((kp, idx) => {
+            const kp2 = nextFrame.keypoints[idx];
+            const lerp = (a, b) => a + (b - a) * ratio;
+            return {
+              ...kp,
+              x: lerp(kp.x, kp2.x),
+              y: lerp(kp.y, kp2.y),
+              visibility: lerp(kp.visibility ?? 1, kp2.visibility ?? 1),
+            };
+          });
+        }
+      }
+    }
+
     // Check if landmarks exist and are in expected format
     if (!frameData.landmarks) {
-      console.error('[Debug] No landmarks in frame data!');
+      if (window && window.DEBUG_OVERLAY) console.error('[Debug] No landmarks in frame data!');
     } else {
-      console.log('[Debug] Landmarks count:', frameData.landmarks.length);
-      console.log('[Debug] First landmark sample:', frameData.landmarks[0]);
+      if (window && window.DEBUG_OVERLAY) {
+        // console.log('[Debug] Landmarks count:', frameData.landmarks.length);
+        // console.log('[Debug] First landmark sample:', frameData.landmarks[0]);
+      }
     }
     
     // Debugging
-    if (window && window.DEBUG_OVERLAY) {
-      console.log(`Using frame ${currentFrameIndex} at time ${adjustedTime}s, frame timestamp: ${frameData.timestamp}s`);
-    }
+    // if (window && window.DEBUG_OVERLAY) {
+    //   console.log(`Using frame ${currentFrameIndex} at time ${adjustedTime}s, frame timestamp: ${frameData.timestamp}s`);
+    // }
 
     const spineConnections = [
       // Torso (spine)
@@ -492,43 +523,45 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     ];
 
     // DEBUG: Log expected data structure for connections
-    console.log('[Debug] Connection groups:', {
-      spine: spineConnections,
-      legs: legConnections,
-      arms: armConnections
-    });
+    // if (window && window.DEBUG_OVERLAY) {
+    //   console.log('[Debug] Connection groups:', {
+    //     spine: spineConnections,
+    //     legs: legConnections,
+    //     arms: armConnections
+    //   });
+    // }
 
     const drawConnGroup = (connectionsArr, stroke) => {
       ctx.strokeStyle = stroke;
-      console.log(`[Debug] Drawing connection group with stroke: ${stroke}`);
+      // if (window && window.DEBUG_OVERLAY) console.log(`[Debug] Drawing connection group with stroke: ${stroke}`);
       
       // Check keypoints vs landmarks naming
       if (!frameData.keypoints && frameData.landmarks) {
-        console.warn('[Debug] Frame data has landmarks but not keypoints - using landmarks instead');
+        if (window && window.DEBUG_OVERLAY) console.warn('[Debug] Frame data has landmarks but not keypoints - using landmarks instead');
         frameData.keypoints = frameData.landmarks;
       }
       
       if (!frameData.keypoints) {
-        console.error('[Debug] No keypoints/landmarks found in frame data!');
+        if (window && window.DEBUG_OVERLAY) console.error('[Debug] No keypoints/landmarks found in frame data!');
         return;
       }
       
-      console.log('[Debug] Keypoints array length:', frameData.keypoints.length);
+      // if (window && window.DEBUG_OVERLAY) console.log('[Debug] Keypoints array length:', frameData.keypoints.length);
       
       connectionsArr.forEach(([i, j]) => {
-        console.log(`[Debug] Trying to draw connection between points ${i} and ${j}`);
-        const l1 = frameData.keypoints[i];
-        const l2 = frameData.keypoints[j];
+        // if (window && window.DEBUG_OVERLAY) console.log(`[Debug] Trying to draw connection between points ${i} and ${j}`);
+        const l1 = blendedKeypoints[i];
+        const l2 = blendedKeypoints[j];
         
         if (!l1 || !l2) {
-          console.warn(`[Debug] Missing keypoint at index ${i} or ${j}`);
+          // if (window && window.DEBUG_OVERLAY) console.warn(`[Debug] Missing keypoint at index ${i} or ${j}`);
           return;
         }
         
-        console.log(`[Debug] Keypoint ${i} visibility: ${l1.visibility}, Keypoint ${j} visibility: ${l2.visibility}`);
+        // if (window && window.DEBUG_OVERLAY) console.log(`[Debug] Keypoint ${i} visibility: ${l1.visibility}, Keypoint ${j} visibility: ${l2.visibility}`);
         
         if (l1.visibility < 0.5 || l2.visibility < 0.5) {
-          console.log(`[Debug] Skipping connection ${i}-${j} due to low visibility`);
+          // if (window && window.DEBUG_OVERLAY) console.log(`[Debug] Skipping connection ${i}-${j} due to low visibility`);
           return;
         }
         const p1 = transformCoordinates(l1.x, l1.y, ctx.canvas.width, ctx.canvas.height, isPortrait);
@@ -538,7 +571,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
         // Skip drawing if either point is suspiciously close to the edge (0,0 or 1,1)
         const isPointInvalid = (p) => p.x < 0.01 || p.x > 0.99 || p.y < 0.01 || p.y > 0.99;
         if (isPointInvalid(p1) || isPointInvalid(p2)) {
-            console.warn(`Skipping connection [${i}, ${j}] due to potentially invalid coordinates:`, p1, p2);
+            // if (window && window.DEBUG_OVERLAY) console.warn(`Skipping connection [${i}, ${j}] due to potentially invalid coordinates:`, p1, p2);
             return; 
         }
         // --- End Mitigation --- 
@@ -558,73 +591,113 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     drawConnGroup(legConnections, kneeColor);
     drawConnGroup(armConnections, 'white');
 
-    // Draw feedback arrows
+    // Draw feedback arrows - NEW VERSION (from video sides to landmarks)
     if (frameData.arrows && Array.isArray(frameData.arrows)) {
       frameData.arrows.forEach((arrow) => {
-        const { start, end, color = 'yellow', message = '' } = arrow || {};
-        if (!start || !end) return;
+        const { end, color = 'yellow', message = '' } = arrow || {};
+        if (!end) return;
 
-        const pStart = transformCoordinates(start.x, start.y, ctx.canvas.width, ctx.canvas.height, isPortrait);
-        const pEnd = transformCoordinates(end.x, end.y, ctx.canvas.width, ctx.canvas.height, isPortrait);
-
+        // Transform target landmark coordinates
+        const targetPoint = transformCoordinates(end.x, end.y, ctx.canvas.width, ctx.canvas.height, isPortrait);
+        const targetX = targetPoint.x * ctx.canvas.width;
+        const targetY = targetPoint.y * ctx.canvas.height;
+        
+        // Determine which side of the video to place the label and start the arrow
+        const canvasWidth = ctx.canvas.width;
+        const canvasHeight = ctx.canvas.height;
+        let startX, startY;
+        let labelX, labelY;
+        const padding = 20; // Distance from edge
+        const labelPadding = 5; // Padding around label text
+        
+        // Determine if point is closer to left/right or top/bottom edges
+        const distToLeft = targetX;
+        const distToRight = canvasWidth - targetX;
+        const distToTop = targetY;
+        const distToBottom = canvasHeight - targetY;
+        
+        const minDist = Math.min(distToLeft, distToRight, distToTop, distToBottom);
+        
+        // MODIFIED: Only use left or right edges for feedback tips
+        // Determine if we should use the left or right side based on target position
+        const useLeftSide = targetX < canvasWidth / 2;
+        
+        if (useLeftSide) {
+          // Place on left side
+          startX = padding;
+          startY = targetY;
+          labelX = padding;
+          labelY = targetY - 10; // Position label above arrow start
+        } else {
+          // Place on right side
+          startX = canvasWidth - padding;
+          startY = targetY;
+          labelX = canvasWidth - padding;
+          labelY = targetY - 10; // Position label above arrow start
+        }
+        
+        // Draw arrow
         ctx.strokeStyle = color;
         ctx.fillStyle = color;
         ctx.lineWidth = 3;
-
+        
         ctx.beginPath();
-        ctx.moveTo(pStart.x * ctx.canvas.width, pStart.y * ctx.canvas.height);
-        ctx.lineTo(pEnd.x * ctx.canvas.width, pEnd.y * ctx.canvas.height);
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(targetX, targetY);
         ctx.stroke();
-
+        
         // Draw arrow head
-        const angle = Math.atan2(pEnd.y - pStart.y, pEnd.x - pStart.x);
+        const angle = Math.atan2(targetY - startY, targetX - startX);
         const headLen = 10;
-        const hx = pEnd.x * ctx.canvas.width - headLen * Math.cos(angle - Math.PI / 6);
-        const hy = pEnd.y * ctx.canvas.height - headLen * Math.sin(angle - Math.PI / 6);
-        const hx2 = pEnd.x * ctx.canvas.width - headLen * Math.cos(angle + Math.PI / 6);
-        const hy2 = pEnd.y * ctx.canvas.height - headLen * Math.sin(angle + Math.PI / 6);
+        const hx = targetX - headLen * Math.cos(angle - Math.PI / 6);
+        const hy = targetY - headLen * Math.sin(angle - Math.PI / 6);
+        const hx2 = targetX - headLen * Math.cos(angle + Math.PI / 6);
+        const hy2 = targetY - headLen * Math.sin(angle + Math.PI / 6);
         ctx.beginPath();
-        ctx.moveTo(pEnd.x * ctx.canvas.width, pEnd.y * ctx.canvas.height);
+        ctx.moveTo(targetX, targetY);
         ctx.lineTo(hx, hy);
-        ctx.moveTo(pEnd.x * ctx.canvas.width, pEnd.y * ctx.canvas.height);
+        ctx.moveTo(targetX, targetY);
         ctx.lineTo(hx2, hy2);
         ctx.stroke();
-
+        
         // Message text with improved positioning and background
         if (message) {
-          const textPadding = 4;
-          ctx.font = '14px Arial';
+          const textPadding = labelPadding;
+          ctx.font = 'bold 14px Arial';
           const textMetrics = ctx.measureText(message);
           const textWidth = textMetrics.width;
           const textHeight = 14; // Approximate height based on font size
-
-          // Position text closer to the frame edges for better readability
-          const margin = 20; // Minimum distance from canvas edge
-          let textX;
-          if (pEnd.x * ctx.canvas.width < ctx.canvas.width / 2) {
-            // Arrow ends on left half – push text to left edge
-            textX = margin;
+          
+          // MODIFIED: Position text only on left or right sides
+          if (useLeftSide) {
+            // Left side - align text left
+            labelX = padding * 2;
+            
+            // Ensure the text is vertically within canvas bounds and has some spacing between entries
+            // Map the target Y position to a range that prevents overlap between tips
+            const verticalPosition = (targetY / canvasHeight) * (canvasHeight - 4 * padding) + 2 * padding;
+            labelY = Math.max(textHeight + padding, Math.min(verticalPosition, canvasHeight - padding));
           } else {
-            // Arrow ends on right half – push text to right edge
-            textX = ctx.canvas.width - textWidth - margin;
+            // Right side - align text right
+            labelX = canvasWidth - textWidth - (padding * 2);
+            
+            // Ensure the text is vertically within canvas bounds and has some spacing between entries
+            const verticalPosition = (targetY / canvasHeight) * (canvasHeight - 4 * padding) + 2 * padding;
+            labelY = Math.max(textHeight + padding, Math.min(verticalPosition, canvasHeight - padding));
           }
-
-          // Keep vertical position roughly in line with arrow end but inside margins
-          let textY = pEnd.y * ctx.canvas.height;
-          textY = Math.max(textHeight + margin, Math.min(textY, ctx.canvas.height - margin));
-
+          
           // Draw semi-transparent background for readability
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
           ctx.fillRect(
-            textX - textPadding,
-            textY - textHeight,
+            labelX - textPadding,
+            labelY - textHeight,
             textWidth + 2 * textPadding,
             textHeight + 2 * textPadding
           );
-
+          
           // Draw text
           ctx.fillStyle = color; // Use arrow color for text
-          ctx.fillText(message, textX, textY);
+          ctx.fillText(message, labelX, labelY);
         }
       });
     }
@@ -699,7 +772,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
     ctx.font = '12px Arial';
     ctx.fillText(`Frame: ${currentFrameIndex}, Time: ${frameData.timestamp.toFixed(2)}s`, 10, ctx.canvas.height - 10);
     
-  }, [hasAnalysisData, analysisData, videoOrientation, showDebug, transformCoordinates]);
+  }, [hasAnalysisData, analysisData, videoOrientation, transformCoordinates]);
 
   // *** ADD HELPER FUNCTION TO DRAW KNEE ANGLE ARC ***
   const drawKneeAngleArc = useCallback((ctx, frameData, side, isPortrait) => {
@@ -899,8 +972,8 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
       setVideoDimensions({ width: videoWidth, height: videoHeight });
       
       // Update debugging info
-      setDebugInfo(prev => ({
-        ...prev,
+      debugInfoRef.current = {
+        ...debugInfoRef.current,
         videoMetadata: {
           width: videoWidth,
           height: videoHeight,
@@ -908,7 +981,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
           orientation: orientation,
           aspectRatio: (videoWidth / videoHeight).toFixed(2)
         }
-      }));
+      };
       
       // Set up canvas with dimensions matching the video
       if (canvasRef.current) {
@@ -1181,17 +1254,12 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
       
       {/* Debug information panel */}
       <DebugInfo $show={showDebug}>
-        {JSON.stringify(debugInfo, null, 2)}
+        {JSON.stringify(debugInfoRef.current, null, 2)}
       </DebugInfo>
       
       <AnalysisPanel>
         <h3>
           Analysis Results
-          {usingLocalAnalysis && (
-            <span className="ml-2 text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded">
-              Local Mode
-            </span>
-          )}
         </h3>
         {hasAnalysisData ? (
           <>
@@ -1230,11 +1298,6 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
 
             <FeedbackSection>
               <h4>Feedback Tips</h4>
-              {usingLocalAnalysis && (
-                <div className="mb-3 text-xs bg-blue-50 text-blue-700 p-2 rounded">
-                  Simplified feedback based on local analysis
-                </div>
-              )}
               {analysisData.frames.some(frame => frame.arrows && frame.arrows.length > 0) ? (
                 <FeedbackList>
                   {Array.from(new Set(
@@ -1285,7 +1348,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, usingLocalAnalysi
           </pre>
           <h4>Frame/Timestamp Matching Debug</h4>
           <pre>
-            {JSON.stringify(debugInfo.frameTimestamps, null, 2)}
+            {JSON.stringify(debugInfoRef.current.frameTimestamps, null, 2)}
           </pre>
         </div>
       )}

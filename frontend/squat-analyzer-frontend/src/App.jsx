@@ -9,8 +9,7 @@ import ServerWarmup from './utils/ServerWarmup'; // Import server warmup utility
 // Import logo images 
 import './App.css';
 // Import logos directly
-import cbsLogo from '/CBSLogo.png';
-import seasLogo from '/SEASLogo.png';
+import mbamsLogo from '/MBAMS_logo.png';
 import crownIcon from '/ColumbiaCrown.png';
 
 // Define the backend URL with a fallback
@@ -115,7 +114,6 @@ const ServerStatusMessage = styled.div`
       case 'ready': return 'var(--success-color)';
       case 'error': return 'var(--error-color)';
       case 'starting': return 'var(--warning-color)';
-      case 'local': return 'var(--success-color)';
       default: return 'var(--bg-secondary)';
     }
   }};
@@ -156,7 +154,6 @@ const App = () => {
   const [videoUrl, setVideoUrl] = useState(null);
   const [showPlayback, setShowPlayback] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [usingLocalAnalysis, setUsingLocalAnalysis] = useState(false);
   const [serverStatus, setServerStatus] = useState('unknown');
   const [logoError, setLogoError] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(
@@ -229,7 +226,6 @@ const App = () => {
     if (forceLocal) {
       console.log("Forcing local analysis mode based on URL parameter");
       ServerWarmup.forceLocalAnalysis();
-      setUsingLocalAnalysis(true);
       return;
     }
     
@@ -240,11 +236,6 @@ const App = () => {
     const unsubscribe = ServerWarmup.onServerStatusChange((status) => {
       console.log("Server status updated:", status);
       setServerStatus(status);
-      
-      // Automatically set local analysis mode if server is in error or local state
-      if (status === 'error' || status === 'local') {
-        setUsingLocalAnalysis(true);
-      }
     });
     
     // Set a shorter ping interval to check server status more frequently
@@ -269,22 +260,10 @@ const App = () => {
       case 'starting':
         return 'Server is starting up... This can take 30-60 seconds. You can still record videos while waiting.';
       case 'error':
-        return 'Server is currently unavailable. Local analysis will be used.';
-      case 'local':
-        return 'Using local analysis mode for faster processing.';
+        return 'Server is currently unavailable. Please try again later.';
       default:
         return 'Checking server status...';
     }
-  };
-
-  // Handle forcing local analysis mode
-  const forceLocalMode = () => {
-    // Despite the function name, we won't enable local analysis
-    // Just update the UI to show the server is unavailable
-    setServerStatus('error');
-    setError("Server is unavailable. Please try again later.");
-    
-    // We don't call ServerWarmup.forceLocalAnalysis() to keep local analysis disabled
   };
 
   // Function to directly check server status before sending analysis
@@ -363,9 +342,6 @@ const App = () => {
     setShowPlayback(true);
     setVideoBlob(blob); // Keep the blob for potential re-analysis or download
     
-    // Force local analysis off - always disabled
-    setUsingLocalAnalysis(false);
-
     const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     console.log(`Device detected as ${isMobile ? 'mobile' : 'desktop'}`);
     
@@ -535,14 +511,10 @@ const App = () => {
       <Container>
         <LogosContainer>
           <Logo 
-            src={seasLogo} 
-            alt="Columbia Engineering Logo" 
+            src={mbamsLogo} 
+            alt="MBA MS Logo" 
             onError={handleLogoError}
-          />
-          <Logo 
-            src={cbsLogo} 
-            alt="Columbia Business School Logo" 
-            onError={handleLogoError}
+            style={{ maxWidth: '300px', height: 'auto' }}
           />
         </LogosContainer>
         
@@ -552,12 +524,7 @@ const App = () => {
           <ServerStatusMessage $status={serverStatus}>
             {getServerStatusMessage()}
           </ServerStatusMessage>
-          
-          {(serverStatus === 'starting' || serverStatus === 'error') && (
-            <ServerAction onClick={forceLocalMode}>
-              Force Local Mode
-            </ServerAction>
-          )}
+          {/* Removed Force Local Mode button to keep analysis always backend-driven */}
         </ServerStatusContainer>
         
         {!showPlayback ? (
@@ -569,7 +536,6 @@ const App = () => {
             videoUrl={videoUrl}
             videoBlob={videoBlob}
             analysisData={analysisData}
-            usingLocalAnalysis={usingLocalAnalysis}
             isLoading={loading}
             error={error}
             onBack={handleBackToRecord}

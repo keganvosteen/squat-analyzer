@@ -286,34 +286,6 @@ const CameraContainer = styled.div`
   }
 `;
 
-// Container that holds the live video/canvas and can go fullscreen
-const VideoContainer = styled.div`
-  position: relative;
-  width: 100%;
-  height: 100%;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  aspect-ratio: 16 / 9; /* maintain 16:9 box initially */
-  min-height: 200px; /* ensure initial height for better layout */
-  
-  ${(props) => props.$isFullscreen && `
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100vw;
-    height: 100vh;
-    background: #000;
-    z-index: 1000;
-  `}
-  
-  /* For portrait orientation, use taller ratio */
-  @media (orientation: portrait) {
-    aspect-ratio: 3 / 4; /* 3:4 for upright phones */
-    max-height: 75vh;
-  }
-`;
-
 const Video = styled.video`
   display: block;
   width: 100%;
@@ -439,17 +411,6 @@ const CanvasOverlay = styled.canvas`
   width: 100%;
   height: 100%;
   pointer-events: none;
-`;
-
-// Extra canvas used for drawing pose landmark debug visuals
-const PoseDetectionCanvas = styled.canvas`
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  style={{ display: isPoseTracking ? 'block' : 'none' }}
 `;
 
 const ControlButton = styled.button`
@@ -636,14 +597,6 @@ const ControlsContainer = styled.div`
     justify-content: center;
     gap: 20px; /* Increase spacing between buttons on mobile */
   }
-  
-  ${(props) => props.$isFullscreen && `
-    position: fixed;
-    bottom: 15px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 1001;
-  `}
 `;
 
 const LoadingOverlay = styled.div`
@@ -911,7 +864,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   // State for camera devices and selection
   const [cameraDevices, setCameraDevices] = useState([]);
   const [selectedCameraId, setSelectedCameraId] = useState('');
-  const [showCameraSelector, setShowCameraSelector] = useState(false); // Controls visibility of camera device dropdown
+  const [showCameraSelector, setShowCameraSelector] = useState(false);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
@@ -928,7 +881,6 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const lastLandmarksRef = useRef(null); // store previous landmarks for smoothing
   const lostTrackingFramesRef = useRef(0); // consecutive low‑confidence frames
   const resettingDetectorRef = useRef(false); // Flag to prevent reset loops
-  const poseCanvasRef = useRef(null);
 
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState('00:00');
@@ -954,26 +906,6 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const recordingTimerRef = useRef(null);
   const recordingInterval = useRef(null);
   
-  // Fullscreen state for video container
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  
-  const toggleFullscreen = () => {
-    if (!isFullscreen) {
-      if (containerRef.current && containerRef.current.requestFullscreen) {
-        containerRef.current.requestFullscreen();
-      } else {
-        // fallback – just use internal state styling
-        setIsFullscreen(true);
-      }
-    } else {
-      if (document.fullscreenElement && document.exitFullscreen) {
-        document.exitFullscreen();
-      } else {
-        setIsFullscreen(false);
-      }
-    }
-  };
-
   // Debug logging function
   const addDebugLog = (message) => {
     const timestamp = new Date().toISOString();
@@ -1041,8 +973,186 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     return browserName;
   };
 
+  // Enumerate camera devices on component mount
+  useEffect(() => {
+    getCameraDevices();
+  }, [getCameraDevices]);
+
+  // Initialize TensorFlow on component mount with better mobile handling
+  useEffect(() => {
+    let mounted = true;
+    
+    const initTF = async () => {
+      // Add initialization status tracking
+      let initAttempts = 0;
+      const maxAttempts = 2;
+      let success = false;
+      
+      while (!success && initAttempts < maxAttempts && mounted) {
+        try {
+          addDebugLog(`TensorFlow initialization attempt ${initAttempts + 1}/${maxAttempts}`);
+          success = await initializeTensorFlow();
+          
+          if (mounted) {
+            setTfInitialized(success);
+            if (success) {
+              setShowTFWarning(false);
+              addDebugLog(`TensorFlow initialization succeeded`);
+            } else {
+              addDebugLog(`TensorFlow initialization failed`);
+              if (initAttempts + 1 >= maxAttempts) {
+                console.warn("TensorFlow initialization failed after multiple attempts");
+                setEnableLivePose(false);
+                setError("Pose tracking disabled: your device may not support it.");
+              }
+            }
+          }
+        } catch (err) {
+          console.error("Failed to initialize TensorFlow:", err);
+          addDebugLog(`TensorFlow initialization error: ${err.message}`);
+          
+          if (mounted) {
+            // Only show error on final attempt
+            if (initAttempts + 1 >= maxAttempts) {
+              setEnableLivePose(false);
+              setError("Failed to initialize pose detection. Please try again or check if your device supports it.");
+            }
+          }
+        }
+        
+        initAttempts++;
+        
+        // If not successful and not at max attempts, wait before retry
+        if (!success && initAttempts < maxAttempts) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+      
+      // Ensure we proceed with camera initialization regardless of TF status
+      if (mounted && isInitializing) {
+        initializeCamera();
+      }
+    };
+    
+    initTF();
+    
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Function to enumerate available camera devices
+  const getCameraDevices = useCallback(async () => {
+    try {
+      // First request permission to access media devices
+      await navigator.mediaDevices.getUserMedia({ video: true });
+      
+      // Then enumerate devices
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(device => device.kind === 'videoinput');
+      
+      // Log available camera devices with labels
+      console.log('Available camera devices:', videoDevices.map(device => ({
+        deviceId: device.deviceId,
+        label: device.label || `Camera ${videoDevices.indexOf(device) + 1}`
+      })));
+      
+      setCameraDevices(videoDevices);
+      
+      // Look for "external" in the camera name to prioritize external webcams
+      const externalCameras = videoDevices.filter(device => 
+        device.label && device.label.toLowerCase().includes('external'));
+      
+      // If we have the saved camera ID, check if it's still available
+      const savedCameraId = localStorage.getItem('preferredCameraId');
+      
+      if (savedCameraId) {
+        const savedDeviceExists = videoDevices.some(device => device.deviceId === savedCameraId);
+        if (savedDeviceExists) {
+          setSelectedCameraId(savedCameraId);
+          console.log(`Using saved camera: ${savedCameraId}`);
+          return videoDevices;
+        }
+      }
+      
+      // If no saved camera or saved camera not found, prioritize external webcams
+      if (externalCameras.length > 0) {
+        setSelectedCameraId(externalCameras[0].deviceId);
+        localStorage.setItem('preferredCameraId', externalCameras[0].deviceId);
+        console.log(`Automatically selected external camera: ${externalCameras[0].label}`);
+        return videoDevices;
+      }
+      
+      // Default to first available camera if no external camera is found
+      if (videoDevices.length > 0) {
+        setSelectedCameraId(videoDevices[0].deviceId);
+        localStorage.setItem('preferredCameraId', videoDevices[0].deviceId);
+        console.log('No external camera found, defaulting to first available camera');
+      }
+      
+      return videoDevices;
+    } catch (error) {
+      console.error('Failed to enumerate camera devices:', error);
+      return [];
+    }
+  }, []);
+
+  // Function to select and save camera preference
+  const selectCamera = useCallback((deviceId) => {
+    setSelectedCameraId(deviceId);
+    localStorage.setItem('preferredCameraId', deviceId);
+    console.log(`Camera preference saved: ${deviceId}`);
+    
+    // Restart camera with new device
+    restartCameraWithNewDevice(deviceId);
+    
+    // Hide camera selector
+    setShowCameraSelector(false);
+  }, []);
+
+  // Function to restart camera with newly selected device
+  const restartCameraWithNewDevice = useCallback(async (deviceId) => {
+    console.log(`Switching to camera: ${deviceId}`);
+    
+    // Save the selected device ID to localStorage
+    localStorage.setItem('preferredCameraId', deviceId);
+    
+    // Stop current stream if exists
+    if (streamRef.current) {
+      const tracks = streamRef.current.getTracks();
+      tracks.forEach(track => track.stop());
+    }
+    
+    // Reset states
+    setStreamReady(false);
+    setIsInitialized(false);
+    setIsCameraReady(false);
+    setIsLoading(true);
+    
+    // Call initializeCamera with new device ID
+    try {
+      await initializeCamera(true, deviceId);
+      console.log('Camera restarted with new device successfully');
+    } catch (error) {
+      console.error('Failed to restart camera with new device:', error);
+      setErrorMessage('Failed to switch camera. Please try again.');
+    }
+  }, [initializeCamera]);
+
+  // Handle camera selection
+  const handleCameraSelect = useCallback((deviceId) => {
+    setSelectedCameraId(deviceId);
+    restartCameraWithNewDevice(deviceId);
+    setShowCameraSelector(false); // Hide the selector after selection
+  }, [restartCameraWithNewDevice]);
+  
+  // Toggle camera selector visibility
+  const toggleCameraSelector = useCallback(() => {
+    setShowCameraSelector(prev => !prev);
+  }, []);
+
   // Initialize camera function with improved mobile support
-  async function initializeCamera(frontFacing = true, specificDeviceId = null) {
+  const initializeCamera = async (frontFacing = true, specificDeviceId = null) => {
     setError(null);
     setIsLoading(true);
     addDebugLog('Initializing camera...');
@@ -1074,51 +1184,17 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         }
       };
       
-      // Try to find external webcam or use preferred camera
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const cameras = devices.filter(device => device.kind === 'videoinput');
-        console.log('Available cameras:', cameras.map(c => c.label));
-        
-        // Check for saved preference first
-        const savedCameraId = localStorage.getItem('preferredCameraId');
-        
-        // Use the specific device ID if provided
-        if (specificDeviceId) {
-          constraints.video.deviceId = { exact: specificDeviceId };
-          console.log('Using specific camera device');
-        }
-        // Otherwise check for a saved preference
-        else if (savedCameraId) {
-          const savedCamera = cameras.find(c => c.deviceId === savedCameraId);
-          if (savedCamera) {
-            constraints.video.deviceId = { exact: savedCameraId };
-            console.log(`Using saved camera: ${savedCamera.label}`);
-          }
-        }
-        // If no saved preference, look for an external webcam
-        else {
-          // Try to find external webcam by looking at the label
-          const externalCamera = cameras.find(c => 
-            c.label && c.label.toLowerCase().includes('external'));
-          
-          if (externalCamera) {
-            constraints.video.deviceId = { exact: externalCamera.deviceId };
-            localStorage.setItem('preferredCameraId', externalCamera.deviceId);
-            console.log(`Selected external webcam: ${externalCamera.label}`);
-          }
-        }
-      } catch (err) {
-        console.warn('Failed to enumerate cameras:', err);
-        // If enumeration fails, fall back to simpler device selection
-        if (specificDeviceId) {
-          constraints.video.deviceId = { exact: specificDeviceId };
-          console.log(`Using specific camera device: ${specificDeviceId}`);
-        } else {
-          // Fallback to facing mode if no device ID is specified
-          constraints.video.facingMode = facingMode;
-          console.log(`Using facing mode: ${facingMode}`);
-        }
+      // Use deviceId if provided or selected
+      if (specificDeviceId) {
+        constraints.video.deviceId = { exact: specificDeviceId };
+        console.log(`Using specific camera device: ${specificDeviceId}`);
+      } else if (selectedCameraId) {
+        constraints.video.deviceId = { exact: selectedCameraId };
+        console.log(`Using saved camera preference: ${selectedCameraId}`);
+      } else {
+        // Fallback to facing mode if no device ID is specified
+        constraints.video.facingMode = facingMode;
+        console.log(`Using facing mode: ${facingMode}`);
       }
       
       // Add mobile-specific adjustments
@@ -1304,77 +1380,6 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     }
   };
 
-  // === Camera device helpers ===
-
-  // Enumerate available camera devices and select preferred/external one
-  const getCameraDevices = useCallback(async () => {
-    try {
-      // Request permission to access cameras first for labels to be populated
-      await navigator.mediaDevices.getUserMedia({ video: true });
-
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter(d => d.kind === 'videoinput');
-      setCameraDevices(videoDevices);
-
-      // Prefer saved camera or external webcam
-      const savedId = localStorage.getItem('preferredCameraId');
-      let chosenId = null;
-      if (savedId && videoDevices.some(d => d.deviceId === savedId)) {
-        chosenId = savedId;
-      } else {
-        const external = videoDevices.find(d => d.label && d.label.toLowerCase().includes('external'));
-        if (external) {
-          chosenId = external.deviceId;
-          localStorage.setItem('preferredCameraId', external.deviceId);
-        } else if (videoDevices.length) {
-          chosenId = videoDevices[0].deviceId;
-          localStorage.setItem('preferredCameraId', videoDevices[0].deviceId);
-        }
-      }
-      if (chosenId) {
-        setSelectedCameraId(chosenId);
-        // Auto (re)start stream with chosen camera
-        restartCameraWithNewDevice(chosenId);
-      }
-    } catch (err) {
-      console.error('Failed to enumerate cameras', err);
-    }
-  }, []);
-
-  // Run once on mount to populate camera list
-  useEffect(() => {
-    getCameraDevices();
-  }, [getCameraDevices]);
-
-  // Restart stream when user selects a different camera in UI
-  const restartCameraWithNewDevice = useCallback(async (deviceId) => {
-    try {
-      // Stop existing tracks
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
-      }
-      setStreamReady(false);
-      setIsInitialized(false);
-      setIsCameraReady(false);
-      setIsLoading(true);
-      await initializeCamera(true, deviceId);
-    } catch (err) {
-      console.error('Failed to switch camera', err);
-      setErrorMessage('Failed to switch camera');
-    }
-  }, []);
-
-  const handleCameraSelect = useCallback((deviceId) => {
-    setSelectedCameraId(deviceId);
-    localStorage.setItem('preferredCameraId', deviceId);
-    restartCameraWithNewDevice(deviceId);
-    setShowCameraSelector(false);
-  }, [restartCameraWithNewDevice]);
-
-  const toggleCameraSelector = useCallback(() => {
-    setShowCameraSelector(prev => !prev);
-  }, []);
-
   // Function to reset and reinitialize the camera stream
   const resetCameraStream = () => {
     addDebugLog('Resetting camera stream');
@@ -1397,8 +1402,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     setIsCameraReady(false);
     
     // Delay reinitialization to ensure everything is cleaned up
-    addDebugLog('Reinitializing camera after reset');
-    initializeCamera();
+    setTimeout(() => {
+      addDebugLog('Reinitializing camera after reset');
+      initializeCamera();
+    }, 800);
   };
 
   // Function to determine device orientation
@@ -1540,8 +1547,6 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         
         // Make sure canvas matches current video display size
         const videoRect = video.getBoundingClientRect();
-        
-        // Get the computed dimensions of the video
         if (canvas.width !== videoRect.width || canvas.height !== videoRect.height) {
           canvas.width = videoRect.width;
           canvas.height = videoRect.height;
@@ -1742,9 +1747,11 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       setIsCameraReady(false);
       
       // Delay reinitialization to ensure everything is cleaned up
-      addDebugLog('Reinitializing camera after toggle');
-      initializeCamera();
-    } catch (error) {
+      setTimeout(() => {
+        addDebugLog('Reinitializing camera after toggle');
+        initializeCamera();
+      }, 800);
+      } catch (error) {
       console.error('Camera toggle error:', error);
       addDebugLog(`Camera toggle error: ${error.message}`);
       setError('Failed to toggle camera. Please try again later.');
@@ -2419,6 +2426,10 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         throw new Error('No video stream available');
       }
       
+      // Check track settings
+      const trackSettings = videoTracks[0].getSettings();
+      console.debug(`[Squat] Video track settings:`, trackSettings);
+      
       // Reset recorded chunks
       recordedChunksRef.current = [];
       
@@ -2669,12 +2680,6 @@ if (typeof onRecordingComplete === 'function') {
       setError(`Recording error: ${error.message}`);
     }
   }, [isRecording, mediaRecorderRef, handleStopRecording, stopFrameCapture, setIsRecording, stopTimer, isPoseTracking, startPoseDetection, setIsPoseTracking, handleStartRecording, setError]);
-
-  const toggleCameraFacing = () => {
-    setIsFrontFacing(prev => !prev);
-    // reinitialize camera with new facing mode
-    initializeCamera(!isFrontFacing);
-  };
 
   // Function to draw pose landmarks on canvas with proper scaling
   const drawPose = (pose, canvas, ctx) => {
@@ -2930,50 +2935,44 @@ if (typeof onRecordingComplete === 'function') {
     return () => clearTimeout(safetyTimeout);
   }, [isInitializing]);
 
-  // Sync state with browser fullscreen
-  useEffect(() => {
-    const handleFsChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
-    };
-    document.addEventListener('fullscreenchange', handleFsChange);
-    return () => document.removeEventListener('fullscreenchange', handleFsChange);
-  }, []);
-
-  // If selectedCameraId changes and camera not ready, attempt restart
-  useEffect(() => {
-    if (selectedCameraId && !isCameraReady) {
-      restartCameraWithNewDevice(selectedCameraId);
-    }
-  }, [selectedCameraId, isCameraReady, restartCameraWithNewDevice]);
-
   return (
-    <div className={`video-container ${darkMode ? 'dark-mode' : ''}`} ref={containerRef}>
-      {error && (
-        <ErrorMessage>
-          <span>Error: {error}</span>
-          <button onClick={() => window.location.reload()}>Reload</button>
-        </ErrorMessage>
-      )}
       
-      {isInitializing && (
-        <LoadingOverlay>
-          <LoadingSpinner />
-          <p>Initializing camera... Please wait.</p>
-          <button onClick={() => {
-            // Force clear initialization state
-            setIsInitializing(false);
-            setIsLoading(false);
-            if (videoRef.current && videoRef.current.srcObject) {
-              setStreamReady(true);
-              setIsCameraReady(true);
-              // If video already has content, ensure it's marked as ready
-              if (videoRef.current.readyState >= 2) {
-                setIsInitialized(true);
-              }
+      // If the video element has content but UI is still loading, update streamReady state
+      if (videoRef.current && videoRef.current.readyState >= 2) {
+        setStreamReady(true);
+        setIsCameraReady(true);
+      }
+    }
+  }, 8000); // 8 seconds should be more than enough for camera initialization
+  
+  return () => clearTimeout(safetyTimeout);
+}, [isInitializing]);
+
+return (
+  <div className={`video-container ${darkMode ? 'dark-mode' : ''}`} ref={containerRef}>
+    {error && (
+      <ErrorMessage>
+        <span>Error: {error}</span>
+        <button onClick={() => window.location.reload()}>Reload</button>
+      </ErrorMessage>
+    )}
+    
+    {isInitializing && (
+      <LoadingOverlay>
+        <LoadingSpinner />
+        <p>Initializing camera... Please wait.</p>
+        <button onClick={() => {
+          // Force clear initialization state
+          setIsInitializing(false);
+          setIsLoading(false);
+          if (videoRef.current && videoRef.current.srcObject) {
+            setStreamReady(true);
+            setIsCameraReady(true);
+            // If video already has content, ensure it's marked as ready
+            if (videoRef.current.readyState >= 2) {
+              setIsInitialized(true);
             }
-          }}>Skip</button>
-        </LoadingOverlay>
-      )}
+          }
       
       <VideoContainer ref={containerRef} $isFullscreen={isFullscreen}>
         <video
@@ -2981,19 +2980,19 @@ if (typeof onRecordingComplete === 'function') {
           autoPlay
           playsInline
           muted
-          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          style={{ display: isRecording ? 'none' : 'block' }}
         />
         <CanvasOverlay
           ref={canvasRef}
           width="1280"
           height="720"
-          style={{ display: isPoseTracking ? 'block' : 'none' }}
+          style={{ display: isRecording ? 'none' : 'block' }}
         />
         <PoseDetectionCanvas
           ref={poseCanvasRef}
           width="1280"
           height="720"
-          style={{ display: isPoseTracking ? 'block' : 'none' }}
+          style={{ display: showPoseSkeleton ? 'block' : 'none' }}
         />
         
         {/* Camera selector component */}
@@ -3005,21 +3004,38 @@ if (typeof onRecordingComplete === 'function') {
           toggleSelector={toggleCameraSelector}
         />
 
-        {isRecording && (
-          <RecordingIndicator>
-            <div className="red-dot"></div>
-            Recording {recordingTime}s
-          </RecordingIndicator>
-        )}
-      </VideoContainer>
-      <ControlsContainer $isFullscreen={isFullscreen}>
-        <Button
-          onClick={toggleCameraFacing}
-          disabled={isLoading || isRecording}
-        >
-          {window.innerWidth < 400 ? 'Camera' : 'Switch Camera'}
-        </Button>
+        <RecordingIndicator visible={isRecording}>
+          <div className="red-dot"></div>
+          Recording {recordingTime}s
+        </RecordingIndicator>
         
+        <Controls>
+          <Button
+            onClick={toggleCameraFacing}
+            disabled={isLoading || isRecording}
+          >
+            {window.innerWidth < 400 ? 'Camera' : 'Switch Camera'}
+          </Button>
+          
+          <Button
+            onClick={togglePoseTracking}
+            disabled={isLoading || !isCameraReady}
+          >
+            {isPoseTracking ? 
+              (window.innerWidth < 400 ? 'Stop' : 'Stop Tracking') : 
+              (window.innerWidth < 400 ? 'Track' : 'Start Tracking')}
+          </Button>
+          
+          <Button
+            onClick={toggleRecording}
+            disabled={isLoading || !isCameraReady}
+            className={isRecording ? 'recording' : ''}
+          >
+            {isRecording ? 
+              (window.innerWidth < 400 ? 'Stop' : 'Stop Recording') : 
+              (window.innerWidth < 400 ? 'Record' : 'Start Recording')}
+          </Button>
+        </Controls>
         <Button
           onClick={togglePoseTracking}
           disabled={isLoading || !isCameraReady}
@@ -3038,13 +3054,7 @@ if (typeof onRecordingComplete === 'function') {
             (window.innerWidth < 400 ? 'Stop' : 'Stop Recording') : 
             (window.innerWidth < 400 ? 'Record' : 'Start Recording')}
         </Button>
-        <Button
-          onClick={toggleFullscreen}
-          disabled={isLoading || !isCameraReady}
-        >
-          {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
-        </Button>
-      </ControlsContainer>
+      </Controls>
       
       {!tfInitialized && showTFWarning && (
         <WarningMessage>

@@ -136,7 +136,7 @@ squat_counts = {}
 session_start_times = {}
 
 # Allowed video file extensions
-ALLOWED_EXTENSIONS = {'mp4', 'webm', 'avi'}
+ALLOWED_EXTENSIONS = {'mp4', 'webm', 'avi', 'mkv'}
 
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -691,10 +691,10 @@ def analyze_video():
         app.logger.error("Missing or invalid filename in uploaded file")
         return jsonify({'error': 'No file uploaded'}), 400
     filename = filename.lower()
-    # Allow mp4, webm, and avi for debugging
-    allowed_exts = ['.mp4', '.webm', '.avi']
+    # Allow mp4, webm, avi, and mkv for debugging
+    allowed_exts = ['.mp4', '.webm', '.avi', '.mkv']
     if not any(filename.endswith(ext) for ext in allowed_exts):
-        return jsonify({'error': 'Unsupported video format. Please upload an MP4, WEBM, or AVI file.'}), 400
+        return jsonify({'error': 'Unsupported video format. Please upload an MP4, WEBM, AVI, or MKV file.'}), 400
 
     # Save the uploaded video temporarily
     # Use the same extension as the uploaded file to avoid codec issues
@@ -707,6 +707,26 @@ def analyze_video():
     file.save(temp_path)
     rss_mb = process.memory_info().rss / 1024 / 1024
     app.logger.warning(f"[MEM_DIAG] AFTER FILE SAVE: RSS={rss_mb:.1f} MB, time={time.time() - t_start:.2f}s")
+
+    # --- Re-encode to constant FPS MP4 if needed (e.g., variable-FPS WebM) ---
+    need_transcode = orig_ext in ('.webm', '.mkv', '.avi')
+    if need_transcode:
+        mp4_temp = os.path.join(temp_dir, f"temp_{uuid.uuid4().hex}.mp4")
+        ffmpeg_cmd = [
+            'ffmpeg', '-y', '-i', temp_path,
+            '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
+            '-r', '30', '-movflags', '+faststart', mp4_temp
+        ]
+        try:
+            subprocess.run(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            app.logger.info(f"Transcoded video to constant-FPS MP4: {mp4_temp}")
+            # Replace original path with transcoded path for further processing
+            os.remove(temp_path)
+            temp_path = mp4_temp
+            orig_ext = '.mp4'
+        except Exception as ff_err:
+            app.logger.warning(f"FFmpeg transcode failed, continuing with original file. Error: {ff_err}")
+    # ------------------------------------------------------
 
     # --- Get Original Video Properties using ffprobe --- 
     original_duration, original_frame_count, original_fps = get_video_properties(temp_path)
@@ -723,7 +743,7 @@ def analyze_video():
                       app.logger.warning(f"Using OpenCV frame count as fallback: {original_frame_count}")
             if original_duration is None:
                 ocv_fps = cap_check.get(cv2.CAP_PROP_FPS)
-                if ocv_fps > 0 and original_frame_count > 0:
+                if ocv_fps is not None and ocv_fps > 0 and original_frame_count is not None and original_frame_count > 0:
                     original_duration = original_frame_count / ocv_fps
                     app.logger.warning(f"Using OpenCV duration as fallback: {original_duration:.2f}s")        
             cap_check.release()
@@ -846,26 +866,13 @@ def analyze_video():
 
         app.logger.info(f"Validated video properties: FPS={fps}, frame_count={frame_count}, duration={duration_sec:.2f}s")
         
-        # Calculate frame skip rate based on video length to reduce processing time
-        # Process fewer frames for longer videos to stay within timeout limits
-        # Remove frame processing cap: process all frames according to frame_skip
-        # Calculate optimal frame skip for long videos to avoid excessive processing (optional: can set frame_skip=1)
-        estimated_time_per_frame = 0.5  # Estimated processing time per frame in seconds
-        target_processing_time = 30  # Target processing time in seconds
-        
-        # For videos longer than 20 seconds, use smarter frame selection
-        if duration_sec > 20:
-            # Dynamically adjust frame_skip based on video length to stay under target time
-            ideal_frames = target_processing_time / estimated_time_per_frame
-            frame_skip = max(1, int(frame_count / ideal_frames))
-            app.logger.info(f"Video duration {duration_sec:.1f}s - adjusting frame_skip to {frame_skip}")
-        else:
-            frame_skip = 1  # Process every frame for shorter videos
-        app.logger.info(f"Processing every {frame_skip}th frame (all frames)")
+        # Force dense frame processing for smoother overlay – process every frame
+        frame_skip = 1  # Always analyse every frame
+        app.logger.info(f"Frame skip forced to {frame_skip} for dense analysis")
 
-        # Pre-calculate target frame indices to process (all frames)
+        # Pre-calculate target frame indices (all frames)
         target_frames = list(range(0, frame_count, frame_skip))
-
+        
         # Skip if we already have frames from image fallback
         if not goto_processing:
             # Extract frames to process with robust multi-method approach
@@ -901,8 +908,9 @@ def analyze_video():
                 fps = cap.get(cv2.CAP_PROP_FPS)
                 frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
                 
-                # Calculate interval between keyframes
-                keyframe_interval = max(1, frame_count // min(60, len(target_frames)))
+                # Calculate interval between keyframes (aim for up to 180 frames)
+                max_keyframes = min(180, len(target_frames))
+                keyframe_interval = max(1, frame_count // max_keyframes)
                 
                 # Extract keyframes at regular intervals
                 for frame_idx in range(0, frame_count, keyframe_interval):
@@ -913,16 +921,16 @@ def analyze_video():
                         if is_portrait_video:
                             frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
                         keyframe_frames.append((frame_idx, frame))
-                    if len(keyframe_frames) >= min(60, len(target_frames)):
+                    if len(keyframe_frames) >= max_keyframes:
                         break
                         
                 app.logger.info(f"Keyframe extraction method yielded {len(keyframe_frames)} frames")
-                if len(keyframe_frames) >= min(30, len(target_frames) // 2):
+                if len(keyframe_frames) >= min(60, len(target_frames) // 2):
                     frames_to_process = keyframe_frames
                     app.logger.info("Using keyframe extraction results")
             
             # Second method: Sequential reading if first method didn't yield enough frames
-            if len(frames_to_process) < min(30, len(target_frames) // 2) and "sequential_reading" in extraction_methods:
+            if len(frames_to_process) < min(60, len(target_frames) // 2) and "sequential_reading" in extraction_methods:
                 app.logger.info("Trying sequential reading method")
                 
                 # Release and reopen the capture to ensure clean state
@@ -936,23 +944,23 @@ def analyze_video():
                 consecutive_failures = 0
                 max_consecutive_failures = 30  # Increased threshold
                 frames_read = 0
-                current_frame_idx = 0
-                sample_interval = max(1, frame_count // min(100, len(target_frames)))
+                current_idx = 0
+                sample_interval = max(1, frame_count // min(200, len(target_frames)))
                 
                 # Read frames sequentially, sampling at regular intervals
                 while frames_read < frame_count:
                     # Only process frames at our sampling interval
-                    if current_frame_idx % sample_interval == 0:
+                    if current_idx % sample_interval == 0:
                         ret, frame = cap.read()
                         if ret:
                             if is_portrait_video:
                                 frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-                            sequential_frames.append((current_frame_idx, frame))
+                            sequential_frames.append((current_idx, frame))
                             consecutive_failures = 0
                         else:
                             consecutive_failures += 1
                             if consecutive_failures >= max_consecutive_failures:
-                                app.logger.warning(f"Too many consecutive failures in sequential reading at frame {current_frame_idx}")
+                                app.logger.warning(f"Too many consecutive failures in sequential reading at frame {current_idx}")
                                 break
                     else:
                         # Skip frames we're not interested in
@@ -962,11 +970,11 @@ def analyze_video():
                             if consecutive_failures >= max_consecutive_failures:
                                 break
                     
-                    current_frame_idx += 1
+                    current_idx += 1
                     frames_read += 1
                     
                     # Exit if we have enough frames
-                    if len(sequential_frames) >= min(100, len(target_frames)):
+                    if len(sequential_frames) >= min(200, len(target_frames)):
                         break
                 
                 app.logger.info(f"Sequential reading method yielded {len(sequential_frames)} frames")
@@ -1040,6 +1048,18 @@ def analyze_video():
             if len(frames_to_process) < len(target_frame_set) / 2:
                 app.logger.warning(f"Extracted only {len(frames_to_process)} frames out of {len(target_frame_set)} target frames, but continuing with available frames")
                 
+            # Fallback: if coverage <80%, do a simple sequential read of all frames
+            coverage = len(frames_to_process) / max(1, len(target_frame_set))
+            if coverage < 0.8:
+                app.logger.warning(
+                    f"Frame coverage {coverage:.1%} below 80%. Falling back to sequential extraction of all frames."
+                )
+                # Reopen capture
+                cap.release()
+                cap = cv2.VideoCapture(temp_path)
+                frames_to_process = extract_frames(cap, 1, frame_count, is_portrait_video)
+                app.logger.info(f"Sequential fallback extracted {len(frames_to_process)} frames")
+            
             # Sort frames by index to ensure chronological order
             frames_to_process.sort(key=lambda x: x[0])
             
@@ -1156,7 +1176,11 @@ def analyze_video():
             arrows = []
             try:
                 # Depth (knee angle) - Corrected condition: angle > 90 means not deep enough
-                if knee_angle is not None and knee_angle > 90 and joints_visible([RKNEE], lm):
+                if (
+                    knee_angle is not None and
+                    90 < knee_angle < 150 and   # between standing (~180) and too low (<90)
+                    joints_visible([RKNEE], lm)
+                ):
                     arrows.append({
                         'start': {'x': lm[RKNEE]['x'], 'y': lm[RKNEE]['y']},
                         'end': {'x': lm[RKNEE]['x'], 'y': lm[RKNEE]['y'] + 0.1}, # Point down for 'deeper'
@@ -1252,23 +1276,22 @@ def analyze_video():
         # Sort results by frame number
         results.sort(key=lambda x: x['frame'])
         
-        # --- Correct Timestamps using Original Video Properties ---            
-        if original_duration is not None and original_frame_count is not None and original_frame_count > 0:
-            app.logger.info(f"Correcting timestamps based on Duration: {original_duration:.2f}s, Frame Count: {original_frame_count}")
-            for frame_result in results:
-                original_index = frame_result.get('frame') # Get the original index processed
-                if original_index is not None:
-                    # Calculate timestamp based on the frame's original position in the video
-                    frame_result['timestamp'] = original_index * (original_duration / original_frame_count)
-                else:
-                    app.logger.warning("Frame result missing 'frame' index, cannot correct timestamp.")
-                    # Keep potentially incorrect timestamp from process_frame as fallback
-        else:
-            app.logger.warning("Skipping timestamp correction due to missing video properties. Using potentially inaccurate timestamps.")
-            # Timestamps calculated inside process_frame (using assumed FPS) will be used
-        # -----------------------------------------------------------
-
-        # Sort frames by corrected timestamp just in case processing order wasn't perfect
+        # --- Timestamp scaling ---
+        if original_duration and original_duration > 0 and len(results) > 1:
+            # Use the timestamp of the last processed frame
+            last_ts = results[-1]['timestamp']
+            if last_ts > 0:
+                diff_ratio = abs(last_ts - original_duration) / original_duration
+                # Scale when mismatch ≥1%
+                if diff_ratio >= 0.01:
+                    scale_factor = original_duration / last_ts
+                    for r in results:
+                        r['timestamp'] *= scale_factor
+                    app.logger.info(
+                        f"Timestamp scaled by factor {scale_factor:.3f} (orig_dur={original_duration:.2f}s, last_ts={last_ts:.2f}s, diff={diff_ratio:.2%})"
+                    )
+        
+        # Sort frames by timestamp in case processing order wasn't perfect (should already be sorted)
         results.sort(key=lambda x: x.get('timestamp', 0))
         
         # --- Assemble Final Result ---
