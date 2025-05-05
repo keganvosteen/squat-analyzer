@@ -1415,13 +1415,18 @@ def analyze_video():
                     app.logger.info(f"Frame {frame_idx}: NO KNEE ANGLE DETECTED")
                 
                 # Update worst shoulder alignment (progressive)
-                if shoulder_diff is not None:
+                is_active_squat_frame = (
+                    hip_below_knee or 
+                    (knee_angle is not None and knee_angle < 150)  # knees flexed ≥30°
+                )
+                if shoulder_diff is not None and is_active_squat_frame:
                     # Update the worst alignment seen so far in this squat
                     current_worst_shoulder_diff = max(current_worst_shoulder_diff, abs(shoulder_diff))
                     
                     # Calculate current shoulder score based on worst alignment so far
                     shoulder_score = calc_shoulder_score(current_worst_shoulder_diff)
-                    frame_scores['shoulder_align'] = round(shoulder_score, 1)
+                    # Persist worst (lowest) shoulder score so far for sticky behaviour
+                    frame_scores['shoulder_align'] = round(min(frame_scores['shoulder_align'], shoulder_score), 1)
                 
                 # Calculate overall score for this frame
                 frame_scores['overall'] = round(
@@ -1466,9 +1471,9 @@ def analyze_video():
                     best_knee_depth = round(((90 - global_min_knee_angle) / 20.0) * 100.0, 1)
                 
                 # Best shoulder alignment from frames
-                best_shoulder_align = max([results[i]['scores']['shoulder_align'] 
+                best_shoulder_align = min([results[i]['scores']['shoulder_align'] 
                                           for i in squat_frames 
-                                          if 'scores' in results[i]], default=0.0)
+                                          if 'scores' in results[i]], default=100.0)
         
         # --- Secondary fallback: derive from raw measurements when no score computed ---
         if best_knee_depth == 0.0:

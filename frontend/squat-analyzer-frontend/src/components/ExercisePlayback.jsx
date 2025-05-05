@@ -1,5 +1,5 @@
 // src/components/ExercisePlayback.jsx
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { Play, Pause, SkipForward, SkipBack, AlertTriangle, CheckCircle, Info, Maximize2, Minimize2, ArrowLeft } from 'lucide-react';
 import styled from 'styled-components';
 
@@ -714,8 +714,12 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
     if (frameData.measurements) {
       const { kneeAngle, shoulderMidfootDiff } = frameData.measurements;
       
-      // If all values are null, skip drawing the stats box
-      if (kneeAngle === null && shoulderMidfootDiff === null) {
+      // We used to skip drawing if both raw measurements missing. However we
+      // still want to display accumulated scores even when measurements are
+      // unavailable in this particular frame (e.g. keypoints occluded).
+      // Only skip if both measurements AND scores are absent.
+      const hasScores = frameData.scores || analysisData.scores;
+      if (kneeAngle === null && shoulderMidfootDiff === null && !hasScores) {
         return;
       }
       
@@ -725,14 +729,18 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
       const xOffset = ctx.canvas.width - 250; // Align to right side
       const paddingRight = 20; // Padding from right edge
 
-      // Draw background for text for better visibility
+      // Draw background for text for better visibility – height large enough to
+      // cover all dynamic lines (score + raw metrics)
       ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-      ctx.fillRect(xOffset, 0, 250, 100);
+      ctx.fillRect(xOffset, 0, 250, 150);
 
       // === Display Depth-focused Scores ===
       if (frameData.scores || analysisData.scores) {
         const scores = frameData.scores || {};
-        const globalScores = analysisData.scores || {};
+        // Prefer aggregated global scores we computed with useMemo; fallback to
+        // backend top-level scores if for some reason per-frame aggregation
+        // failed.
+        const globalScores = mergedGlobalScores;
 
         // Depth score (0-100). Prefer per-frame, fallback to global.
         const depthScore =
@@ -740,8 +748,16 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
             ? scores.knee_depth
             : globalScores.kneeDepthScore;
 
-        // Total squat score currently only uses depth (40% weight).
-        const totalScore = depthScore !== undefined ? (depthScore * 0.4) : undefined;
+        // Shoulder alignment score (0-100). Prefer per-frame, fallback to global.
+        const shoulderScore =
+          scores.shoulder_align !== undefined
+            ? scores.shoulder_align
+            : globalScores.shoulderAlignmentScore;
+
+        // Total squat score combines depth (40%) + shoulder (30%).
+        const totalScore = (depthScore !== undefined && shoulderScore !== undefined)
+          ? (depthScore * 0.4 + shoulderScore * 0.3)
+          : undefined;
 
         // --- Total Squat Score ---
         ctx.fillStyle = 'white';
@@ -752,17 +768,32 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
 
         // --- Depth Score ---
         ctx.fillStyle = 'white';
-        ctx.fillText('Depth:', xOffset + paddingRight, yOffset);
-        ctx.fillStyle = '#00ff00';
-        ctx.fillText(` ${depthScore !== undefined ? depthScore.toFixed(1) : 'N/A'}`, xOffset + paddingRight + 60, yOffset);
+        ctx.fillText('Depth Score:', xOffset + paddingRight, yOffset);
+        ctx.fillStyle = '#22c55e';
+        ctx.fillText(` ${depthScore !== undefined ? depthScore.toFixed(1) : 'N/A'}`, xOffset + paddingRight + 160, yOffset);
         yOffset += 25;
-        
-        // Add raw knee angle display for debugging
+
+        // --- Shoulder Alignment Score ---
+        ctx.fillStyle = 'white';
+        ctx.fillText('Shoulder Score:', xOffset + paddingRight, yOffset);
+        ctx.fillStyle = '#facc15';
+        ctx.fillText(` ${shoulderScore !== undefined ? shoulderScore.toFixed(1) : 'N/A'}`, xOffset + paddingRight + 160, yOffset);
+        yOffset += 25;
+
+        // --- Raw Knee Angle ---
         ctx.fillStyle = 'white';
         ctx.fillText('Raw Knee Angle:', xOffset + paddingRight, yOffset);
         ctx.fillStyle = '#ffff00';
-        ctx.fillText(` ${kneeAngle !== null ? Math.round(kneeAngle) : 'N/A'}°`, xOffset + paddingRight + 120, yOffset);
-        
+        ctx.fillText(` ${kneeAngle !== null ? Math.round(kneeAngle) : 'N/A'}°`, xOffset + paddingRight + 150, yOffset);
+        yOffset += 25;
+
+        // --- Shoulder-Midfoot Diff ---
+        ctx.fillStyle = 'white';
+        ctx.fillText('Shoulder Diff:', xOffset + paddingRight, yOffset);
+        ctx.fillStyle = '#ffa500';
+        ctx.fillText(` ${shoulderMidfootDiff !== null ? shoulderMidfootDiff.toFixed(1) : 'N/A'}`, xOffset + paddingRight + 150, yOffset);
+        yOffset += 25;
+
         // Log values to console for debugging
         if (window.DEBUG_OVERLAY || true) { // Always show during debugging
           console.log(`Frame ${currentFrameIndex}: knee=${kneeAngle}, depth=${depthScore}, total=${totalScore}`);
@@ -1122,6 +1153,24 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
   const progressPercent = duration > 0 ? Math.min((elapsedLoadingTime / estimatedLoadingTotalMs) * 100, 99) : 0;
   const remainingSeconds = duration > 0 ? Math.max(Math.ceil((estimatedLoadingTotalMs - elapsedLoadingTime) / 1000), 0) : 0;
 
+  const mergedGlobalScores = useMemo(() => {
+    const kneeDepthScores = analysisData?.frames
+      ?.map((f) => f.scores?.knee_depth)
+      ?.filter((s) => s !== undefined);
+    const shoulderScores = analysisData?.frames
+      ?.map((f) => f.scores?.shoulder_align)
+      ?.filter((s) => s !== undefined);
+
+    return {
+      kneeDepthScore: kneeDepthScores?.length
+        ? Math.max(...kneeDepthScores)
+        : undefined,
+      shoulderAlignmentScore: shoulderScores?.length
+        ? Math.min(...shoulderScores)
+        : undefined,
+    };
+  }, [analysisData]);
+
   return (
     <Container ref={containerRef}>
       <BackButton onClick={onBack}>
@@ -1272,7 +1321,8 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
               const allNull =
                 m.kneeAngle === null &&
                 m.shoulderMidfootDiff === null;
-              if (allNull) return null;
+              const hasScores = analysisData.scores || {};
+              if (allNull && !hasScores) return null;
               return (
                 <StatBox>
                   <StatTitle>Measurements</StatTitle>
