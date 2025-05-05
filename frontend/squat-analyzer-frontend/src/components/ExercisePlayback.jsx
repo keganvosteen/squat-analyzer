@@ -712,10 +712,10 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
 
     // Draw measurements and analysis
     if (frameData.measurements) {
-      const { kneeAngle, depthRatio, shoulderMidfootDiff } = frameData.measurements;
+      const { kneeAngle, shoulderMidfootDiff } = frameData.measurements;
       
       // If all values are null, skip drawing the stats box
-      if (kneeAngle === null && depthRatio === null && shoulderMidfootDiff === null) {
+      if (kneeAngle === null && shoulderMidfootDiff === null) {
         return;
       }
       
@@ -729,42 +729,45 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
       ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
       ctx.fillRect(xOffset, 0, 250, 100);
 
-      // Knee Angle
-      let kneeAngleColor = 'white'; // Default
-      if (kneeAngle !== null) {
-        if (kneeAngle < 90) {
-          kneeAngleColor = '#00ff00'; // Green for good depth
-        } else if (kneeAngle < 150) {
-          kneeAngleColor = '#00ffff'; // Cyan for shallow
+      // === Display Depth-focused Scores ===
+      if (frameData.scores || analysisData.scores) {
+        const scores = frameData.scores || {};
+        const globalScores = analysisData.scores || {};
+
+        // Depth score (0-100). Prefer per-frame, fallback to global.
+        const depthScore =
+          scores.knee_depth !== undefined
+            ? scores.knee_depth
+            : globalScores.kneeDepthScore;
+
+        // Total squat score currently only uses depth (40% weight).
+        const totalScore = depthScore !== undefined ? (depthScore * 0.4) : undefined;
+
+        // --- Total Squat Score ---
+        ctx.fillStyle = 'white';
+        ctx.fillText('Total Squat Score:', xOffset + paddingRight, yOffset);
+        ctx.fillStyle = '#ffd700';
+        ctx.fillText(` ${totalScore !== undefined ? totalScore.toFixed(1) : 'N/A'}`, xOffset + paddingRight + 160, yOffset);
+        yOffset += 25;
+
+        // --- Depth Score ---
+        ctx.fillStyle = 'white';
+        ctx.fillText('Depth:', xOffset + paddingRight, yOffset);
+        ctx.fillStyle = '#00ff00';
+        ctx.fillText(` ${depthScore !== undefined ? depthScore.toFixed(1) : 'N/A'}`, xOffset + paddingRight + 60, yOffset);
+        yOffset += 25;
+        
+        // Add raw knee angle display for debugging
+        ctx.fillStyle = 'white';
+        ctx.fillText('Raw Knee Angle:', xOffset + paddingRight, yOffset);
+        ctx.fillStyle = '#ffff00';
+        ctx.fillText(` ${kneeAngle !== null ? Math.round(kneeAngle) : 'N/A'}°`, xOffset + paddingRight + 120, yOffset);
+        
+        // Log values to console for debugging
+        if (window.DEBUG_OVERLAY || true) { // Always show during debugging
+          console.log(`Frame ${currentFrameIndex}: knee=${kneeAngle}, depth=${depthScore}, total=${totalScore}`);
         }
       }
-      ctx.fillStyle = 'white';
-      ctx.fillText('Knee Angle:', xOffset + paddingRight, yOffset);
-      ctx.fillStyle = kneeAngleColor; // Use dynamic color
-      ctx.fillText(
-        kneeAngle !== null && typeof kneeAngle === 'number' ? ` ${Math.round(kneeAngle)}°` : ' N/A',
-        xOffset + paddingRight + 90, yOffset // Adjusted position slightly
-      );
-      yOffset += 25;
-
-      // Depth Ratio
-      ctx.fillStyle = 'white';
-      ctx.fillText('Depth Ratio:', xOffset + paddingRight, yOffset);
-      ctx.fillStyle = '#ff9900';
-      ctx.fillText(
-        depthRatio !== null && typeof depthRatio === 'number' ? ` ${depthRatio.toFixed(2)}` : ' N/A',
-        xOffset + paddingRight + 100, yOffset
-      );
-      yOffset += 25;
-
-      // Shoulder-Midfoot Difference
-      ctx.fillStyle = 'white';
-      ctx.fillText('Shoulder-Midfoot Diff:', xOffset + paddingRight, yOffset);
-      ctx.fillStyle = '#00ffff';
-      ctx.fillText(
-        shoulderMidfootDiff !== null && typeof shoulderMidfootDiff === 'number' ? ` ${shoulderMidfootDiff.toFixed(1)}` : ' N/A',
-        xOffset + paddingRight + 170, yOffset
-      );
     }
 
     // Draw frame indicator
@@ -1268,25 +1271,24 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
               const m = analysisData.frames[0]?.measurements || {};
               const allNull =
                 m.kneeAngle === null &&
-                m.depthRatio === null &&
                 m.shoulderMidfootDiff === null;
               if (allNull) return null;
               return (
                 <StatBox>
                   <StatTitle>Measurements</StatTitle>
                   <div className="flex flex-wrap mt-2">
-                    {Object.entries(m).map(([key, value]) => (
-                      <div key={key} className="w-1/3 mb-2">
-                        <StatLabel>{key}</StatLabel>
+                    {Object.entries(m)
+                      .filter(([key]) => key !== 'depthRatio') // Remove depthRatio from display
+                      .map(([key, value]) => (
+                      <div key={key} className="w-1/2 mb-2"> {/* Increased width since we have fewer items */}
+                        <StatLabel>{key === 'kneeAngle' ? 'Knee Angle' : 'Shoulder Position'}</StatLabel>
                         <StatValue>
                           {value === null || value === undefined
                             ? 'N/A'
                             : typeof value === 'number'
                               ? key === 'kneeAngle'
                                 ? Math.round(value) + '°'
-                                : key === 'depthRatio'
-                                  ? value.toFixed(2)
-                                  : value.toFixed(1)
+                                : value.toFixed(1)
                               : value}
                         </StatValue>
                       </div>
@@ -1297,37 +1299,20 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
             })()}
 
             <FeedbackSection>
-              <h4>Feedback Tips</h4>
-              {analysisData.frames.some(frame => frame.arrows && frame.arrows.length > 0) ? (
-                <FeedbackList>
-                  {Array.from(new Set(
-                    analysisData.frames
-                      .flatMap(frame => frame.arrows || [])
-                      .map(arrow => arrow.message)
-                      .filter(Boolean)
-                  )).map((message, index) => (
-                    <FeedbackTip key={index}>
-                      <Info size={16} className="mr-2" />
-                      {message}
-                    </FeedbackTip>
-                  ))}
-                </FeedbackList>
-              ) : (
-                <p>Great job! No significant issues detected.</p>
-              )}
+              <h4>Feedback Tips (click timestamp to seek)</h4>
+              {analysisData.frames
+                .flatMap(frame => (frame.arrows || []).map(arrow => ({ ts: frame.timestamp, msg: arrow.message })))
+                // Deduplicate by message to avoid repeated tips
+                .filter((item, idx, arr) => arr.findIndex(x => x.msg === item.msg) === idx)
+                .map(({ ts, msg }, idx) => (
+                  <FeedbackTip key={idx} onClick={() => setCurrentTime(ts)} style={{cursor:'pointer'}}>
+                    <span style={{marginRight:'6px', color:'#38bdf8'}}>{ts.toFixed(2)}s</span>
+                    {msg}
+                  </FeedbackTip>
+                ))}
             </FeedbackSection>
           </>
-        ) : (
-          <div className="text-center p-4">
-            <div className="font-semibold mb-2">Analysis data not available</div>
-            <p className="text-sm text-gray-600 mb-3">
-              Analysis couldn't be completed due to a timeout (45 seconds), network issue, or processing error.
-            </p>
-            <p className="text-sm text-gray-600">
-              Tip: Try recording a shorter video (5-10 seconds) for better processing success.
-            </p>
-          </div>
-        )}
+        ) : null}
       </AnalysisPanel>
       
       {/* Add a new debug panel for analysisData and frame/timestamp matching */}

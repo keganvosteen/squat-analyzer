@@ -269,7 +269,9 @@ def calculate_shoulder_midfoot_diff(shoulder, hip, knee, ankle):
         elif hasattr(ankle, 'x'):
             midfoot_x = ankle.x
             
-        return abs(shoulder_x - midfoot_x) * 100  # Convert to pixels
+        # Return the difference with sign to indicate direction (positive = shoulders in front of midfoot)
+        # which is what we want to detect for forward lean
+        return (shoulder_x - midfoot_x) * 100  # Convert to pixels
     except Exception as e:
         app.logger.error(f"Error calculating shoulder-midfoot difference: {str(e)}")
         return 0  # Default fallback value
@@ -730,7 +732,7 @@ def analyze_video():
 
     # --- Get Original Video Properties using ffprobe --- 
     original_duration, original_frame_count, original_fps = get_video_properties(temp_path)
-    if original_duration is None or original_frame_count is None or original_frame_count <= 0:
+    if original_duration is None or original_duration <= 0 or original_frame_count is None or original_frame_count <= 0:
         app.logger.warning("Could not get reliable duration/frame count via ffprobe. Timestamps might be inaccurate.")
         # Use OpenCV as fallback? For now, proceed but warn.
         # Let's try to get *something* from OpenCV if ffprobe failed completely
@@ -748,7 +750,7 @@ def analyze_video():
                     app.logger.warning(f"Using OpenCV duration as fallback: {original_duration:.2f}s")        
             cap_check.release()
         # If still no valid duration/frame count, we have a problem for timestamping
-        if original_duration is None or original_frame_count is None or original_frame_count <= 0:
+        if original_duration is None or original_duration <= 0 or original_frame_count is None or original_frame_count <= 0:
              app.logger.error("FATAL: Cannot determine video duration or frame count for accurate timestamping.")
              # Perhaps default duration to avoid crashing? Set to arbitrary 10s?
              original_duration = 10.0 # Arbitrary default
@@ -797,7 +799,7 @@ def analyze_video():
                             raise ValueError("Empty image array")
                     except Exception as img_err:
                         app.logger.error(f"Failed to open as image too: {str(img_err)}")
-                        return jsonify({'error': 'Could not open video file or image – file may be corrupted'}), 400
+                        return jsonify({'error': 'No file uploaded'}), 400
                 except Exception as fallback_err:
                     app.logger.error(f"All fallback attempts failed: {str(fallback_err)}")
                     return jsonify({'error': 'Could not open video file – file may be corrupted or in an unsupported format'}), 400
@@ -1079,7 +1081,23 @@ def analyze_video():
         app.logger.warning(f"[MEM_DIAG] AFTER FRAME EXTRACTION: RSS={rss_mb:.1f} MB, time={time.time() - t_start:.2f}s")
         
         # Define function to process a single frame
+        # ---- Squat phase tracking variables ----
+        # We want to show certain feedback (e.g., "Squat deeper") only during the descent.
+        # Track the knee angle progression across frames to infer movement direction.
+        in_squat = False  # Always consider as not in a squat for simpler logic
+        squat_phases = [{"start": 0, "end": max(0, len(frames_to_process) - 1)}]  # Treat the whole video as one squat
+        prev_knee_angle = 180
+        prev_hip_y = 0
+        current_phase = 'down'    # Always consider in 'down' phase to capture lowest angle
+        current_squat_min_knee = 180
+        phase_idx = 0
+            
+        app.logger.info(f"USING SIMPLIFIED SQUAT LOGIC - all frames treated as in a squat")
+        
+        current_squat_min_knee = 180.0  # track lowest knee angle in ongoing squat
+
         def process_frame(frame_data):
+            nonlocal prev_knee_angle, prev_hip_y, current_phase, current_squat_min_knee
             frame_idx, frame = frame_data
             
             # Convert BGR to RGB
@@ -1134,101 +1152,69 @@ def analyze_video():
                         'visibility': 0
                     })
             
-            VIS_THR = 0.5
-            def joints_visible(ids, lm):
-                return all(lm[i]['visibility'] >= VIS_THR for i in ids)
+            # Visibility threshold too high can filter out usable landmarks. We now:
+            # 1. Keep a low visibility threshold (0.15).
+            # 2. Additionally allow a landmark if its coordinates are non-zero (placeholder
+            #    landmarks have x=y=0).  This dramatically increases the likelihood of
+            #    computing angles when MediaPipe marks visibility low but the landmark
+            #    position is still reasonably accurate.
+            VIS_THR = 0.15
 
-            # Prepare indices for left/right and for each measurement
-            pose = POSE_LANDMARKS
-            lm = landmarks
-            # Indices for left and right
-            LHIP, LKNEE, LANKLE = pose.LEFT_HIP, pose.LEFT_KNEE, pose.LEFT_ANKLE
-            RHIP, RKNEE, RANKLE = pose.RIGHT_HIP, pose.RIGHT_KNEE, pose.RIGHT_ANKLE
-            LSHOULDER, RSHOULDER = pose.LEFT_SHOULDER, pose.RIGHT_SHOULDER
+            # Provide shorthand reference to landmarks array for later use
+            lm = landmarks  # <--- critical: ensure lm is bound before nested funcs use it
 
-            # Compute knee visibility for D
-            knees_visible = (lm[LKNEE]['visibility'] >= VIS_THR) and (lm[RKNEE]['visibility'] >= VIS_THR)
+            def joints_visible(ids, lm_arr):
+                """Return True if all requested joints look valid.
+                
+                A landmark passes if either it has sufficient visibility or its coordinates are non-zero (placeholders are zero)."""
+                for idx in ids:
+                    pt = lm_arr[idx]
+                    if pt['visibility'] >= VIS_THR:
+                        continue
+                    if pt['x'] != 0 or pt['y'] != 0:
+                        continue
+                    return False
+                return True
 
             # A. Only compute measurements when all required joints are visible
             knee_angle = None
             depth_ratio = None
             shoulder_midfoot_diff = None
-            # Right knee metrics
-            if joints_visible([RHIP, RKNEE, RANKLE], lm):
-                hip = lm[RHIP]
-                knee = lm[RKNEE]
-                ankle = lm[RANKLE]
-                knee_angle = calculate_angle(hip, knee, ankle)
+            # Compute right side metrics if visible
+            right_knee_angle = None
+            if joints_visible([POSE_LANDMARKS.RIGHT_HIP, POSE_LANDMARKS.RIGHT_KNEE, POSE_LANDMARKS.RIGHT_ANKLE], lm):
+                hip = lm[POSE_LANDMARKS.RIGHT_HIP]; knee = lm[POSE_LANDMARKS.RIGHT_KNEE]; ankle = lm[POSE_LANDMARKS.RIGHT_ANKLE]
+                right_knee_angle = calculate_angle(hip, knee, ankle)
+            # Compute left side metrics if visible
+            left_knee_angle = None
+            if joints_visible([POSE_LANDMARKS.LEFT_HIP, POSE_LANDMARKS.LEFT_KNEE, POSE_LANDMARKS.LEFT_ANKLE], lm):
+                hip_l = lm[POSE_LANDMARKS.LEFT_HIP]; knee_l = lm[POSE_LANDMARKS.LEFT_KNEE]; ankle_l = lm[POSE_LANDMARKS.LEFT_ANKLE]
+                left_knee_angle = calculate_angle(hip_l, knee_l, ankle_l)
+            # Choose the deeper (smaller) knee angle if both available
+            knee_angle_candidates = [a for a in [right_knee_angle, left_knee_angle] if a is not None]
+            if knee_angle_candidates:
+                knee_angle = min(knee_angle_candidates)
+            
+            # depth_ratio calculation uses whichever side knee_angle used
+            if knee_angle is not None and hip is not None and ankle is not None and knee is not None:
                 depth_ratio = calculate_depth_ratio(hip, knee, ankle)
-            # Shoulder-midfoot diff (right side)
-            if joints_visible([RSHOULDER, RHIP, RKNEE, RANKLE], lm):
-                shoulder = lm[RSHOULDER]
-                hip = lm[RHIP]
-                knee = lm[RKNEE]
-                ankle = lm[RANKLE]
-                shoulder_midfoot_diff = calculate_shoulder_midfoot_diff(shoulder, hip, knee, ankle)
-
-            # B. Return None for missing values (will be serialized as null in JSON)
-            # This ensures all consumers (e.g., React) can use a neutral style for missing data.
-            # Do NOT use 'N/A' or string sentinel values, only float or null.
-
-            # C. Generate arrows only when metric is valid and breaches threshold
-            arrows = []
-            try:
-                # Depth (knee angle) - Corrected condition: angle > 90 means not deep enough
-                if (
-                    knee_angle is not None and
-                    90 < knee_angle < 150 and   # between standing (~180) and too low (<90)
-                    joints_visible([RKNEE], lm)
-                ):
-                    arrows.append({
-                        'start': {'x': lm[RKNEE]['x'], 'y': lm[RKNEE]['y']},
-                        'end': {'x': lm[RKNEE]['x'], 'y': lm[RKNEE]['y'] + 0.1}, # Point down for 'deeper'
-                        'color': 'yellow',
-                        'message': 'Squat deeper – knees not at 90°'
-                    })
-
-                # Back lean (angle between shoulder‑hip‑knee)
-                if joints_visible([RSHOULDER, RHIP, RKNEE], lm):
-                    try:
-                        # Only show back lean feedback when actually squatting (knee angle < 150)
-                        if knee_angle is not None and knee_angle < 150:
-                            back_angle = calculate_angle(lm[RSHOULDER], lm[RHIP], lm[RKNEE])
-                            # Check if back angle indicates excessive forward lean (larger angle means more lean relative to vertical?)
-                            if back_angle > 45: # Keep original threshold for now
-                                arrows.append({
-                                    'start': {'x': lm[RHIP]['x'], 'y': lm[RHIP]['y']},           # Starts at Hip
-                                    'end': {'x': lm[RSHOULDER]['x'], 'y': lm[RSHOULDER]['y']},   # Points to Shoulder
-                                    'color': 'orange',
-                                    'message': 'Chest up – reduce forward lean'
-                                })
-                    except Exception as e:
-                        app.logger.error(f"Error calculating back angle or generating arrow: {e}")
-
-                # *** NEW: Knee forward over ankle ***
-                if joints_visible([RKNEE, RANKLE], lm):
-                    knee_x = lm[RKNEE]['x']
-                    ankle_x = lm[RANKLE]['x']
-                    # Check if knee is significantly forward of the ankle horizontally
-                    # Only trigger when squatting (e.g., knee angle < 150)
-                    if knee_angle is not None and knee_angle < 150 and knee_x > ankle_x + 0.05: # Threshold of 0.05 normalized coord diff
-                        arrows.append({
-                            'start': {'x': lm[RKNEE]['x'], 'y': lm[RKNEE]['y']},   # Starts at knee
-                            'end': {'x': lm[RKNEE]['x'] - 0.1, 'y': lm[RKNEE]['y']}, # Points backward horizontally
-                            'color': 'cyan', # Use a distinct color
-                            'message': 'Knee too far forward'
-                        })
-                # *** END NEW CHECK ***
-
-            except Exception as e:
-                app.logger.error(f"Error generating arrows: {e}")
-
-            # D. Status indicators for coloring segments (simplified logic)
-            status = {
-                'spine': 'ok' if not any(a['message'] == 'Chest up – reduce forward lean' for a in arrows) else 'warn',
-                # Updated knee status to include the new check
-                'knee': 'ok' if not any(a['message'] == 'Squat deeper – knees not at 90°' or a['message'] == 'Knee too far forward' for a in arrows) else 'warn',
-            }
+            
+            # Shoulder-midfoot diff (take maximum absolute from both sides)
+            shoulder_diffs = []
+            # right
+            if joints_visible([POSE_LANDMARKS.RIGHT_SHOULDER, POSE_LANDMARKS.RIGHT_HIP, POSE_LANDMARKS.RIGHT_KNEE, POSE_LANDMARKS.RIGHT_ANKLE], lm):
+                shoulder = lm[POSE_LANDMARKS.RIGHT_SHOULDER]; hip_r = lm[POSE_LANDMARKS.RIGHT_HIP]; knee_r = lm[POSE_LANDMARKS.RIGHT_KNEE]; ankle_r = lm[POSE_LANDMARKS.RIGHT_ANKLE]
+                shoulder_diffs.append(calculate_shoulder_midfoot_diff(shoulder, hip_r, knee_r, ankle_r))
+            # left
+            if joints_visible([POSE_LANDMARKS.LEFT_SHOULDER, POSE_LANDMARKS.LEFT_HIP, POSE_LANDMARKS.LEFT_KNEE, POSE_LANDMARKS.LEFT_ANKLE], lm):
+                shoulder_l = lm[POSE_LANDMARKS.LEFT_SHOULDER]; hip_l2 = lm[POSE_LANDMARKS.LEFT_HIP]; knee_l2 = lm[POSE_LANDMARKS.LEFT_KNEE]; ankle_l2 = lm[POSE_LANDMARKS.LEFT_ANKLE]
+                shoulder_diffs.append(calculate_shoulder_midfoot_diff(shoulder_l, hip_l2, knee_l2, ankle_l2))
+            if shoulder_diffs:
+                # Remove any None values to avoid TypeErrors with abs(None)
+                valid_diffs = [d for d in shoulder_diffs if d is not None]
+                if valid_diffs:
+                    # We care about worst (largest forward lean) => max absolute diff
+                    shoulder_midfoot_diff = max(valid_diffs, key=lambda d: abs(d))
         
             # E. Add kneesVisible boolean to frame payload
             return {
@@ -1240,10 +1226,16 @@ def analyze_video():
                     'depthRatio': depth_ratio,
                     'shoulderMidfootDiff': shoulder_midfoot_diff
                 },
-                'arrows': arrows,
-                'kneesVisible': knees_visible,
-                'status': status
+                'arrows': [],
+                'kneesVisible': joints_visible([POSE_LANDMARKS.LEFT_KNEE, POSE_LANDMARKS.RIGHT_KNEE], lm),
+                'status': {
+                    'spine': 'ok',
+                    'knee': 'ok',
+                    'current_phase': current_phase
+                }
             }
+        
+        # Note: phase tracking is handled inside process_frame using nonlocal variables
         
         # Sequentially process frames while periodically freeing memory
         batch_size = 4  # how many frames before an explicit GC & memory log
@@ -1294,6 +1286,219 @@ def analyze_video():
         # Sort frames by timestamp in case processing order wasn't perfect (should already be sorted)
         results.sort(key=lambda x: x.get('timestamp', 0))
         
+        # --- Calculate Per-Frame Scores ---
+        # First, identify actual squat phases (ignore standing)
+        squat_phases = []
+        in_squat = False
+        for i, frame in enumerate(results):
+            if 'status' in frame:
+                # Start squat on 'down' phase
+                if frame['status'].get('current_phase') == 'down' and not in_squat:
+                    in_squat = True
+                    squat_phases.append({
+                        'start': i, 
+                        'frames': [],
+                        'best_knee_angle': 180.0,
+                        'worst_shoulder_diff': 0.0
+                    })
+                
+                # End squat when back to standing (phase = none)
+                if frame['status'].get('current_phase') != 'down' and in_squat:
+                    in_squat = False
+                    squat_phases[-1]['end'] = i
+                
+                # Add frame to current squat if in squat
+                if in_squat and len(squat_phases) > 0:
+                    squat_phases[-1]['frames'].append(i)
+        
+        # Complete any open squat phases
+        if in_squat and len(squat_phases) > 0:
+            squat_phases[-1]['end'] = len(results) - 1
+                
+        # Track global best depth
+        global_min_knee_angle = 180  # Track best depth across all squats
+        
+        # Process each frame to calculate progressive scores
+        # For each squat phase, we'll track the best scores seen so far
+        last_scores = {'knee_depth':0.0,'shoulder_align':100.0,'overall':0.0}
+        for phase_idx, phase in enumerate(squat_phases):
+            # Initialize tracking variables for this phase
+            current_best_knee_angle = 180.0
+            current_worst_shoulder_diff = 0.0
+            
+            # Reusable function to calculate depth score from angle
+            def calc_depth_score(angle, hip_below_knee):
+                # Grant full points for very deep squats (below parallel or <70°)
+                if hip_below_knee or angle <= 70:
+                    return 100.0
+                # No points for shallow squats above 90°
+                elif angle >= 90:
+                    return 0.0
+                # Linear score for angles between 70° and 90°
+                else:
+                    return ((90 - angle) / 20.0) * 100.0
+            
+            # Reusable function to calculate shoulder score from diff
+            def calc_shoulder_score(diff):
+                abs_diff = abs(diff)
+                if abs_diff <= 2:
+                    return 100.0
+                elif abs_diff >= 10:
+                    return 0.0
+                else:
+                    return (10 - abs_diff) / 8 * 100.0
+            
+            # Process frames in this squat phase IN ORDER
+            for frame_idx in range(phase['start'], phase.get('end', len(results) - 1) + 1):
+                frame = results[frame_idx]
+                measurements = frame.get('measurements', {})
+                
+                # Get current frame data
+                knee_angle = measurements.get('kneeAngle')
+                shoulder_diff = measurements.get('shoulderMidfootDiff')
+                
+                # Default scores
+                frame_scores = {
+                    'knee_depth': last_scores['knee_depth'],
+                    'shoulder_align': last_scores['shoulder_align'],
+                    'overall': last_scores['overall'],
+                    'phase': phase_idx + 1
+                }
+                
+                # Log starting frame score values
+                app.logger.info(f"Frame {frame_idx} starting scores: knee_depth={frame_scores['knee_depth']}, shoulder_align={frame_scores['shoulder_align']}, overall={frame_scores['overall']}")
+                
+                # Check hip position for depth calculation
+                lm = frame.get('landmarks', [])
+                hip_below_knee = False
+                if len(lm) > 26:
+                    # Right side indices 24 (right hip), 26 (right knee)
+                    hip_below_knee = hip_below_knee or (lm[24]['y'] > lm[26]['y'])
+                if len(lm) > 25:
+                    # Left side indices 23 (left hip), 25 (left knee)
+                    hip_below_knee = hip_below_knee or (lm[23]['y'] > lm[25]['y'])
+                
+                # Track knee angle measurements and score calculations (with more logging)
+                # First, log what we've measured for debugging
+                app.logger.info(f"Frame {frame_idx}: knee_angle={knee_angle}, hip_below_knee={hip_below_knee}")
+                
+                # Update best knee angle (progressive)
+                if knee_angle is not None:
+                    # Important: Also calculate a direct score for this frame's knee angle
+                    # regardless of best angle so far, so we show progress as user squats
+                    direct_depth_score = calc_depth_score(knee_angle, hip_below_knee)
+                    
+                    # Update the best angle seen so far in this squat
+                    prev_best = current_best_knee_angle
+                    current_best_knee_angle = min(current_best_knee_angle, knee_angle)
+                    
+                    # Log if we found a new best angle
+                    if current_best_knee_angle < prev_best:
+                        app.logger.info(f"NEW BEST KNEE ANGLE: {current_best_knee_angle} (prev: {prev_best})")
+                    
+                    # Calculate current depth score based on best angle so far
+                    cumulative_depth_score = calc_depth_score(current_best_knee_angle, hip_below_knee)
+                    
+                    # Display the BEST (cumulative) depth score so it never decreases once achieved
+                    # This makes the score "stick" at the highest value reached during the squat.
+                    old_depth = frame_scores['knee_depth']
+                    frame_scores['knee_depth'] = round(cumulative_depth_score, 1)
+                    
+                    # Log score changes
+                    if frame_scores['knee_depth'] != old_depth:
+                        app.logger.info(f"DEPTH SCORE UPDATED: {old_depth} → {frame_scores['knee_depth']}")
+                    app.logger.info(f"Frame {frame_idx}: knee={knee_angle:.1f}, score={frame_scores['knee_depth']}")
+                    
+                    # Update global best for final scoring
+                    global_min_knee_angle = min(global_min_knee_angle, knee_angle)
+                else:
+                    app.logger.info(f"Frame {frame_idx}: NO KNEE ANGLE DETECTED")
+                
+                # Update worst shoulder alignment (progressive)
+                if shoulder_diff is not None:
+                    # Update the worst alignment seen so far in this squat
+                    current_worst_shoulder_diff = max(current_worst_shoulder_diff, abs(shoulder_diff))
+                    
+                    # Calculate current shoulder score based on worst alignment so far
+                    shoulder_score = calc_shoulder_score(current_worst_shoulder_diff)
+                    frame_scores['shoulder_align'] = round(shoulder_score, 1)
+                
+                # Calculate overall score for this frame
+                frame_scores['overall'] = round(
+                    frame_scores['knee_depth'] * 0.4 + 
+                    frame_scores['shoulder_align'] * 0.3, 
+                    1
+                )
+                
+                # Apply scores to this frame
+                frame['scores'] = frame_scores
+                
+                # Save for propagation
+                last_scores = frame_scores.copy()
+        
+        # Propagate last known scores to frames outside squat phases
+        prev_scores = {'knee_depth':0.0,'shoulder_align':100.0,'overall':0.0,'phase':0}
+        for frame in results:
+            if 'scores' not in frame or frame['scores'] is None:
+                frame['scores'] = prev_scores.copy()
+            else:
+                prev_scores = frame['scores']
+        
+        # For API backward compatibility - calculate final scores from best squat
+        best_knee_depth = 0.0
+        best_shoulder_align = 0.0
+        best_overall = 0.0
+        
+        # Find the best frame scores across all frames
+        if squat_phases:
+            squat_frames = [i for phase in squat_phases for i in phase.get('frames', [])]
+            
+            if squat_frames:
+                best_frame_scores = max([results[i]['scores']['overall'] for i in squat_frames if 'scores' in results[i]])
+                best_overall = best_frame_scores
+                
+                # Recalculate score based on global min knee angle
+                if global_min_knee_angle <= 70:
+                    best_knee_depth = 100.0
+                elif global_min_knee_angle >= 90:
+                    best_knee_depth = 0.0
+                else:
+                    best_knee_depth = round(((90 - global_min_knee_angle) / 20.0) * 100.0, 1)
+                
+                # Best shoulder alignment from frames
+                best_shoulder_align = max([results[i]['scores']['shoulder_align'] 
+                                          for i in squat_frames 
+                                          if 'scores' in results[i]], default=0.0)
+        
+        # --- Secondary fallback: derive from raw measurements when no score computed ---
+        if best_knee_depth == 0.0:
+            knee_angles = [f.get('measurements', {}).get('kneeAngle')
+                           for f in results]
+            knee_angles = [a for a in knee_angles if a is not None]
+            if knee_angles:
+                min_angle = min(knee_angles)
+                if min_angle <= 70:
+                    best_knee_depth = 100.0
+                elif min_angle >= 90:
+                    best_knee_depth = 0.0
+                else:
+                    best_knee_depth = round(((90 - min_angle) / 20.0) * 100.0, 1)
+
+        if best_shoulder_align == 0.0:
+            shoulder_diffs = [abs(d)
+                              for d in (f.get('measurements', {}).get('shoulderMidfootDiff')
+                                        for f in results)
+                              if d is not None]
+            if shoulder_diffs:
+                worst_diff = max(shoulder_diffs)
+                if worst_diff >= 10:
+                    best_shoulder_align = 0.0
+                else:
+                    best_shoulder_align = round((10 - worst_diff) / 8 * 100.0, 1)
+        
+        # Calculate final overall score using the best scores
+        overall_score = round(best_knee_depth * 0.4 + best_shoulder_align * 0.3, 1)
+
         # --- Assemble Final Result ---
         analysis_result = {
             # Use original FPS if available, else the backend default (30)
@@ -1302,7 +1507,12 @@ def analyze_video():
             'analysisDuration': time.time() - t_start,
             'totalFramesProcessed': len(results),
             'originalDuration': original_duration, # Add original duration info
-            'originalFrameCount': original_frame_count # Add original frame count info
+            'originalFrameCount': original_frame_count, # Add original frame count info
+            'scores': {
+                'kneeDepthScore': best_knee_depth,
+                'shoulderAlignmentScore': best_shoulder_align,
+                'overall': overall_score
+            }
         }
 
         # Memory logging after processing

@@ -290,12 +290,15 @@ const CameraContainer = styled.div`
 const VideoContainer = styled.div`
   position: relative;
   width: 100%;
-  height: 100%;
+  max-width: 100%;
+  height: auto; /* let height follow aspect ratio */
+  aspect-ratio: 16 / 9; /* maintain 16:9 */
   display: flex;
   justify-content: center;
   align-items: center;
-  aspect-ratio: 16 / 9; /* maintain 16:9 box initially */
-  min-height: 200px; /* ensure initial height for better layout */
+  flex-shrink: 0;
+  flex-grow: 1; /* allow it to expand vertically */
+  max-height: calc(100vh - 140px); /* leave space for controls/top bar */
   
   ${(props) => props.$isFullscreen && `
     position: fixed;
@@ -993,7 +996,18 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
     addDebugLog(`Browser detected: ${browser}`);
     
     // Initialize app
-    initializeTensorFlow();
+    initializeTensorFlow().then(success => {
+      if (success) {
+        setTfInitialized(true);
+        setShowTFWarning(false);
+        addDebugLog("TensorFlow initialization succeeded");
+      } else {
+        setError("Failed to initialize TensorFlow");
+      }
+    }).catch(err => {
+      console.error("Error during TensorFlow initialization:", err);
+      setError("TensorFlow initialization error");
+    });
     
     // Add window resize handler
     const handleResize = () => {
@@ -3013,12 +3027,6 @@ if (typeof onRecordingComplete === 'function') {
         )}
       </VideoContainer>
       <ControlsContainer $isFullscreen={isFullscreen}>
-        <Button
-          onClick={toggleCameraFacing}
-          disabled={isLoading || isRecording}
-        >
-          {window.innerWidth < 400 ? 'Camera' : 'Switch Camera'}
-        </Button>
         
         <Button
           onClick={togglePoseTracking}
@@ -3032,11 +3040,28 @@ if (typeof onRecordingComplete === 'function') {
         <Button
           onClick={toggleRecording}
           disabled={isLoading || !isCameraReady}
-          className={isRecording ? 'recording' : ''}
+          style={{
+            width:'48px', 
+            height:'48px', 
+            aspectRatio: '1/1',
+            minWidth: '48px',
+            minHeight: '48px',
+            maxWidth: '48px',
+            maxHeight: '48px',
+            borderRadius: isRecording ? '8px' : '50%', 
+            background: 'red', 
+            border: 'none',
+            boxShadow: '0 0 0 2px rgba(255,0,0,0.3)',
+            animation: isRecording ? 'pulse 1.5s infinite' : 'none', 
+            display:'flex', 
+            alignItems:'center', 
+            justifyContent:'center',
+            padding: 0,
+            margin: '0 8px',
+            flexShrink: 0,
+            transition: 'all 0.3s ease'
+          }}
         >
-          {isRecording ? 
-            (window.innerWidth < 400 ? 'Stop' : 'Stop Recording') : 
-            (window.innerWidth < 400 ? 'Record' : 'Start Recording')}
         </Button>
         <Button
           onClick={toggleFullscreen}
