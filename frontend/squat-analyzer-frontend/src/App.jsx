@@ -11,6 +11,7 @@ import './App.css';
 // Import logos directly
 import mbamsLogo from '/MBAMS_logo.png';
 import crownIcon from '/ColumbiaCrown.png';
+import smartSquatLogo from '/smartsquat.png';
 
 // Define the backend URL with a fallback
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:5000';
@@ -68,27 +69,38 @@ api.interceptors.response.use(
 const Container = styled.div`
   max-width: 1200px;
   margin: 0 auto;
-  padding: 2rem;
+  padding: 0.75rem 2rem 2rem;
 `;
 
 const Title = styled.h1`
   text-align: center;
-  color: var(--text-primary);
-  margin-bottom: 1rem;
-  font-size: 2.5rem;
+  color: var(--accent-color);
+  margin: 0;
+  padding: 0;
+  font-size: 2.2rem;
+  font-weight: bold;
+  letter-spacing: 1px;
+  width: 100%;
+  max-width: 250px;
+  line-height: 1;
 `;
 
 const LogosContainer = styled.div`
   display: flex;
-  justify-content: center;
-  gap: 40px;
+  justify-content: space-between;
+  width: 100%;
   margin-bottom: 1rem;
-  align-items: center;
+  align-items: flex-end;
+  max-width: 960px;
+  margin-left: auto;
+  margin-right: auto;
+  padding: 0 20px;
 `;
 
 const Logo = styled.img`
-  height: 80px;
-  width: auto;
+  height: auto;
+  width: 100%;
+  max-width: 250px;
   object-fit: contain;
 `;
 
@@ -510,27 +522,36 @@ const App = () => {
     <div className="app">
       <Container>
         <LogosContainer>
-          <Logo 
-            src={mbamsLogo} 
-            alt="MBA MS Logo" 
-            onError={handleLogoError}
-            style={{ maxWidth: '300px', height: 'auto' }}
-          />
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '45%' }}>
+            <Logo 
+              src={mbamsLogo} 
+              alt="MBA MS Logo" 
+              onError={handleLogoError}
+              style={{ marginTop: '25px' }}
+            />
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '45%', paddingBottom: '5px' }}>
+            <Logo 
+              src={smartSquatLogo} 
+              alt="SmartSquat Logo" 
+              onError={handleLogoError}
+              style={{ marginBottom: '-32px', maxWidth: '210px', marginTop: '4px' }}
+            />
+            <Title style={{ position: 'relative', zIndex: '-1' }}>SmartSquat</Title>
+          </div>
         </LogosContainer>
         
-        <Title>SmartSquat</Title>
-        
-        <ServerStatusContainer>
-          <ServerStatusMessage $status={serverStatus}>
-            {getServerStatusMessage()}
-          </ServerStatusMessage>
-          {/* Removed Force Local Mode button to keep analysis always backend-driven */}
-        </ServerStatusContainer>
-        
         {!showPlayback ? (
-              <VideoCapture 
-                onRecordingComplete={handleRecordingComplete}
-              />
+          <>
+            <ServerStatusContainer>
+              <ServerStatusMessage $status={serverStatus}>
+                {getServerStatusMessage()}
+              </ServerStatusMessage>
+            </ServerStatusContainer>
+            <VideoCapture 
+              onRecordingComplete={handleRecordingComplete}
+            />
+          </>
         ) : (
               <ExercisePlayback 
             videoUrl={videoUrl}
@@ -538,7 +559,7 @@ const App = () => {
             analysisData={analysisData}
             isLoading={loading}
             error={error}
-            onBack={handleBackToRecord}
+            onBack={() => setShowPlayback(false)}
           />
         )}
       </Container>

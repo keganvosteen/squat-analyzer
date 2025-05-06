@@ -18,8 +18,8 @@ const Container = styled.div`
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1rem;
-  padding: 1rem;
+  padding: 0.5rem;
+  gap: 0.5rem;
   max-width: 1200px;
   margin: 0 auto;
 `;
@@ -66,8 +66,8 @@ const CanvasOverlay = styled.canvas`
 
 const Controls = styled.div`
   display: flex;
-  gap: 1rem;
-  margin-top: 1rem;
+  gap: 0.5rem;
+  margin: 0.25rem 0;
 `;
 
 const Button = styled.button`
@@ -92,10 +92,10 @@ const Button = styled.button`
 const AnalysisPanel = styled.div`
   width: 100%;
   max-width: 800px;
-  padding: 1rem;
+  padding: 0.5rem;
   background: #f8f9fa;
   border-radius: 8px;
-  margin-top: 1rem;
+  margin-top: 0.5rem;
 `;
 
 const StatBox = styled.div`
@@ -103,7 +103,7 @@ const StatBox = styled.div`
   padding: 1rem;
   border-radius: 4px;
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-  margin-bottom: 1rem;
+  margin-bottom: 0.5rem;
 `;
 
 const StatTitle = styled.h3`
@@ -125,10 +125,10 @@ const StatLabel = styled.div`
 
 const ErrorMessage = styled.div`
   color: #dc2626;
-  padding: 1rem;
+  padding: 0.5rem;
   background-color: #fee2e2;
   border-radius: 0.375rem;
-  margin-bottom: 1rem;
+  margin-bottom: 0.5rem;
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -149,7 +149,7 @@ const FeedbackItem = styled.li`
 `;
 
 const FeedbackSection = styled.div`
-  margin-top: 1rem;
+  margin-top: 0.5rem;
 `;
 
 const FeedbackTip = styled.div`
@@ -169,7 +169,7 @@ const OverlayCanvas = styled.canvas`
 `;
 
 const DebugInfo = styled.pre`
-  margin-top: 1rem;
+  margin-top: 0.5rem;
   padding: 10px;
   background-color: #f5f5f5;
   border: 1px solid #ddd;
@@ -180,26 +180,6 @@ const DebugInfo = styled.pre`
   width: 100%;
   white-space: pre-wrap;
   display: ${props => props.$show ? 'block' : 'none'};
-`;
-
-const BackButton = styled.button`
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 4px;
-  background: #007bff;
-  color: white;
-  cursor: pointer;
-  transition: background 0.2s;
-  margin-bottom: 1rem;
-
-  &:hover {
-    background: #0056b3;
-  }
-
-  &:disabled {
-    background: #ccc;
-    cursor: not-allowed;
-  }
 `;
 
 const TimeLabel = styled.span`
@@ -291,6 +271,91 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
   const [loadingStartTime, setLoadingStartTime] = useState(null);
   const [elapsedLoadingTime, setElapsedLoadingTime] = useState(0);
   
+  // Precompute frame timestamps for fast lookup
+  const frameTimestamps = useMemo(() => analysisData?.frames?.map(f => f.timestamp) || [], [analysisData]);
+
+  // Optimized binary search helper with caching for better performance
+  const frameIndexCache = useRef({});
+  const findFrameIndex = useCallback((ts) => {
+    // Round to 2 decimal places for caching
+    const roundedTs = Math.round(ts * 100) / 100;
+    
+    // Check cache first
+    if (frameIndexCache.current[roundedTs] !== undefined) {
+      return frameIndexCache.current[roundedTs];
+    }
+    
+    // If no frames or zero duration, default to first frame
+    if (frameTimestamps.length === 0) return 0;
+    
+    // Binary search
+    let lo = 0, hi = frameTimestamps.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (frameTimestamps[mid] === roundedTs) {
+        frameIndexCache.current[roundedTs] = mid;
+        return mid;
+      }
+      if (frameTimestamps[mid] < roundedTs) lo = mid + 1; else hi = mid - 1;
+    }
+    
+    const lower = Math.max(0, lo - 1);
+    const higher = Math.min(frameTimestamps.length - 1, lo);
+    
+    // Choose whichever timestamp is closer to the target
+    let result;
+    if (Math.abs(frameTimestamps[higher] - roundedTs) < Math.abs(roundedTs - frameTimestamps[lower])) {
+      result = higher;
+    } else {
+      result = lower;
+    }
+    
+    // Cache the result
+    frameIndexCache.current[roundedTs] = result;
+    return result;
+  }, [frameTimestamps]);
+
+  // --- Compute global score arrays and merged scores ---
+  const kneeDepthScores = analysisData?.frames
+    ?.map((f) => f.scores?.knee_depth)
+    ?.filter((s) => s !== undefined);
+  const shoulderScores = analysisData?.frames
+    ?.map((f) => f.scores?.shoulder_align)
+    ?.filter((s) => s !== undefined);
+  const hipFlexionScores = analysisData?.frames
+    ?.map((f) => f.scores?.hip_flexion)
+    ?.filter((s) => s !== undefined);
+  const pelvicTiltScores = analysisData?.frames
+    ?.map((f) => f.scores?.pelvic_tilt)
+    ?.filter((s) => s !== undefined);
+
+  const mergedGlobalScores = useMemo(() => {
+    return {
+      kneeDepthScore: kneeDepthScores?.length
+        ? Math.max(...kneeDepthScores)
+        : undefined,
+      shoulderAlignmentScore: shoulderScores?.length
+        ? Math.min(...shoulderScores)
+        : 100.0, // Default perfect when no data
+      hipFlexionScore: hipFlexionScores?.length
+        ? Math.max(...hipFlexionScores)
+        : undefined,
+      pelvicTiltScore: pelvicTiltScores?.length
+        ? Math.min(...pelvicTiltScores)
+        : 100.0,
+      totalScore:
+        kneeDepthScores?.length &&
+        shoulderScores?.length &&
+        hipFlexionScores?.length &&
+        pelvicTiltScores?.length
+          ? Math.max(...kneeDepthScores) * 0.4 +
+            Math.min(...shoulderScores) * 0.3 +
+            Math.max(...hipFlexionScores) * 0.2 +
+            Math.min(...pelvicTiltScores) * 0.1
+          : undefined,
+    };
+  }, [kneeDepthScores, shoulderScores, hipFlexionScores, pelvicTiltScores]);
+
   // Use effect to check blob type and set image/video playback mode
   useEffect(() => {
     // Reset image playback state initially
@@ -392,49 +457,43 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
     return { x: normalizedX, y: normalizedY };
   }, []);
 
-  // Draw overlays on canvas - MEMOIZED with useCallback
+  // Draw overlays on canvas - MEMOIZED with useCallback and optimized for performance
   const drawOverlays = useCallback((ctx, time) => {
     if (!ctx || !ctx.canvas) {
-      console.warn('[Debug] Missing context or canvas');
-      return;
+      return; // Silent fail for better performance
     }
     
     if (!hasAnalysisData) {
-      console.warn('[Debug] No analysis data available');
-      return;
+      return; // Silent fail for better performance
     }
 
-    // Clear canvas first
+    // Properly clear the canvas before drawing
     ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
-    // Debug: Log analysisData and drawing context
-    if (window && window.DEBUG_OVERLAY) {
-      // Only log if explicitly enabled
-      console.log('[Overlay Debug] Drawing overlays at time:', time);
-      console.log('[Overlay Debug] analysisData:', analysisData);
-      console.log('[Overlay Debug] Canvas size:', ctx.canvas.width, ctx.canvas.height);
+    // Only update debug info if in debug mode
+    if (showDebug) {
+      debugInfoRef.current = {
+        currentTime: time.toFixed(2),
+        canvasWidth: ctx.canvas.width,
+        canvasHeight: ctx.canvas.height,
+        videoWidth: videoRef.current?.videoWidth || 0,
+        videoHeight: videoRef.current?.videoHeight || 0,
+        frameCount: analysisData.frames.length,
+        time,
+      };
     }
 
-    // Update debug info
-    debugInfoRef.current = {
-      currentTime: time.toFixed(2),
-      canvasWidth: ctx.canvas.width,
-      canvasHeight: ctx.canvas.height,
-      videoWidth: videoRef.current?.videoWidth || 0,
-      videoHeight: videoRef.current?.videoHeight || 0,
-      frameCount: analysisData.frames.length,
-      frameTimestamps: analysisData.frames.map(f => f.timestamp),
-      time,
-    };
-
-    // Determine if video is in portrait
+    // Determine if video is in portrait (cached for performance)
     const isPortrait = videoOrientation === 'portrait';
 
-    // Get video duration for proportional mapping
+    // Cache values we'll use repeatedly
+    const canvasWidth = ctx.canvas.width;
+    const canvasHeight = ctx.canvas.height;
     const videoDuration = videoRef.current?.duration || 0;
     const lastAnalysisTs = analysisData.frames[analysisData.frames.length - 1].timestamp;
-
-    let currentFrameIndex = -1;
+    
+    // Find current frame index quickly with our optimized function
+    let currentFrameIndex = findFrameIndex(time);
 
     // If analysis timestamps cover most of the video, use timestamp matching; otherwise use proportional mapping
     const analysisCoverage = lastAnalysisTs / (videoDuration || 1);
@@ -532,54 +591,64 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
     // }
 
     const drawConnGroup = (connectionsArr, stroke) => {
+      // Set stroke style only once
       ctx.strokeStyle = stroke;
-      // if (window && window.DEBUG_OVERLAY) console.log(`[Debug] Drawing connection group with stroke: ${stroke}`);
+      ctx.lineWidth = 2;
       
       // Check keypoints vs landmarks naming
       if (!frameData.keypoints && frameData.landmarks) {
-        if (window && window.DEBUG_OVERLAY) console.warn('[Debug] Frame data has landmarks but not keypoints - using landmarks instead');
         frameData.keypoints = frameData.landmarks;
       }
       
-      if (!frameData.keypoints) {
-        if (window && window.DEBUG_OVERLAY) console.error('[Debug] No keypoints/landmarks found in frame data!');
+      // Bail early if no keypoints
+      if (!frameData.keypoints || !Array.isArray(frameData.keypoints)) {
         return;
       }
       
-      // if (window && window.DEBUG_OVERLAY) console.log('[Debug] Keypoints array length:', frameData.keypoints.length);
-      
+      // Draw each connection as a separate stroke
       connectionsArr.forEach(([i, j]) => {
-        // if (window && window.DEBUG_OVERLAY) console.log(`[Debug] Trying to draw connection between points ${i} and ${j}`);
+        // Skip invalid indices
+        if (i >= frameData.keypoints.length || j >= frameData.keypoints.length) {
+          return;
+        }
+        
         const l1 = blendedKeypoints[i];
         const l2 = blendedKeypoints[j];
         
-        if (!l1 || !l2) {
-          // if (window && window.DEBUG_OVERLAY) console.warn(`[Debug] Missing keypoint at index ${i} or ${j}`);
+        // Skip missing or low-confidence points
+        if (!l1 || !l2 || 
+            typeof l1.x !== 'number' || typeof l1.y !== 'number' ||
+            typeof l2.x !== 'number' || typeof l2.y !== 'number') {
           return;
         }
         
-        // if (window && window.DEBUG_OVERLAY) console.log(`[Debug] Keypoint ${i} visibility: ${l1.visibility}, Keypoint ${j} visibility: ${l2.visibility}`);
-        
-        if (l1.visibility < 0.5 || l2.visibility < 0.5) {
-          // if (window && window.DEBUG_OVERLAY) console.log(`[Debug] Skipping connection ${i}-${j} due to low visibility`);
+        // Skip low visibility points
+        const vis1 = l1.visibility ?? l1.score ?? 1;
+        const vis2 = l2.visibility ?? l2.score ?? 1;
+        if (vis1 < 0.5 || vis2 < 0.5) {
           return;
         }
-        const p1 = transformCoordinates(l1.x, l1.y, ctx.canvas.width, ctx.canvas.height, isPortrait);
-        const p2 = transformCoordinates(l2.x, l2.y, ctx.canvas.width, ctx.canvas.height, isPortrait);
         
-        // --- Mitigation for stuck landmarks --- 
-        // Skip drawing if either point is suspiciously close to the edge (0,0 or 1,1)
-        const isPointInvalid = (p) => p.x < 0.01 || p.x > 0.99 || p.y < 0.01 || p.y > 0.99;
-        if (isPointInvalid(p1) || isPointInvalid(p2)) {
-            // if (window && window.DEBUG_OVERLAY) console.warn(`Skipping connection [${i}, ${j}] due to potentially invalid coordinates:`, p1, p2);
-            return; 
+        // Transform coordinates to canvas space
+        const p1 = transformCoordinates(l1.x, l1.y, canvasWidth, canvasHeight, isPortrait);
+        const p2 = transformCoordinates(l2.x, l2.y, canvasWidth, canvasHeight, isPortrait);
+        
+        // Skip invalid or edge points
+        if (p1.x < 0.01 || p1.x > 0.99 || p1.y < 0.01 || p1.y > 0.99 ||
+            p2.x < 0.01 || p2.x > 0.99 || p2.y < 0.01 || p2.y > 0.99) {
+          return;
         }
-        // --- End Mitigation --- 
 
+        // Draw a single clear line
+        const x1 = Math.round(p1.x * canvasWidth);
+        const y1 = Math.round(p1.y * canvasHeight);
+        const x2 = Math.round(p2.x * canvasWidth);
+        const y2 = Math.round(p2.y * canvasHeight);
+        
+        // Use a clean path for each line
         ctx.beginPath();
-        ctx.moveTo(p1.x * ctx.canvas.width, p1.y * ctx.canvas.height);
-        ctx.lineTo(p2.x * ctx.canvas.width, p2.y * ctx.canvas.height);
-        ctx.lineWidth = 2;
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
         ctx.stroke();
       });
     };
@@ -712,92 +781,138 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
 
     // Draw measurements and analysis
     if (frameData.measurements) {
-      const { kneeAngle, shoulderMidfootDiff } = frameData.measurements;
+      const { kneeAngle, shoulderMidfootDiff, hipFlexionAngle, pelvicAngle } = frameData.measurements;
       
       // We used to skip drawing if both raw measurements missing. However we
       // still want to display accumulated scores even when measurements are
       // unavailable in this particular frame (e.g. keypoints occluded).
       // Only skip if both measurements AND scores are absent.
       const hasScores = frameData.scores || analysisData.scores;
-      if (kneeAngle === null && shoulderMidfootDiff === null && !hasScores) {
+      if (kneeAngle === null && shoulderMidfootDiff === null && hipFlexionAngle === null && pelvicAngle === null && !hasScores) {
         return;
       }
       
-      // Position text in top-right corner
+      // Determine latest scores for color coding
+      const frameScores = frameData.scores || {};
+      const depthScore = frameScores.knee_depth !== undefined ? frameScores.knee_depth : mergedGlobalScores.kneeDepthScore;
+      const shoulderScore = frameScores.shoulder_align !== undefined ? frameScores.shoulder_align : mergedGlobalScores.shoulderAlignmentScore;
+      const hipScore = frameScores.hip_flexion !== undefined ? frameScores.hip_flexion : mergedGlobalScores.hipFlexionScore;
+      const pelvicScore = frameScores.pelvic_tilt !== undefined ? frameScores.pelvic_tilt : mergedGlobalScores.pelvicTiltScore;
+
+      // helper for color by score
+      const colorFor = (s) => {
+        if (s === undefined || s === null) return '#ffffff';
+        if (s >= 100) return '#22c55e'; // green
+        if (s >= 75) return '#38bdf8'; // blue
+        if (s >= 25) return '#facc15'; // yellow
+        return '#dc2626'; // red
+      };
+
+      // Position text box in top-right at edge of video
       ctx.font = '16px Arial';
       let yOffset = 30;
-      const xOffset = ctx.canvas.width - 250; // Align to right side
-      const paddingRight = 20; // Padding from right edge
+      const overlayWidth = 240; // total width of the info box
+      const xOffset = ctx.canvas.width - overlayWidth; // align to right edge
+      const innerPad = 8; // padding inside box
+      
+      // Set consistent line height for all rows
+      const lineHeight = 25;
+      
+      // Create column alignment points with less space between
+      const labelX = xOffset + innerPad;
+      const valueX = xOffset + overlayWidth - innerPad; // right edge for alignment
 
-      // Draw background for text for better visibility – height large enough to
-      // cover all dynamic lines (score + raw metrics)
+      // Calculate height needed for all rows with extra padding
+      const rowCount = 9; // Total number of rows including scores and measurements
+      const bgHeight = (rowCount * lineHeight) + 15; // Add padding at bottom to ensure last row is fully visible
+      
+      // Draw semi-transparent background (sized to content)
       ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-      ctx.fillRect(xOffset, 0, 250, 150);
+      ctx.fillRect(xOffset, 0, overlayWidth, bgHeight); // background box with exact height
 
-      // === Display Depth-focused Scores ===
-      if (frameData.scores || analysisData.scores) {
-        const scores = frameData.scores || {};
-        // Prefer aggregated global scores we computed with useMemo; fallback to
-        // backend top-level scores if for some reason per-frame aggregation
-        // failed.
-        const globalScores = mergedGlobalScores;
+      // --- Total Squat Score ---
+      ctx.fillStyle = 'white';
+      ctx.textAlign = 'left';
+      ctx.fillText('Total Squat Score:', labelX, yOffset);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#ffd700';
+      ctx.fillText(`${mergedGlobalScores.totalScore !== undefined ? mergedGlobalScores.totalScore.toFixed(1) : 'N/A'}`, valueX, yOffset);
+      yOffset += 25;
 
-        // Depth score (0-100). Prefer per-frame, fallback to global.
-        const depthScore =
-          scores.knee_depth !== undefined
-            ? scores.knee_depth
-            : globalScores.kneeDepthScore;
+      // --- Depth Score ---
+      ctx.fillStyle = 'white';
+      ctx.textAlign = 'left';
+      ctx.fillText('Depth Score:', labelX, yOffset);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = colorFor(depthScore);
+      ctx.fillText(`${depthScore !== undefined ? depthScore.toFixed(1) : 'N/A'}`, valueX, yOffset);
+      yOffset += 25;
 
-        // Shoulder alignment score (0-100). Prefer per-frame, fallback to global.
-        const shoulderScore =
-          scores.shoulder_align !== undefined
-            ? scores.shoulder_align
-            : globalScores.shoulderAlignmentScore;
+      // --- Shoulder Alignment Score ---
+      ctx.fillStyle = 'white';
+      ctx.textAlign = 'left';
+      ctx.fillText('Shoulder Score:', labelX, yOffset);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = colorFor(shoulderScore);
+      ctx.fillText(`${shoulderScore !== undefined ? shoulderScore.toFixed(1) : 'N/A'}`, valueX, yOffset);
+      yOffset += 25;
 
-        // Total squat score combines depth (40%) + shoulder (30%).
-        const totalScore = (depthScore !== undefined && shoulderScore !== undefined)
-          ? (depthScore * 0.4 + shoulderScore * 0.3)
-          : undefined;
+      // --- Hip Flexion Score ---
+      ctx.fillStyle = 'white';
+      ctx.textAlign = 'left';
+      ctx.fillText('Hip Score:', labelX, yOffset);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = colorFor(hipScore);
+      ctx.fillText(`${hipScore !== undefined ? hipScore.toFixed(1) : 'N/A'}`, valueX, yOffset);
+      yOffset += 25;
 
-        // --- Total Squat Score ---
-        ctx.fillStyle = 'white';
-        ctx.fillText('Total Squat Score:', xOffset + paddingRight, yOffset);
-        ctx.fillStyle = '#ffd700';
-        ctx.fillText(` ${totalScore !== undefined ? totalScore.toFixed(1) : 'N/A'}`, xOffset + paddingRight + 160, yOffset);
-        yOffset += 25;
+      // --- Pelvic Tilt Score ---
+      ctx.fillStyle = 'white';
+      ctx.textAlign = 'left';
+      ctx.fillText('Pelvic Score:', labelX, yOffset);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = colorFor(pelvicScore);
+      ctx.fillText(`${pelvicScore !== undefined ? pelvicScore.toFixed(1) : 'N/A'}`, valueX, yOffset);
+      yOffset += 25;
 
-        // --- Depth Score ---
-        ctx.fillStyle = 'white';
-        ctx.fillText('Depth Score:', xOffset + paddingRight, yOffset);
-        ctx.fillStyle = '#22c55e';
-        ctx.fillText(` ${depthScore !== undefined ? depthScore.toFixed(1) : 'N/A'}`, xOffset + paddingRight + 160, yOffset);
-        yOffset += 25;
+      // --- Knee Angle ---
+      ctx.fillStyle = 'white';
+      ctx.textAlign = 'left';
+      ctx.fillText('Knee Angle:', labelX, yOffset);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = colorFor(depthScore);
+      ctx.fillText(`${kneeAngle !== null ? Math.round(kneeAngle) : 'N/A'}°`, valueX, yOffset);
+      yOffset += 25;
 
-        // --- Shoulder Alignment Score ---
-        ctx.fillStyle = 'white';
-        ctx.fillText('Shoulder Score:', xOffset + paddingRight, yOffset);
-        ctx.fillStyle = '#facc15';
-        ctx.fillText(` ${shoulderScore !== undefined ? shoulderScore.toFixed(1) : 'N/A'}`, xOffset + paddingRight + 160, yOffset);
-        yOffset += 25;
+      // --- Shoulder-Midfoot Diff ---
+      ctx.fillStyle = 'white';
+      ctx.textAlign = 'left';
+      ctx.fillText('Shoulder-Midfoot Diff:', labelX, yOffset);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = colorFor(shoulderScore);
+      ctx.fillText(`${shoulderMidfootDiff !== null ? shoulderMidfootDiff.toFixed(1) : 'N/A'}`, valueX, yOffset);
+      yOffset += 25;
 
-        // --- Raw Knee Angle ---
-        ctx.fillStyle = 'white';
-        ctx.fillText('Raw Knee Angle:', xOffset + paddingRight, yOffset);
-        ctx.fillStyle = '#ffff00';
-        ctx.fillText(` ${kneeAngle !== null ? Math.round(kneeAngle) : 'N/A'}°`, xOffset + paddingRight + 150, yOffset);
-        yOffset += 25;
+      // --- Pelvic Tilt ---
+      ctx.fillStyle = 'white';
+      ctx.textAlign = 'left';
+      ctx.fillText('Pelvic Tilt:', labelX, yOffset);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = colorFor(pelvicScore);
+      ctx.fillText(`${pelvicAngle !== null ? Math.round(pelvicAngle) : 'N/A'}°`, valueX, yOffset);
+      yOffset += 25;
 
-        // --- Shoulder-Midfoot Diff ---
-        ctx.fillStyle = 'white';
-        ctx.fillText('Shoulder Diff:', xOffset + paddingRight, yOffset);
-        ctx.fillStyle = '#ffa500';
-        ctx.fillText(` ${shoulderMidfootDiff !== null ? shoulderMidfootDiff.toFixed(1) : 'N/A'}`, xOffset + paddingRight + 150, yOffset);
-        yOffset += 25;
+      // --- Hip Flexion ---
+      ctx.fillStyle = 'white';
+      ctx.textAlign = 'left';
+      ctx.fillText('Hip Flexion:', labelX, yOffset);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = colorFor(hipScore);
+      ctx.fillText(`${hipFlexionAngle !== null ? Math.round(hipFlexionAngle) : 'N/A'}°`, valueX, yOffset);
+      yOffset += 25;
 
-        // Log values to console for debugging
-        if (window.DEBUG_OVERLAY || true) { // Always show during debugging
-          console.log(`Frame ${currentFrameIndex}: knee=${kneeAngle}, depth=${depthScore}, total=${totalScore}`);
-        }
+      if (window.DEBUG_OVERLAY) {
+        console.log(`Frame ${currentFrameIndex}: depth=${depthScore}, hip=${hipScore}, pelvic=${pelvicScore}, total=${mergedGlobalScores.totalScore}`);
       }
     }
 
@@ -806,7 +921,11 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
     ctx.font = '12px Arial';
     ctx.fillText(`Frame: ${currentFrameIndex}, Time: ${frameData.timestamp.toFixed(2)}s`, 10, ctx.canvas.height - 10);
     
-  }, [hasAnalysisData, analysisData, videoOrientation, transformCoordinates]);
+  }, [hasAnalysisData, analysisData, videoOrientation, transformCoordinates, findFrameIndex, mergedGlobalScores]);
+
+  // Stable ref to latest drawOverlays to avoid re-creating listeners each render
+  const drawOverlaysRef = useRef();
+  useEffect(() => { drawOverlaysRef.current = drawOverlays; }, [drawOverlays]);
 
   // *** ADD HELPER FUNCTION TO DRAW KNEE ANGLE ARC ***
   const drawKneeAngleArc = useCallback((ctx, frameData, side, isPortrait) => {
@@ -877,7 +996,12 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
     const text = `${Math.round(kneeAngle)}°`;
     const textMetrics = ctx.measureText(text);
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-    ctx.fillRect(textX - 5, textY - 14, textMetrics.width + 10, 18);
+    ctx.fillRect(
+      textX - 5,
+      textY - 14,
+      textMetrics.width + 10,
+      18
+    );
     ctx.fillStyle = '#00ffff';
     ctx.fillText(text, textX, textY);
 
@@ -915,8 +1039,8 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
           const canvas = canvasRef.current;
           canvas.width = img.width; // Match canvas to image size
           canvas.height = img.height;
-          const ctx = canvas.getContext('2d');
-          drawOverlays(ctx, 0); // Draw overlay for the static image (time 0)
+          const ctx = canvas.getContext('2d'); // Removed { alpha: false }
+          drawOverlaysRef.current?.(ctx, 0); // Draw overlay for the static image (time 0)
         }
       };
       img.onerror = (err) => {
@@ -945,7 +1069,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
         // If needed, clear image display here too
     }
     
-  }, [videoUrl, isImagePlayback, hasAnalysisData, drawOverlays, setError]); // Dependencies
+  }, [videoUrl, isImagePlayback, hasAnalysisData, drawOverlaysRef, setError]); // Dependencies
 
   // Detect mobile recordings that are rotated
   const detectVideoRotation = useCallback((video) => {
@@ -1026,84 +1150,197 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
         
         // Initial draw of overlays if we have analysis data
         if (hasAnalysisData) {
-          const ctx = canvas.getContext('2d');
-          drawOverlays(ctx, 0);
+          const ctx = canvas.getContext('2d'); // Removed { alpha: false }
+          drawOverlaysRef.current?.(ctx, 0);
         }
       }
     }
-  }, [hasAnalysisData, detectVideoRotation, drawOverlays]);
+  }, [hasAnalysisData, detectVideoRotation, drawOverlaysRef]);
 
-  // Set up video event listeners and animation frame loop
+  // Set up video event listeners and completely rewritten animation frame loop
   useEffect(() => {
     const video = videoRef.current;
     if (!video || isImagePlayback) return; // Don't run for images
     
-    console.log("Setting up video event listeners and rAF loop");
+    console.log("Setting up video event listeners and new rAF loop");
     
-    let animationFrameId = null;
-    
-    // rAF loop function
-    const animationLoop = () => {
-      if (video.paused || video.ended) {
-        cancelAnimationFrame(animationFrameId); // Stop loop if paused/ended
-        return;
-      }
-      
-      const ctx = canvasRef.current?.getContext('2d');
-      if (ctx) {
-        drawOverlays(ctx, video.currentTime); // Use memoized drawOverlays
-      }
-      
-      // Continue animation loop
-      animationFrameId = requestAnimationFrame(animationLoop);
-    };
-
-    // Handlers to manage play / pause state and rAF loop
-    const localHandlePlay = () => {
-      setIsPlaying(true);
-      // Ensure the video actually plays (in case play called programmatically)
-      if (videoRef.current && videoRef.current.paused) {
-        videoRef.current.play().catch(err => {
-          console.warn('Video play() failed in localHandlePlay:', err);
-        });
-      }
-      cancelAnimationFrame(animationFrameId); // Avoid duplicates
-      animationFrameId = requestAnimationFrame(animationLoop);
-    };
-
-    const localHandlePause = () => {
-      setIsPlaying(false);
-      cancelAnimationFrame(animationFrameId);
-      // Draw one frame so overlay matches pause position
-      const ctx = canvasRef.current?.getContext('2d');
-      if (ctx) {
-        drawOverlays(ctx, video.currentTime);
-      }
-    };
-
-    // Add listeners
-    video.addEventListener('play', localHandlePlay);
-    video.addEventListener('pause', localHandlePause);
-    video.addEventListener('seeking', localHandlePause); // Update frame when seeking finishes (usually fires pause)
-    video.addEventListener('seeked', localHandlePause); // Also handle seeked for good measure
-    video.addEventListener('timeupdate', handleTimeUpdate); // Keep for UI display
+    // Set up event listeners
     video.addEventListener('loadedmetadata', handleLoadedMetadata);
+    video.addEventListener('timeupdate', handleTimeUpdate);
     video.addEventListener('error', handleError);
-
-    // Cleanup function
+    
+    // Only start animation loop if we have analysis data
+    if (hasAnalysisData && canvasRef.current) {
+      // Get the canvas context only once
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d'); // Removed { alpha: false }
+      
+      // Track last overlay render time to throttle to ~30fps
+      let lastOverlayDisplayTime = -Infinity; // in ms
+      
+      // Helper that actually performs draw for a given mediaTime
+      const performDraw = (mediaTime, displayTimeMs = performance.now(), shouldThrottle = true) => {
+        // Throttle: apply only when explicitly enabled
+        if (shouldThrottle && displayTimeMs - lastOverlayDisplayTime < 33) return;
+        lastOverlayDisplayTime = displayTimeMs;
+        try {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          if (drawOverlaysRef.current) {
+            drawOverlaysRef.current(ctx, mediaTime);
+          }
+        } catch (err) {
+          console.error('Error drawing overlays:', err);
+        }
+      };
+      
+      // Prefer requestVideoFrameCallback when supported (better synced & less CPU)
+      if (typeof video.requestVideoFrameCallback === 'function') {
+        let vfCallbackId = null;
+        
+        const handleVideoFrame = (_now, metadata) => {
+          performDraw(metadata.mediaTime, metadata.expectedDisplayTime, false); // draw every frame, no throttle
+          vfCallbackId = video.requestVideoFrameCallback(handleVideoFrame);
+        };
+        
+        // Start when playing
+        const startVFC = () => {
+          if (vfCallbackId == null) {
+            vfCallbackId = video.requestVideoFrameCallback(handleVideoFrame);
+          }
+        };
+        
+        // Stop when paused/ended
+        const stopVFC = () => {
+          if (vfCallbackId != null) {
+            try { video.cancelVideoFrameCallback(vfCallbackId); } catch { /**/ }
+            vfCallbackId = null;
+          }
+        };
+        
+        // Initial start/stop depending on state
+        if (!video.paused && !video.ended) startVFC(); else performDraw(video.currentTime);
+        
+        // Wire events
+        video.addEventListener('play', startVFC);
+        video.addEventListener('pause', stopVFC);
+        video.addEventListener('ended', stopVFC);
+        video.addEventListener('seeked', () => performDraw(video.currentTime));
+        
+        // Cleanup
+        return () => {
+          stopVFC();
+          video.removeEventListener('play', startVFC);
+          video.removeEventListener('pause', stopVFC);
+          video.removeEventListener('ended', stopVFC);
+          video.removeEventListener('seeked', () => performDraw(video.currentTime));
+        };
+      }
+      
+      // Fallback: requestAnimationFrame loop (throttled)
+      else {
+        let animationFrameId = null;
+        let previousVideoTime = -1;
+        let isDrawing = false;
+        
+        // Simplified animation loop with safeguards
+        const animate = () => {
+          // Safely check if video and canvas still exist
+          if (!videoRef.current || !canvasRef.current) {
+            if (animationFrameId) {
+              cancelAnimationFrame(animationFrameId);
+              animationFrameId = null;
+            }
+            return;
+          }
+          
+          // Get the current video time
+          const currentVideoTime = videoRef.current.currentTime;
+          
+          // Only redraw if the time has changed and we're not already drawing
+          if (!isDrawing && Math.abs(currentVideoTime - previousVideoTime) > 0.001) {
+            isDrawing = true;
+            previousVideoTime = currentVideoTime;
+            
+            try {
+              // Clear the entire canvas completely
+              ctx.clearRect(0, 0, canvas.width, canvas.height);
+              
+              // Only draw if we have a valid time and analysis data
+              if (drawOverlaysRef.current && hasAnalysisData) {
+                performDraw(currentVideoTime);
+              }
+            } catch (error) {
+              console.error('Error drawing overlays:', error);
+            } finally {
+              isDrawing = false;
+            }
+          }
+          
+          // Continue the animation loop
+          animationFrameId = requestAnimationFrame(animate);
+        };
+        
+        // Create one-time draw function for paused state
+        const drawOnce = () => {
+          if (!videoRef.current || !canvasRef.current) return;
+          
+          try {
+            // Clear the canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw at current time
+            if (drawOverlaysRef.current) {
+              performDraw(videoRef.current.currentTime);
+            }
+          } catch (error) {
+            console.error('Error in drawOnce:', error);
+          }
+        };
+        
+        // Setup explicit play/pause handlers to avoid redraw issues
+        const handlePlay = () => {
+          if (animationFrameId) cancelAnimationFrame(animationFrameId);
+          animationFrameId = requestAnimationFrame(animate);
+        };
+        
+        const handlePause = drawOnce;
+        const handleSeeked = drawOnce;
+        
+        // Add event listeners for handling play/pause/seek
+        video.addEventListener('play', handlePlay);
+        video.addEventListener('pause', handlePause);
+        video.addEventListener('seeked', handleSeeked);
+        
+        // Start animation loop if playing, draw once if paused
+        if (video.paused) {
+          drawOnce();
+        } else {
+          animationFrameId = requestAnimationFrame(animate);
+        }
+        
+        // Cleanup function
+        return () => {
+          // Cancel animation frame
+          if (animationFrameId) {
+            cancelAnimationFrame(animationFrameId);
+            animationFrameId = null;
+          }
+          
+          // Remove all event listeners
+          video.removeEventListener('play', handlePlay);
+          video.removeEventListener('pause', handlePause);
+          video.removeEventListener('seeked', handleSeeked);
+        };
+      }
+    }
+    
+    // Cleanup without animation loop
     return () => {
-      console.log("Cleaning up video event listeners and rAF loop");
-      cancelAnimationFrame(animationFrameId);
-      video.removeEventListener('play', localHandlePlay);
-      video.removeEventListener('pause', localHandlePause);
-      video.removeEventListener('seeking', localHandlePause);
-      video.removeEventListener('seeked', localHandlePause);
-      video.removeEventListener('timeupdate', handleTimeUpdate);
       video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      video.removeEventListener('timeupdate', handleTimeUpdate);
       video.removeEventListener('error', handleError);
     };
-  // Rerun this effect if the video element itself changes (via videoUrl) or drawing logic updates
-  }, [videoUrl, isImagePlayback, drawOverlays, handleLoadedMetadata, handleTimeUpdate, handleError]);
+  }, [hasAnalysisData, isImagePlayback, handleLoadedMetadata, handleTimeUpdate, handleError, drawOverlaysRef]);
 
   // New utility to format seconds into mm:ss (or hh:mm:ss if >1h)
   const formatTime = (seconds = 0) => {
@@ -1153,30 +1390,89 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
   const progressPercent = duration > 0 ? Math.min((elapsedLoadingTime / estimatedLoadingTotalMs) * 100, 99) : 0;
   const remainingSeconds = duration > 0 ? Math.max(Math.ceil((estimatedLoadingTotalMs - elapsedLoadingTime) / 1000), 0) : 0;
 
-  const mergedGlobalScores = useMemo(() => {
-    const kneeDepthScores = analysisData?.frames
-      ?.map((f) => f.scores?.knee_depth)
-      ?.filter((s) => s !== undefined);
-    const shoulderScores = analysisData?.frames
-      ?.map((f) => f.scores?.shoulder_align)
-      ?.filter((s) => s !== undefined);
+  const shoulderDiffValues = useMemo(() => analysisData?.frames
+    ?.map(f => f.measurements?.shoulderMidfootDiff)
+    ?.filter(v => typeof v === 'number' && !isNaN(v)), [analysisData]);
 
-    return {
-      kneeDepthScore: kneeDepthScores?.length
-        ? Math.max(...kneeDepthScores)
-        : undefined,
-      shoulderAlignmentScore: shoulderScores?.length
-        ? Math.min(...shoulderScores)
-        : undefined,
-    };
+  const avgShoulderDiff = useMemo(() => {
+    if (!shoulderDiffValues || shoulderDiffValues.length === 0) return undefined;
+    return shoulderDiffValues.reduce((a, b) => a + b, 0) / shoulderDiffValues.length;
+  }, [shoulderDiffValues]);
+
+  const getTimestampForMetric = useCallback((selector, preferHigh=true) => {
+    if (!analysisData?.frames) return undefined;
+    let bestVal = preferHigh ? -Infinity : Infinity;
+    let bestTs;
+    analysisData.frames.forEach(f => {
+      const val = selector(f);
+      if (val === undefined || val === null || isNaN(val)) return;
+      if ((preferHigh && val > bestVal) || (!preferHigh && val < bestVal)) {
+        bestVal = val;
+        bestTs = f.timestamp;
+      }
+    });
+    return bestTs;
   }, [analysisData]);
+
+  const qualitativeMessages = useMemo(() => {
+    const msgs = [];
+    // 1. Knee extension / depth
+    const depthScore = mergedGlobalScores.kneeDepthScore;
+    const depthTs = getTimestampForMetric(f=>f.scores?.knee_depth, true);
+    if (depthScore !== undefined) {
+      if (depthScore >= 80) {
+        msgs.push({msg:'Great depth — your knees are bending deep enough to activate your glutes and quads effectively.', ts: depthTs});
+      } else if (depthScore >= 50) {
+        msgs.push({msg:"You're not squatting deep enough — try bending your knees more to lower your hips at least to knee level.", ts: depthTs});
+      } else {
+        msgs.push({msg:"You’re going deep, but check that you're keeping control at the bottom — avoid collapsing into the squat.", ts: depthTs});
+      }
+    }
+
+    // 2. Shoulder alignment
+    const alignTs = getTimestampForMetric(f=>Math.abs(f.measurements?.shoulderMidfootDiff), false); // prefer smallest diff
+    if (avgShoulderDiff !== undefined) {
+      const absDiff = Math.abs(avgShoulderDiff);
+      const threshold=0.05;
+      if (absDiff <= threshold) {
+        msgs.push({msg:'Nice work — your shoulders are staying centered over your midfoot, which keeps your balance strong and protects your spine.', ts: alignTs});
+      } else if (avgShoulderDiff > 0) {
+        msgs.push({msg:"You're leaning too far forward — keep your chest up and your shoulders stacked over your midfoot.", ts: alignTs});
+      } else {
+        msgs.push({msg:"You're leaning too far back — this can throw off your balance. Keep your weight centered over your feet.", ts: alignTs});
+      }
+    }
+
+    // 3. Hip flexion
+    const hipScore = mergedGlobalScores.hipFlexionScore;
+    const hipTs = getTimestampForMetric(f=>f.scores?.hip_flexion, true);
+    if (hipScore !== undefined) {
+      if (hipScore >= 80) {
+        msgs.push({msg:'Strong hip engagement — your hips are hinging properly to drive power and protect your knees.', ts: hipTs});
+      } else if (hipScore >= 50) {
+        msgs.push({msg:'Try hinging more at the hips — this helps activate your glutes and keeps your squat powerful.', ts: hipTs});
+      } else {
+        msgs.push({msg:'You may be bending too much at the hips — check your form to avoid leaning too far forward.', ts: hipTs});
+      }
+    }
+
+    // 4. Pelvic tilt
+    const pelvicScore = mergedGlobalScores.pelvicTiltScore;
+    const pelvicTs = getTimestampForMetric(f=>f.scores?.pelvic_tilt, false); // lower is worse
+    if (pelvicScore !== undefined) {
+      if (pelvicScore >= 80) {
+        msgs.push({msg:'Solid posture — you\'re maintaining a neutral spine at the bottom of your squat.', ts: pelvicTs});
+      } else if (pelvicScore >= 50) {
+        msgs.push({msg:'Watch your lower back — there’s a slight tuck under at the bottom. Try not to go deeper than your hips can control.', ts: pelvicTs});
+      } else {
+        msgs.push({msg:'You’re losing spinal alignment at the bottom — stop just before your lower back starts to round and work on hip or ankle mobility.', ts: pelvicTs});
+      }
+    }
+    return msgs;
+  }, [mergedGlobalScores, avgShoulderDiff, getTimestampForMetric]);
 
   return (
     <Container ref={containerRef}>
-      <BackButton onClick={onBack}>
-        <ArrowLeft size={20} /> Back
-      </BackButton>
-      
       <h2>Exercise Playback</h2>
       
       {error && (
@@ -1315,52 +1611,17 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
         </h3>
         {hasAnalysisData ? (
           <>
-            {/* Only show StatBox if at least one measurement is not null */}
-            {(() => {
-              const m = analysisData.frames[0]?.measurements || {};
-              const allNull =
-                m.kneeAngle === null &&
-                m.shoulderMidfootDiff === null;
-              const hasScores = analysisData.scores || {};
-              if (allNull && !hasScores) return null;
-              return (
-                <StatBox>
-                  <StatTitle>Measurements</StatTitle>
-                  <div className="flex flex-wrap mt-2">
-                    {Object.entries(m)
-                      .filter(([key]) => key !== 'depthRatio') // Remove depthRatio from display
-                      .map(([key, value]) => (
-                      <div key={key} className="w-1/2 mb-2"> {/* Increased width since we have fewer items */}
-                        <StatLabel>{key === 'kneeAngle' ? 'Knee Angle' : 'Shoulder Position'}</StatLabel>
-                        <StatValue>
-                          {value === null || value === undefined
-                            ? 'N/A'
-                            : typeof value === 'number'
-                              ? key === 'kneeAngle'
-                                ? Math.round(value) + '°'
-                                : value.toFixed(1)
-                              : value}
-                        </StatValue>
-                      </div>
-                    ))}
-                  </div>
-                </StatBox>
-              );
-            })()}
-
-            <FeedbackSection>
-              <h4>Feedback Tips (click timestamp to seek)</h4>
-              {analysisData.frames
-                .flatMap(frame => (frame.arrows || []).map(arrow => ({ ts: frame.timestamp, msg: arrow.message })))
-                // Deduplicate by message to avoid repeated tips
-                .filter((item, idx, arr) => arr.findIndex(x => x.msg === item.msg) === idx)
-                .map(({ ts, msg }, idx) => (
-                  <FeedbackTip key={idx} onClick={() => setCurrentTime(ts)} style={{cursor:'pointer'}}>
-                    <span style={{marginRight:'6px', color:'#38bdf8'}}>{ts.toFixed(2)}s</span>
-                    {msg}
-                  </FeedbackTip>
-                ))}
-            </FeedbackSection>
+            {qualitativeMessages.length > 0 && (
+              <FeedbackSection>
+                <FeedbackList>
+                  {qualitativeMessages.map(({msg, ts}, idx) => (
+                    <FeedbackItem key={idx} onClick={()=> ts!==undefined && setCurrentTime(ts)} style={{cursor: ts!==undefined?'pointer':'default'}}>
+                      {msg} {ts!==undefined && <span style={{color:'#38bdf8'}}>({ts.toFixed(2)}s)</span>}
+                    </FeedbackItem>
+                  ))}
+                </FeedbackList>
+              </FeedbackSection>
+            )}
           </>
         ) : null}
       </AnalysisPanel>

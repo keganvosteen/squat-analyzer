@@ -218,8 +218,10 @@ const testWebGLCapability = async () => {
 const Container = styled.div`
   position: relative;
   width: 100%;
-  max-width: 800px;
+  max-width: 960px;
   margin: 0 auto;
+  display: flex;
+  flex-direction: column;
 `;
 
 const Heading = styled.h1`
@@ -268,19 +270,25 @@ const ErrorMessage = styled.div`
 const CameraContainer = styled.div`
   position: relative;
   width: 100%;
-  max-width: 640px; /* Keep max-width for landscape/desktop */
+  max-width: 960px; /* Increased from 640px for larger display */
   margin: 0 auto;
   background-color: #000;
   border-radius: 8px;
   overflow: hidden;
-  /* Add aspect-ratio for default landscape */
-  aspect-ratio: 16 / 9;
-
-  /* Adjust for portrait screens */
+  /* Use viewport-based sizing to fill available space */
+  min-height: 60vh;
+  
+  /* Different handling for portrait vs landscape */
+  @media (orientation: landscape) {
+    aspect-ratio: 16 / 9;
+    height: auto;
+    min-height: 50vh;
+  }
+  
   @media (orientation: portrait) {
     /* Use viewport height for portrait, allow width to adjust */
-    height: 75vh; 
-    width: auto;
+    height: 75vh;
+    width: 100%;
     max-width: 100%; /* Allow full width in portrait */
     aspect-ratio: unset; /* Remove fixed aspect ratio */
   }
@@ -291,14 +299,19 @@ const VideoContainer = styled.div`
   position: relative;
   width: 100%;
   max-width: 100%;
-  height: auto; /* let height follow aspect ratio */
-  aspect-ratio: 16 / 9; /* maintain 16:9 */
+  height: 100%; /* Fill the height of the parent container */
   display: flex;
   justify-content: center;
   align-items: center;
   flex-shrink: 0;
   flex-grow: 1; /* allow it to expand vertically */
-  max-height: calc(100vh - 140px); /* leave space for controls/top bar */
+  max-height: calc(100vh - 120px); /* leave space for controls/top bar */
+  min-height: calc(60vh - 60px); /* ensure minimum height even when controls are present */
+  
+  /* Maintain aspect ratio differently based on orientation */
+  @media (orientation: landscape) {
+    aspect-ratio: 16 / 9;
+  }
   
   ${(props) => props.$isFullscreen && `
     position: fixed;
@@ -318,10 +331,23 @@ const VideoContainer = styled.div`
 `;
 
 const Video = styled.video`
-  display: block;
   width: 100%;
-  height: 100%; /* Make video fill the container height */
-  object-fit: cover; /* Cover the container, cropping if needed */
+  height: 100%;
+  display: block;
+  transform: ${props => props.$mirrored ? 'scaleX(-1)' : 'none'};
+  object-fit: cover; /* Ensures video fills the container */
+  
+  /* Mobile Safari fix */
+  @supports (-webkit-touch-callout: none) {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
 `;
 
 const PoseCanvas = styled.canvas`
@@ -631,13 +657,14 @@ const ControlsContainer = styled.div`
   display: flex;
   justify-content: space-between;
   gap: 15px;
-  margin: 20px auto;
-  max-width: 640px;
+  margin-top: 15px;
   flex-wrap: wrap;
+  width: 100%;
+  max-width: 100%;
   
-  @media (max-width: 640px) {
+  /* Adjust for different screen sizes with sensible control widths */
+  @media (max-width: 600px) {
     justify-content: center;
-    gap: 20px; /* Increase spacing between buttons on mobile */
   }
   
   ${(props) => props.$isFullscreen && `

@@ -597,6 +597,67 @@ def get_video_properties(video_path):
         app.logger.error(f"Error parsing ffprobe output: {e}")
         return None, None, None
 
+# New Hip Flexion Scoring Utility
+def calc_hip_flexion_score(angle):
+    """Return a score (0-100) based on hip flexion angle.
+
+    Ideal hip flexion lies between 90° and 120°.  Anything <90° suggests
+    insufficient hip loading, whereas >130° often indicates excessive torso
+    lean / compensation.  We grant full marks (100) between 90-120°.  Between
+    70-90° (shallow flexion) we linearly scale 0→100.  Between 120-130° we
+    linearly scale 100→0.  Outside 70-130° we assign 0.
+    """
+    if angle is None:
+        return 0.0
+
+    if 90 <= angle <= 120:
+        return 100.0
+    # Shallow flexion side
+    if 70 <= angle < 90:
+        return (angle - 70) / 20.0 * 100.0  # 70→0 , 90→100
+    # Excessive flexion side
+    if 120 < angle <= 130:
+        return (130 - angle) / 10.0 * 100.0  # 120→100 , 130→0
+    return 0.0
+
+# Pelvic Tilt (Butt-wink) Scoring Utility
+def calc_pelvic_tilt_score(delta_angle):
+    """Return a score (0-100) based on posterior pelvic tilt change (delta in °).
+
+    Starts at 100 (perfect).  Any change ≤5° keeps 100.  15° or more drops to 0.
+    Linear drop in between.  delta_angle should be a positive magnitude (abs).
+    """
+    if delta_angle is None:
+        return 100.0  # Unknown tilt, assume perfect so we don't punish
+    if delta_angle <= 5:
+        return 100.0
+    if delta_angle >= 15:
+        return 0.0
+    return (15 - delta_angle) / 10.0 * 100.0
+
+def calculate_pelvic_angle(lm):
+    """Approximate pelvic/trunk angle (°) in the sagittal plane using hip & shoulder centres.
+    0° means perfectly vertical trunk, positive values = leaning forward.
+    """
+    try:
+        sh_l, sh_r = lm[POSE_LANDMARKS.LEFT_SHOULDER], lm[POSE_LANDMARKS.RIGHT_SHOULDER]
+        hip_l, hip_r = lm[POSE_LANDMARKS.LEFT_HIP], lm[POSE_LANDMARKS.RIGHT_HIP]
+    except (IndexError, KeyError, TypeError):
+        return None
+
+    shoulder_cx = (sh_l['x'] + sh_r['x']) / 2.0
+    shoulder_cy = (sh_l['y'] + sh_r['y']) / 2.0
+    hip_cx = (hip_l['x'] + hip_r['x']) / 2.0
+    hip_cy = (hip_l['y'] + hip_r['y']) / 2.0
+
+    dx = hip_cx - shoulder_cx
+    dy = hip_cy - shoulder_cy  # positive downwards in image coords
+    if dy == 0:
+        return 0.0
+    # atan2 returns radians; convert to degrees.  We measure angle from vertical axis.
+    angle = math.degrees(math.atan2(dx, dy))
+    return angle
+
 @app.route('/', methods=['GET'])
 def home():
     return "Flask server is running!"
@@ -1180,6 +1241,8 @@ def analyze_video():
             knee_angle = None
             depth_ratio = None
             shoulder_midfoot_diff = None
+            hip_flexion_angle = None
+            pelvic_angle = None
             # Compute right side metrics if visible
             right_knee_angle = None
             if joints_visible([POSE_LANDMARKS.RIGHT_HIP, POSE_LANDMARKS.RIGHT_KNEE, POSE_LANDMARKS.RIGHT_ANKLE], lm):
@@ -1216,6 +1279,36 @@ def analyze_video():
                     # We care about worst (largest forward lean) => max absolute diff
                     shoulder_midfoot_diff = max(valid_diffs, key=lambda d: abs(d))
         
+            # Hip flexion angle
+            hip_flexion_candidates = []
+            # Right hip flexion (shoulder->hip->knee)
+            if joints_visible([
+                POSE_LANDMARKS.RIGHT_SHOULDER,
+                POSE_LANDMARKS.RIGHT_HIP,
+                POSE_LANDMARKS.RIGHT_KNEE
+            ], lm):
+                sh_r = lm[POSE_LANDMARKS.RIGHT_SHOULDER]
+                hip_r2 = lm[POSE_LANDMARKS.RIGHT_HIP]
+                knee_r2 = lm[POSE_LANDMARKS.RIGHT_KNEE]
+                hip_flexion_candidates.append(calculate_angle(sh_r, hip_r2, knee_r2))
+            # Left side
+            if joints_visible([
+                POSE_LANDMARKS.LEFT_SHOULDER,
+                POSE_LANDMARKS.LEFT_HIP,
+                POSE_LANDMARKS.LEFT_KNEE
+            ], lm):
+                sh_l = lm[POSE_LANDMARKS.LEFT_SHOULDER]
+                hip_l3 = lm[POSE_LANDMARKS.LEFT_HIP]
+                knee_l3 = lm[POSE_LANDMARKS.LEFT_KNEE]
+                hip_flexion_candidates.append(calculate_angle(sh_l, hip_l3, knee_l3))
+
+            if hip_flexion_candidates:
+                # Use the mean of available sides to be neutral
+                hip_flexion_angle = sum(hip_flexion_candidates) / len(hip_flexion_candidates)
+            
+            # Pelvic angle
+            pelvic_angle = calculate_pelvic_angle(lm) if lm else None
+
             # E. Add kneesVisible boolean to frame payload
             return {
                 'frame': frame_idx,
@@ -1224,7 +1317,9 @@ def analyze_video():
                 'measurements': {
                     'kneeAngle': knee_angle,
                     'depthRatio': depth_ratio,
-                    'shoulderMidfootDiff': shoulder_midfoot_diff
+                    'shoulderMidfootDiff': shoulder_midfoot_diff,
+                    'hipFlexionAngle': hip_flexion_angle,
+                    'pelvicAngle': pelvic_angle
                 },
                 'arrows': [],
                 'kneesVisible': joints_visible([POSE_LANDMARKS.LEFT_KNEE, POSE_LANDMARKS.RIGHT_KNEE], lm),
@@ -1299,7 +1394,9 @@ def analyze_video():
                         'start': i, 
                         'frames': [],
                         'best_knee_angle': 180.0,
-                        'worst_shoulder_diff': 0.0
+                        'worst_shoulder_diff': 0.0,
+                        'best_hip_score': 0.0,
+                        'best_pelvic_score': 100.0
                     })
                 
                 # End squat when back to standing (phase = none)
@@ -1320,11 +1417,13 @@ def analyze_video():
         
         # Process each frame to calculate progressive scores
         # For each squat phase, we'll track the best scores seen so far
-        last_scores = {'knee_depth':0.0,'shoulder_align':100.0,'overall':0.0}
+        last_scores = {'knee_depth':0.0,'shoulder_align':100.0,'hip_flexion':0.0,'pelvic_tilt':100.0,'overall':0.0}
         for phase_idx, phase in enumerate(squat_phases):
             # Initialize tracking variables for this phase
             current_best_knee_angle = 180.0
             current_worst_shoulder_diff = 0.0
+            current_best_hip_score = 0.0
+            current_best_pelvic_score = 100.0
             
             # Reusable function to calculate depth score from angle
             def calc_depth_score(angle, hip_below_knee):
@@ -1348,6 +1447,10 @@ def analyze_video():
                 else:
                     return (10 - abs_diff) / 8 * 100.0
             
+            # Using global calc_hip_flexion_score function defined earlier
+            
+            # Using global calc_pelvic_tilt_score function defined earlier
+            
             # Process frames in this squat phase IN ORDER
             for frame_idx in range(phase['start'], phase.get('end', len(results) - 1) + 1):
                 frame = results[frame_idx]
@@ -1356,20 +1459,24 @@ def analyze_video():
                 # Get current frame data
                 knee_angle = measurements.get('kneeAngle')
                 shoulder_diff = measurements.get('shoulderMidfootDiff')
+                hip_flexion_angle = measurements.get('hipFlexionAngle')
+                pelvic_angle = measurements.get('pelvicAngle')
                 
                 # Default scores
                 frame_scores = {
                     'knee_depth': last_scores['knee_depth'],
                     'shoulder_align': last_scores['shoulder_align'],
+                    'hip_flexion': last_scores['hip_flexion'],
+                    'pelvic_tilt': last_scores['pelvic_tilt'],
                     'overall': last_scores['overall'],
                     'phase': phase_idx + 1
                 }
                 
                 # Log starting frame score values
-                app.logger.info(f"Frame {frame_idx} starting scores: knee_depth={frame_scores['knee_depth']}, shoulder_align={frame_scores['shoulder_align']}, overall={frame_scores['overall']}")
+                app.logger.info(f"Frame {frame_idx} starting scores: knee_depth={frame_scores['knee_depth']}, shoulder_align={frame_scores['shoulder_align']}, hip_flexion={frame_scores['hip_flexion']}, pelvic_tilt={frame_scores['pelvic_tilt']}, overall={frame_scores['overall']}")
                 
                 # Check hip position for depth calculation
-                lm = frame.get('landmarks', [])
+                lm = frame.get('landmarks') or []
                 hip_below_knee = False
                 if len(lm) > 26:
                     # Right side indices 24 (right hip), 26 (right knee)
@@ -1428,10 +1535,36 @@ def analyze_video():
                     # Persist worst (lowest) shoulder score so far for sticky behaviour
                     frame_scores['shoulder_align'] = round(min(frame_scores['shoulder_align'], shoulder_score), 1)
                 
+                if hip_flexion_angle is not None and is_active_squat_frame:
+                    # Calculate current hip flexion score based on angle
+                    hip_score = calc_hip_flexion_score(hip_flexion_angle)
+                    # Update the best score seen so far in this squat
+                    prev_best_hip = current_best_hip_score
+                    current_best_hip_score = max(current_best_hip_score, hip_score)
+                    frame_scores['hip_flexion'] = round(current_best_hip_score, 1)
+                    if current_best_hip_score != prev_best_hip:
+                        app.logger.info(f"HIP SCORE UPDATED: {prev_best_hip} → {current_best_hip_score}")
+                
+                # Update best pelvic tilt score (progressive) – only during active squat frames
+                if pelvic_angle is not None and is_active_squat_frame:
+                    # Calculate current pelvic tilt score based on angle
+                    pelvic_score = calc_pelvic_tilt_score(abs(pelvic_angle))
+                    # Update the best score seen so far in this squat
+                    prev_best_pelvic = current_best_pelvic_score
+                    current_best_pelvic_score = min(current_best_pelvic_score, pelvic_score)
+                    frame_scores['pelvic_tilt'] = round(current_best_pelvic_score, 1)
+                    if current_best_pelvic_score != prev_best_pelvic:
+                        app.logger.info(f"PELVIC SCORE UPDATED: {prev_best_pelvic} → {current_best_pelvic_score}")
+                
                 # Calculate overall score for this frame
+                total_weight = 0.4 + 0.3 + 0.2 + 0.1
                 frame_scores['overall'] = round(
-                    frame_scores['knee_depth'] * 0.4 + 
-                    frame_scores['shoulder_align'] * 0.3, 
+                    (
+                        frame_scores['knee_depth'] * 0.4 +
+                        frame_scores['shoulder_align'] * 0.3 +
+                        frame_scores['hip_flexion'] * 0.2 +
+                        frame_scores['pelvic_tilt'] * 0.1
+                    ) / total_weight,
                     1
                 )
                 
@@ -1442,7 +1575,7 @@ def analyze_video():
                 last_scores = frame_scores.copy()
         
         # Propagate last known scores to frames outside squat phases
-        prev_scores = {'knee_depth':0.0,'shoulder_align':100.0,'overall':0.0,'phase':0}
+        prev_scores = {'knee_depth':0.0,'shoulder_align':100.0,'hip_flexion':0.0,'pelvic_tilt':100.0,'overall':0.0,'phase':0}
         for frame in results:
             if 'scores' not in frame or frame['scores'] is None:
                 frame['scores'] = prev_scores.copy()
@@ -1452,6 +1585,8 @@ def analyze_video():
         # For API backward compatibility - calculate final scores from best squat
         best_knee_depth = 0.0
         best_shoulder_align = 0.0
+        best_hip_flexion = 0.0
+        best_pelvic_tilt = 0.0
         best_overall = 0.0
         
         # Find the best frame scores across all frames
@@ -1474,6 +1609,16 @@ def analyze_video():
                 best_shoulder_align = min([results[i]['scores']['shoulder_align'] 
                                           for i in squat_frames 
                                           if 'scores' in results[i]], default=100.0)
+                
+                # Best hip flexion from frames
+                best_hip_flexion = max([results[i]['scores']['hip_flexion'] 
+                                      for i in squat_frames 
+                                      if 'scores' in results[i]], default=0.0)
+                
+                # Best pelvic tilt from frames
+                best_pelvic_tilt = min([results[i]['scores']['pelvic_tilt'] 
+                                      for i in squat_frames 
+                                      if 'scores' in results[i]], default=100.0)
         
         # --- Secondary fallback: derive from raw measurements when no score computed ---
         if best_knee_depth == 0.0:
@@ -1501,8 +1646,22 @@ def analyze_video():
                 else:
                     best_shoulder_align = round((10 - worst_diff) / 8 * 100.0, 1)
         
+        if best_hip_flexion == 0.0:
+            hip_flexion_angles = [f.get('measurements', {}).get('hipFlexionAngle')
+                                  for f in results]
+            hip_flexion_angles = [a for a in hip_flexion_angles if a is not None]
+            if hip_flexion_angles:
+                best_hip_flexion = max([calc_hip_flexion_score(a) for a in hip_flexion_angles])
+        
+        if best_pelvic_tilt == 100.0:
+            pelvic_angles = [f.get('measurements', {}).get('pelvicAngle')
+                             for f in results]
+            pelvic_angles = [a for a in pelvic_angles if a is not None]
+            if pelvic_angles:
+                best_pelvic_tilt = min([calc_pelvic_tilt_score(abs(a)) for a in pelvic_angles])
+        
         # Calculate final overall score using the best scores
-        overall_score = round(best_knee_depth * 0.4 + best_shoulder_align * 0.3, 1)
+        overall_score = round(best_knee_depth * 0.4 + best_shoulder_align * 0.3 + best_hip_flexion * 0.2 + best_pelvic_tilt * 0.1, 1)
 
         # --- Assemble Final Result ---
         analysis_result = {
@@ -1516,6 +1675,8 @@ def analyze_video():
             'scores': {
                 'kneeDepthScore': best_knee_depth,
                 'shoulderAlignmentScore': best_shoulder_align,
+                'hipFlexionScore': best_hip_flexion,
+                'pelvicTiltScore': best_pelvic_tilt,
                 'overall': overall_score
             }
         }
