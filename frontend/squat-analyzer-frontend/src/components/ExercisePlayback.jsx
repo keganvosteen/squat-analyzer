@@ -1,6 +1,6 @@
 // src/components/ExercisePlayback.jsx
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { Play, Pause, SkipForward, SkipBack, AlertTriangle, CheckCircle, Info, Maximize2, Minimize2, ArrowLeft } from 'lucide-react';
+import { Play, Pause, SkipForward, SkipBack, AlertTriangle, CheckCircle, Info, Maximize2, Minimize2, ArrowLeft, ArrowRight } from 'lucide-react';
 import styled from 'styled-components';
 
 // Thresholds for form status colours
@@ -26,8 +26,8 @@ const Container = styled.div`
 
 const VideoContainer = styled.div`
   position: relative;
-  max-width: 100%;
-  max-height: 70vh;
+  max-width: 900px;
+  max-height: 75vh;
   margin: 0 auto;
   overflow: hidden;
   border-radius: 8px;
@@ -52,7 +52,7 @@ const Video = styled.video`
   
   /* Fix for mobile video rotation issues */
   object-fit: contain;
-  max-height: 70vh;
+  max-height: 75vh;
 `;
 
 const CanvasOverlay = styled.canvas`
@@ -68,6 +68,14 @@ const Controls = styled.div`
   display: flex;
   gap: 0.5rem;
   margin: 0.25rem 0;
+  align-items: center;
+`;
+
+const ControlsWrapper = styled.div`
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  gap: 0.35rem;
 `;
 
 const Button = styled.button`
@@ -91,7 +99,7 @@ const Button = styled.button`
 
 const AnalysisPanel = styled.div`
   width: 100%;
-  max-width: 800px;
+  max-width: 900px;
   padding: 0.5rem;
   background: #f8f9fa;
   border-radius: 8px;
@@ -1363,6 +1371,17 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
     setCurrentTime(newTime);
   }, [duration]);
 
+  const stepFrame = useCallback((offset) => {
+    if (!analysisData || !videoRef.current) return;
+    const idx = findFrameIndex(currentTime); // use existing helper to find nearest frame
+    if (idx === undefined) return;
+    let newIdx = idx + offset;
+    newIdx = Math.max(0, Math.min(newIdx, analysisData.frames.length - 1));
+    const ts = analysisData.frames[newIdx].timestamp;
+    videoRef.current.currentTime = ts;
+    setCurrentTime(ts);
+  }, [analysisData, currentTime, findFrameIndex]);
+
   // Scrubber drag handlers
   const handleScrubStart = () => {
     if (!videoRef.current) return;
@@ -1488,7 +1507,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
             <img 
               src={videoUrl} 
               alt="Recorded Squat Snapshot" 
-              style={{ maxWidth: '100%', maxHeight: '70vh', display: 'block' }} 
+              style={{ maxWidth: '100%', maxHeight: '75vh', display: 'block' }} 
             />
           ) : (
             <Video
@@ -1500,7 +1519,7 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
               onTimeUpdate={handleTimeUpdate}
               onError={handleError}
               onEnded={() => setIsPlaying(false)}
-              style={{ maxWidth: '100%', maxHeight: '70vh' }} 
+              style={{ maxWidth: '100%', maxHeight: '75vh' }} 
               controls={false}
             />
           )}
@@ -1565,40 +1584,44 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
         </div>
       )}
       
-      <Controls>
-        <Button onClick={() => setIsPlaying(!isPlaying)}>
-          {isPlaying ? <Pause size={20} /> : <Play size={20} />}
-        </Button>
+      <ControlsWrapper>
+        {/* Top row: play button left, time labels & scrubber */}
+        <Controls>
+          <Button onClick={() => setIsPlaying(!isPlaying)}>
+            {isPlaying ? <Pause size={20} /> : <Play size={20} />}
+          </Button>
 
-        <Button onClick={() => skipTime(-5)}>
-          <SkipBack size={18} />
-        </Button>
+          <TimeLabel>{formatTime(currentTime)}</TimeLabel>
 
-        <TimeLabel>{formatTime(currentTime)}</TimeLabel>
+          <Scrubber
+            min={0}
+            max={duration || 0}
+            step={0.01}
+            value={currentTime}
+            onMouseDown={handleScrubStart}
+            onTouchStart={handleScrubStart}
+            onChange={handleScrubChange}
+            onMouseUp={handleScrubEnd}
+            onTouchEnd={handleScrubEnd}
+            disabled={duration === 0}
+          />
 
-        <Scrubber
-          min={0}
-          max={duration || 0}
-          step={0.01}
-          value={currentTime}
-          onMouseDown={handleScrubStart}
-          onTouchStart={handleScrubStart}
-          onChange={handleScrubChange}
-          onMouseUp={handleScrubEnd}
-          onTouchEnd={handleScrubEnd}
-          disabled={duration === 0}
-        />
+          <TimeLabel>{formatTime(duration)}</TimeLabel>
+        </Controls>
 
-        <TimeLabel>{formatTime(duration)}</TimeLabel>
-
-        <Button onClick={() => skipTime(5)}>
-          <SkipForward size={18} />
-        </Button>
-
-        <Button onClick={() => setShowDebug(!showDebug)}>
-          <Info size={20} />
-        </Button>
-      </Controls>
+        {/* Bottom row: frame selector arrows and info button */}
+        <Controls>
+          <Button onClick={() => stepFrame(-1)}>
+            <ArrowLeft size={18} />
+          </Button>
+          <Button onClick={() => stepFrame(1)}>
+            <ArrowRight size={18} />
+          </Button>
+          <Button onClick={() => setShowDebug(!showDebug)}>
+            <Info size={20} />
+          </Button>
+        </Controls>
+      </ControlsWrapper>
       
       {/* Debug information panel */}
       <DebugInfo $show={showDebug}>
