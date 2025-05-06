@@ -356,6 +356,7 @@ const PoseCanvas = styled.canvas`
   left: 0;
   width: 100%;
   height: 100%;
+  pointer-events: none;
 `;
 
 const CameraPermissionMessage = styled.div`
@@ -845,6 +846,33 @@ const Button = styled.button`
   }
 `;
 
+// Dropdown for selecting delay before recording starts
+const DelaySelect = styled.select`
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid #ccc;
+  background: #fff;
+  color: #111;
+  font-size: 0.85rem;
+  height: 36px;
+`;
+
+// Overlay shown during countdown before recording starts
+const CountdownOverlay = styled.div`
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0,0,0,0.55);
+  color: #fff;
+  font-size: 2rem;
+  z-index: 30;
+`;
+
 // Create specialized frame capture utilities outside of component scope
 // to avoid initialization errors
 const createFrameCapture = (videoRef, isRecording, frameArray, options = {}) => {
@@ -983,6 +1011,11 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
   const [recordedVideo, setRecordedVideo] = useState(null);
   const recordingTimerRef = useRef(null);
   const recordingInterval = useRef(null);
+  
+  // New delay / countdown state
+  const [recordingDelay, setRecordingDelay] = useState(0); // 0, 3, or 5 seconds
+  const [countdown, setCountdown] = useState(null); // null when not counting down
+  const countdownIntervalRef = useRef(null);
   
   // Fullscreen state for video container
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -1517,19 +1550,15 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
         // Load the MoveNet model with more explicit error handling
         const model = poseDetection.SupportedModels.MoveNet;
         
-        // Use a mobile-optimized configuration
+        // Use a performance-optimized configuration – always use Lightning model for lowest latency
         const detectorConfig = {
-          modelType: isMobile ? 
-            poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING : 
-            poseDetection.movenet.modelType.SINGLEPOSE_THUNDER,
+          modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
           enableSmoothing: true,
-          // Use reduced scoring threshold on mobile for better detection
-          scoreThreshold: isMobile ? 0.25 : 0.3,
-          // Mobile-specific optimization
+          scoreThreshold: 0.25,
           multiPoseMaxDimension: isMobile ? 256 : 320
         };
         
-        addDebugLog(`Creating new pose detector with model type: ${isMobile ? 'LIGHTNING (mobile)' : 'THUNDER'}`);
+        addDebugLog('Creating new pose detector: LIGHTNING');
         
         try {
           detectorRef.current = await poseDetection.createDetector(model, detectorConfig);
@@ -1650,7 +1679,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
             
             // --- Pose tracking constants ---
             const MIN_CONFIDENCE = 0.25;     // relaxed further for robustness
-            const SMOOTHING_ALPHA = 0.7;    // EMA factor for landmark smoothing
+            const SMOOTHING_ALPHA = 0.9;    // Higher weight on current frame to reduce visible lag
             const CRITICAL_JOINTS = [ // focus on torso joints that remain visible
               'left_shoulder', 'right_shoulder',
               'left_hip', 'right_hip'
@@ -2510,8 +2539,6 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       const mediaRecorderOptions = {
         mimeType: selectedMimeType,
         videoBitsPerSecond: isMobile ? 800000 : 2000000, // Reduced bitrate for reliability
-        audioBitsPerSecond: 0,    // No audio needed for analysis
-        bitsPerSecond: isMobile ? 800000 : 2000000 // Explicit total bitrate
       };
       
       // Create MediaRecorder with error handling
@@ -2673,43 +2700,61 @@ if (typeof onRecordingComplete === 'function') {
   // Define toggle function last as it depends on start/stop
   const toggleRecording = useCallback(() => {
     try {
+      // Prevent interaction while countdown active
+      if (countdown !== null) {
+        return;
+      }
+      
       console.debug('[Squat] Toggle recording. Current state:', isRecording);
       
       if (isRecording) {
-        // If we're using MediaRecorder
+        // Stop existing recording flows
         if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
           handleStopRecording();
-        } 
-        // If we're using frame capture only
-        else if (mediaRecorderRef.current && mediaRecorderRef.current.frameCapture) {
-          stopFrameCapture(); // Use the dedicated stop function
-        }
-        // Fallback case
-        else {
+        } else if (mediaRecorderRef.current && mediaRecorderRef.current.frameCapture) {
+          stopFrameCapture();
+        } else {
           setIsRecording(false);
           stopTimer();
         }
       } else {
-        // Check if tracking is enabled before recording
-        if (!isPoseTracking) {
-          // Auto-enable pose tracking when starting recording
-          console.debug('[Squat] Auto-enabling pose tracking for recording');
-          startPoseDetection();
-          setIsPoseTracking(true);
-          
-          // Small delay to ensure pose tracking is initialized
-          setTimeout(() => {
+        // Function that really begins recording (after pose-tracker init)
+        const beginRecording = () => {
+          if (!isPoseTracking) {
+            console.debug('[Squat] Auto-enabling pose tracking for recording');
+            startPoseDetection();
+            setIsPoseTracking(true);
+            // Ensure detector has a brief moment to spin up
+            setTimeout(() => handleStartRecording(), 1000);
+          } else {
             handleStartRecording();
+          }
+        };
+        
+        if (recordingDelay > 0) {
+          // Start countdown overlay
+          setCountdown(recordingDelay);
+          countdownIntervalRef.current = setInterval(() => {
+            setCountdown((prev) => {
+              if (prev === 1) {
+                clearInterval(countdownIntervalRef.current);
+                countdownIntervalRef.current = null;
+                setCountdown(null);
+                beginRecording();
+                return null;
+              }
+              return prev - 1;
+            });
           }, 1000);
         } else {
-          handleStartRecording();
+          beginRecording();
         }
       }
     } catch (error) {
       console.error('[Squat] Error in toggleRecording:', error);
       setError(`Recording error: ${error.message}`);
     }
-  }, [isRecording, mediaRecorderRef, handleStopRecording, stopFrameCapture, setIsRecording, stopTimer, isPoseTracking, startPoseDetection, setIsPoseTracking, handleStartRecording, setError]);
+  }, [isRecording, countdown, recordingDelay, mediaRecorderRef, handleStopRecording, stopFrameCapture, setIsRecording, stopTimer, isPoseTracking, startPoseDetection, setIsPoseTracking, handleStartRecording, setError]);
 
   const toggleCameraFacing = () => {
     setIsFrontFacing(prev => !prev);
@@ -3064,9 +3109,15 @@ if (typeof onRecordingComplete === 'function') {
             (window.innerWidth < 400 ? 'Track' : 'Start Tracking')}
         </Button>
         
+        <DelaySelect value={recordingDelay} onChange={(e)=> setRecordingDelay(Number(e.target.value))}>
+          <option value={0}>0s</option>
+          <option value={3}>3s</option>
+          <option value={5}>5s</option>
+        </DelaySelect>
+        
         <Button
           onClick={toggleRecording}
-          disabled={isLoading || !isCameraReady}
+          disabled={isLoading || !isCameraReady || countdown !== null}
           style={{
             width:'48px', 
             height:'48px', 
@@ -3097,6 +3148,13 @@ if (typeof onRecordingComplete === 'function') {
           {isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
         </Button>
       </ControlsContainer>
+      
+      {/* Countdown overlay */}
+      {countdown !== null && (
+        <CountdownOverlay>
+          Recording starts in {countdown}s
+        </CountdownOverlay>
+      )}
       
       {!tfInitialized && showTFWarning && (
         <WarningMessage>

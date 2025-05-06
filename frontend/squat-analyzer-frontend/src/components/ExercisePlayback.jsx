@@ -683,252 +683,115 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
         const canvasWidth = ctx.canvas.width;
         const canvasHeight = ctx.canvas.height;
         let startX, startY;
-        let labelX, labelY;
-        const padding = 20; // Distance from edge
-        const labelPadding = 5; // Padding around label text
         
-        // Determine if point is closer to left/right or top/bottom edges
-        const distToLeft = targetX;
-        const distToRight = canvasWidth - targetX;
-        const distToTop = targetY;
-        const distToBottom = canvasHeight - targetY;
+        // Create column alignment points for overlay box (right edge)
+        const overlayLabel = canvasWidth - 20;
+        const overlayValue = canvasWidth - 20; // right edge for alignment
+
+        // Calculate height needed for all rows with extra padding
+        const rowCount = 9; // Total number of rows including scores and measurements
+        const bgHeight = (rowCount * 25) + 15; // Add padding at bottom to ensure last row is fully visible
         
-        const minDist = Math.min(distToLeft, distToRight, distToTop, distToBottom);
+        // Draw semi-transparent background (sized to content)
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        ctx.fillRect(
+          canvasWidth - 20,
+          0,
+          20,
+          bgHeight // background box with exact height
+        );
+
+        // --- Total Squat Score ---
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'left';
+        ctx.fillText('Total Squat Score:', overlayLabel, 30);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#ffd700';
+        ctx.fillText(`${mergedGlobalScores.totalScore !== undefined ? mergedGlobalScores.totalScore.toFixed(1) : 'N/A'}`, overlayValue, 30);
         
-        // MODIFIED: Only use left or right edges for feedback tips
-        // Determine if we should use the left or right side based on target position
-        const useLeftSide = targetX < canvasWidth / 2;
+        // --- Depth Score ---
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'left';
+        ctx.fillText('Depth Score:', overlayLabel, 55);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = colorFor(depthScore);
+        ctx.fillText(`${depthScore !== undefined ? depthScore.toFixed(1) : 'N/A'}`, overlayValue, 55);
         
-        if (useLeftSide) {
-          // Place on left side
-          startX = padding;
-          startY = targetY;
-          labelX = padding;
-          labelY = targetY - 10; // Position label above arrow start
-        } else {
-          // Place on right side
-          startX = canvasWidth - padding;
-          startY = targetY;
-          labelX = canvasWidth - padding;
-          labelY = targetY - 10; // Position label above arrow start
-        }
+        // --- Shoulder Alignment Score ---
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'left';
+        ctx.fillText('Shoulder Score:', overlayLabel, 80);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = colorFor(shoulderScore);
+        ctx.fillText(`${shoulderScore !== undefined ? shoulderScore.toFixed(1) : 'N/A'}`, overlayValue, 80);
         
-        // Draw arrow
-        ctx.strokeStyle = color;
-        ctx.fillStyle = color;
-        ctx.lineWidth = 3;
+        // --- Hip Flexion Score ---
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'left';
+        ctx.fillText('Hip Score:', overlayLabel, 105);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = colorFor(hipScore);
+        ctx.fillText(`${hipScore !== undefined ? hipScore.toFixed(1) : 'N/A'}`, overlayValue, 105);
         
-        ctx.beginPath();
-        ctx.moveTo(startX, startY);
-        ctx.lineTo(targetX, targetY);
-        ctx.stroke();
+        // --- Pelvic Tilt Score ---
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'left';
+        ctx.fillText('Pelvic Score:', overlayLabel, 130);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = colorFor(pelvicScore);
+        ctx.fillText(`${pelvicScore !== undefined ? pelvicScore.toFixed(1) : 'N/A'}`, overlayValue, 130);
         
-        // Draw arrow head
-        const angle = Math.atan2(targetY - startY, targetX - startX);
-        const headLen = 10;
-        const hx = targetX - headLen * Math.cos(angle - Math.PI / 6);
-        const hy = targetY - headLen * Math.sin(angle - Math.PI / 6);
-        const hx2 = targetX - headLen * Math.cos(angle + Math.PI / 6);
-        const hy2 = targetY - headLen * Math.sin(angle + Math.PI / 6);
-        ctx.beginPath();
-        ctx.moveTo(targetX, targetY);
-        ctx.lineTo(hx, hy);
-        ctx.moveTo(targetX, targetY);
-        ctx.lineTo(hx2, hy2);
-        ctx.stroke();
+        // --- Knee Angle ---
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'left';
+        ctx.fillText('Knee Angle:', overlayLabel, 155);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = colorFor(depthScore);
+        ctx.fillText(`${kneeAngle !== null ? Math.round(kneeAngle) : 'N/A'}°`, overlayValue, 155);
         
-        // Message text with improved positioning and background
-        if (message) {
-          const textPadding = labelPadding;
-          ctx.font = 'bold 14px Arial';
-          const textMetrics = ctx.measureText(message);
-          const textWidth = textMetrics.width;
-          const textHeight = 14; // Approximate height based on font size
-          
-          // MODIFIED: Position text only on left or right sides
-          if (useLeftSide) {
-            // Left side - align text left
-            labelX = padding * 2;
-            
-            // Ensure the text is vertically within canvas bounds and has some spacing between entries
-            // Map the target Y position to a range that prevents overlap between tips
-            const verticalPosition = (targetY / canvasHeight) * (canvasHeight - 4 * padding) + 2 * padding;
-            labelY = Math.max(textHeight + padding, Math.min(verticalPosition, canvasHeight - padding));
-          } else {
-            // Right side - align text right
-            labelX = canvasWidth - textWidth - (padding * 2);
-            
-            // Ensure the text is vertically within canvas bounds and has some spacing between entries
-            const verticalPosition = (targetY / canvasHeight) * (canvasHeight - 4 * padding) + 2 * padding;
-            labelY = Math.max(textHeight + padding, Math.min(verticalPosition, canvasHeight - padding));
-          }
-          
-          // Draw semi-transparent background for readability
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-          ctx.fillRect(
-            labelX - textPadding,
-            labelY - textHeight,
-            textWidth + 2 * textPadding,
-            textHeight + 2 * textPadding
-          );
-          
-          // Draw text
-          ctx.fillStyle = color; // Use arrow color for text
-          ctx.fillText(message, labelX, labelY);
+        // --- Shoulder-Midfoot Diff ---
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'left';
+        ctx.fillText('Shoulder-Midfoot Diff:', overlayLabel, 180);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = colorFor(shoulderScore);
+        ctx.fillText(`${shoulderMidfootDiff !== null ? shoulderMidfootDiff.toFixed(1) : 'N/A'}`, overlayValue, 180);
+        
+        // --- Pelvic Tilt ---
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'left';
+        ctx.fillText('Pelvic Tilt:', overlayLabel, 205);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = colorFor(pelvicScore);
+        ctx.fillText(`${pelvicAngle !== null ? Math.round(pelvicAngle) : 'N/A'}°`, overlayValue, 205);
+        
+        // --- Hip Flexion ---
+        ctx.fillStyle = 'white';
+        ctx.textAlign = 'left';
+        ctx.fillText('Hip Flexion:', overlayLabel, 230);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = colorFor(hipScore);
+        ctx.fillText(`${hipFlexionAngle !== null ? Math.round(hipFlexionAngle) : 'N/A'}°`, overlayValue, 230);
+        
+        if (window.DEBUG_OVERLAY) {
+          console.log(`Frame ${currentFrameIndex}: depth=${depthScore}, hip=${hipScore}, pelvic=${pelvicScore}, total=${mergedGlobalScores.totalScore}`);
         }
       });
-    }
-    
-    // *** ADD CALL TO DRAW KNEE ANGLE ARC ***
-    let arcDrawn = drawKneeAngleArc(ctx, frameData, 'left', isPortrait);
-    if (!arcDrawn) {
-      // If left side failed, try right side
-      drawKneeAngleArc(ctx, frameData, 'right', isPortrait);
-    }
-    // *** END KNEE ANGLE ARC DRAWING ***
-
-    // Draw measurements and analysis
-    if (frameData.measurements) {
-      const { kneeAngle, shoulderMidfootDiff, hipFlexionAngle, pelvicAngle } = frameData.measurements;
-      
-      // We used to skip drawing if both raw measurements missing. However we
-      // still want to display accumulated scores even when measurements are
-      // unavailable in this particular frame (e.g. keypoints occluded).
-      // Only skip if both measurements AND scores are absent.
-      const hasScores = frameData.scores || analysisData.scores;
-      if (kneeAngle === null && shoulderMidfootDiff === null && hipFlexionAngle === null && pelvicAngle === null && !hasScores) {
-        return;
-      }
-      
-      // Determine latest scores for color coding
-      const frameScores = frameData.scores || {};
-      const depthScore = frameScores.knee_depth !== undefined ? frameScores.knee_depth : mergedGlobalScores.kneeDepthScore;
-      const shoulderScore = frameScores.shoulder_align !== undefined ? frameScores.shoulder_align : mergedGlobalScores.shoulderAlignmentScore;
-      const hipScore = frameScores.hip_flexion !== undefined ? frameScores.hip_flexion : mergedGlobalScores.hipFlexionScore;
-      const pelvicScore = frameScores.pelvic_tilt !== undefined ? frameScores.pelvic_tilt : mergedGlobalScores.pelvicTiltScore;
-
-      // helper for color by score
-      const colorFor = (s) => {
-        if (s === undefined || s === null) return '#ffffff';
-        if (s >= 100) return '#22c55e'; // green
-        if (s >= 75) return '#38bdf8'; // blue
-        if (s >= 25) return '#facc15'; // yellow
-        return '#dc2626'; // red
-      };
-
-      // Position text box in top-right at edge of video
-      ctx.font = '16px Arial';
-      let yOffset = 30;
-      const overlayWidth = 240; // total width of the info box
-      const xOffset = ctx.canvas.width - overlayWidth; // align to right edge
-      const innerPad = 8; // padding inside box
-      
-      // Set consistent line height for all rows
-      const lineHeight = 25;
-      
-      // Create column alignment points with less space between
-      const labelX = xOffset + innerPad;
-      const valueX = xOffset + overlayWidth - innerPad; // right edge for alignment
-
-      // Calculate height needed for all rows with extra padding
-      const rowCount = 9; // Total number of rows including scores and measurements
-      const bgHeight = (rowCount * lineHeight) + 15; // Add padding at bottom to ensure last row is fully visible
-      
-      // Draw semi-transparent background (sized to content)
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-      ctx.fillRect(xOffset, 0, overlayWidth, bgHeight); // background box with exact height
-
-      // --- Total Squat Score ---
-      ctx.fillStyle = 'white';
-      ctx.textAlign = 'left';
-      ctx.fillText('Total Squat Score:', labelX, yOffset);
-      ctx.textAlign = 'right';
-      ctx.fillStyle = '#ffd700';
-      ctx.fillText(`${mergedGlobalScores.totalScore !== undefined ? mergedGlobalScores.totalScore.toFixed(1) : 'N/A'}`, valueX, yOffset);
-      yOffset += 25;
-
-      // --- Depth Score ---
-      ctx.fillStyle = 'white';
-      ctx.textAlign = 'left';
-      ctx.fillText('Depth Score:', labelX, yOffset);
-      ctx.textAlign = 'right';
-      ctx.fillStyle = colorFor(depthScore);
-      ctx.fillText(`${depthScore !== undefined ? depthScore.toFixed(1) : 'N/A'}`, valueX, yOffset);
-      yOffset += 25;
-
-      // --- Shoulder Alignment Score ---
-      ctx.fillStyle = 'white';
-      ctx.textAlign = 'left';
-      ctx.fillText('Shoulder Score:', labelX, yOffset);
-      ctx.textAlign = 'right';
-      ctx.fillStyle = colorFor(shoulderScore);
-      ctx.fillText(`${shoulderScore !== undefined ? shoulderScore.toFixed(1) : 'N/A'}`, valueX, yOffset);
-      yOffset += 25;
-
-      // --- Hip Flexion Score ---
-      ctx.fillStyle = 'white';
-      ctx.textAlign = 'left';
-      ctx.fillText('Hip Score:', labelX, yOffset);
-      ctx.textAlign = 'right';
-      ctx.fillStyle = colorFor(hipScore);
-      ctx.fillText(`${hipScore !== undefined ? hipScore.toFixed(1) : 'N/A'}`, valueX, yOffset);
-      yOffset += 25;
-
-      // --- Pelvic Tilt Score ---
-      ctx.fillStyle = 'white';
-      ctx.textAlign = 'left';
-      ctx.fillText('Pelvic Score:', labelX, yOffset);
-      ctx.textAlign = 'right';
-      ctx.fillStyle = colorFor(pelvicScore);
-      ctx.fillText(`${pelvicScore !== undefined ? pelvicScore.toFixed(1) : 'N/A'}`, valueX, yOffset);
-      yOffset += 25;
-
-      // --- Knee Angle ---
-      ctx.fillStyle = 'white';
-      ctx.textAlign = 'left';
-      ctx.fillText('Knee Angle:', labelX, yOffset);
-      ctx.textAlign = 'right';
-      ctx.fillStyle = colorFor(depthScore);
-      ctx.fillText(`${kneeAngle !== null ? Math.round(kneeAngle) : 'N/A'}°`, valueX, yOffset);
-      yOffset += 25;
-
-      // --- Shoulder-Midfoot Diff ---
-      ctx.fillStyle = 'white';
-      ctx.textAlign = 'left';
-      ctx.fillText('Shoulder-Midfoot Diff:', labelX, yOffset);
-      ctx.textAlign = 'right';
-      ctx.fillStyle = colorFor(shoulderScore);
-      ctx.fillText(`${shoulderMidfootDiff !== null ? shoulderMidfootDiff.toFixed(1) : 'N/A'}`, valueX, yOffset);
-      yOffset += 25;
-
-      // --- Pelvic Tilt ---
-      ctx.fillStyle = 'white';
-      ctx.textAlign = 'left';
-      ctx.fillText('Pelvic Tilt:', labelX, yOffset);
-      ctx.textAlign = 'right';
-      ctx.fillStyle = colorFor(pelvicScore);
-      ctx.fillText(`${pelvicAngle !== null ? Math.round(pelvicAngle) : 'N/A'}°`, valueX, yOffset);
-      yOffset += 25;
-
-      // --- Hip Flexion ---
-      ctx.fillStyle = 'white';
-      ctx.textAlign = 'left';
-      ctx.fillText('Hip Flexion:', labelX, yOffset);
-      ctx.textAlign = 'right';
-      ctx.fillStyle = colorFor(hipScore);
-      ctx.fillText(`${hipFlexionAngle !== null ? Math.round(hipFlexionAngle) : 'N/A'}°`, valueX, yOffset);
-      yOffset += 25;
-
-      if (window.DEBUG_OVERLAY) {
-        console.log(`Frame ${currentFrameIndex}: depth=${depthScore}, hip=${hipScore}, pelvic=${pelvicScore}, total=${mergedGlobalScores.totalScore}`);
-      }
-    }
+    } // Added closing bracket here
 
     // Draw frame indicator
     ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
     ctx.font = '12px Arial';
     ctx.fillText(`Frame: ${currentFrameIndex}, Time: ${frameData.timestamp.toFixed(2)}s`, 10, ctx.canvas.height - 10);
     
+    // Helper to map numeric scores to colors – defined once inside drawOverlays
+    function colorFor(score) {
+      if (score === undefined || score === null || isNaN(score)) return '#ffffff';
+      if (score >= 100) return '#22c55e';
+      if (score >= 75) return '#38bdf8';
+      if (score >= 25) return '#facc15';
+      return '#dc2626';
+    }
   }, [hasAnalysisData, analysisData, videoOrientation, transformCoordinates, findFrameIndex, mergedGlobalScores]);
 
   // Stable ref to latest drawOverlays to avoid re-creating listeners each render
@@ -1404,10 +1267,11 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
     }
   };
 
-  // Compute progress and remaining time
-  const estimatedLoadingTotalMs = duration * 1000;
-  const progressPercent = duration > 0 ? Math.min((elapsedLoadingTime / estimatedLoadingTotalMs) * 100, 99) : 0;
-  const remainingSeconds = duration > 0 ? Math.max(Math.ceil((estimatedLoadingTotalMs - elapsedLoadingTime) / 1000), 0) : 0;
+  // Compute a smoother progress bar that doesn't finish too early.
+  // We assume analysis might take ~1.5× the video length and we slow the curve using a square-root easing.
+  const estimatedTotalMs = duration * 1500; // 1.5 × duration for a safer upper bound
+  const progressFraction = duration > 0 ? Math.min(elapsedLoadingTime / estimatedTotalMs, 1) : 0;
+  const progressPercent = Math.floor(Math.sqrt(progressFraction) * 100);
 
   const shoulderDiffValues = useMemo(() => analysisData?.frames
     ?.map(f => f.measurements?.shoulderMidfootDiff)
@@ -1552,9 +1416,6 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
                   transition: 'width 0.2s'
                 }} />
               </div>
-              <p style={{ color: 'white', fontSize: '1em', marginTop: '0.5em' }}>
-                Estimated time remaining: {formatTime(remainingSeconds)}
-              </p>
             </div>
           )}
           {isFullscreen && (
