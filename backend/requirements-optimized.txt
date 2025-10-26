@@ -1,0 +1,24 @@
+# Core dependencies
+flask==3.0.2
+flask-cors==4.0.0
+psutil==5.9.8
+opencv-python==4.9.0.80
+numpy==1.26.4
+mediapipe==0.10.21
+pillow==10.2.0
+werkzeug==3.0.1
+requests==2.31.0
+gunicorn>=20.1.0,<21.0.0
+imageio==2.37.0
+
+# Performance optimization
+flask-compress==1.15
+
+# Monitoring (optional but recommended)
+# Uncomment to enable:
+# sentry-sdk==2.18.0
+# prometheus-flask-exporter==0.23.1
+
+# Use CPU-only ONNX runtime (150MB lighter than GPU version)
+# Only needed if MoveNet validation is enabled
+onnxruntime==1.21.1
