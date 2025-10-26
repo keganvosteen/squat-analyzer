@@ -1434,7 +1434,7 @@ const VideoCapture = ({ onFrameCapture, onRecordingComplete }) => {
       await initializeCamera(true, deviceId);
     } catch (err) {
       console.error('Failed to switch camera', err);
-      setErrorMessage('Failed to switch camera');
+      setError('Failed to switch camera');
     }
   }, []);
 

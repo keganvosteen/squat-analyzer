@@ -1,10 +1,7 @@
 // src/components/ExercisePlayback.jsx
-import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { Play, Pause, SkipForward, SkipBack, AlertTriangle, CheckCircle, Info, Maximize2, Minimize2, ArrowLeft, ArrowRight } from 'lucide-react';
+import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
+import { Play, Pause, AlertTriangle, Info, Minimize2, ArrowLeft, ArrowRight } from 'lucide-react';
 import styled from 'styled-components';
-
-// Thresholds for form status colours
-import { SPINE_THRESH, DEPTH_THRESH } from '../thresholds.js';
 
 // Map status → color (Tailwind palette refs)
 const statusColour = (status) => {
@@ -530,6 +527,16 @@ const ExercisePlayback = ({ videoUrl, videoBlob, analysisData, isLoading = false
     if (currentFrameIndex < 0 || currentFrameIndex >= analysisData.frames.length) return;
 
     const frameData = analysisData.frames[currentFrameIndex];
+
+    // Extract scores and measurements from frame data
+    const depthScore = frameData.scores?.depthScore ?? frameData.scores?.depth ?? mergedGlobalScores.depthScore;
+    const shoulderScore = frameData.scores?.shoulderScore ?? frameData.scores?.shoulder ?? mergedGlobalScores.shoulderScore;
+    const hipScore = frameData.scores?.hipScore ?? frameData.scores?.hip ?? mergedGlobalScores.hipScore;
+    const pelvicScore = frameData.scores?.pelvicScore ?? frameData.scores?.pelvic ?? mergedGlobalScores.pelvicScore;
+    const kneeAngle = frameData.measurements?.kneeAngle;
+    const shoulderMidfootDiff = frameData.measurements?.shoulderMidfootDiff;
+    const pelvicAngle = frameData.measurements?.pelvicAngle ?? frameData.measurements?.pelvicTilt;
+    const hipFlexionAngle = frameData.measurements?.hipFlexionAngle ?? frameData.measurements?.hipFlexion;
 
     // Interpolate with next frame if available for smoother motion
     let blendedKeypoints = frameData.keypoints || frameData.landmarks || [];

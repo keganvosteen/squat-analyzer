@@ -1,7 +1,7 @@
 // src/components/CameraSelector.jsx
-import React from 'react';
 import styled from 'styled-components';
 import { Camera } from 'lucide-react';
+import PropTypes from 'prop-types';
 
 const SelectorButton = styled.button`
   position: absolute;
@@ -108,6 +108,17 @@ const CameraSelector = ({ devices, selectedDeviceId, onSelect, showSelector, tog
       )}
     </>
   );
+};
+
+CameraSelector.propTypes = {
+  devices: PropTypes.arrayOf(PropTypes.shape({
+    deviceId: PropTypes.string.isRequired,
+    label: PropTypes.string
+  })),
+  selectedDeviceId: PropTypes.string,
+  onSelect: PropTypes.func.isRequired,
+  showSelector: PropTypes.bool.isRequired,
+  toggleSelector: PropTypes.func.isRequired
 };
 
 export default CameraSelector;

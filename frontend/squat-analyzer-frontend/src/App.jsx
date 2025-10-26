@@ -1,16 +1,14 @@
 // src/App.jsx
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import styled from 'styled-components';
 import axios from 'axios'; // Import axios
 import VideoCapture from './components/VideoCapture';
 import ExercisePlayback from './components/ExercisePlayback';
-import LocalAnalysis from './utils/LocalAnalysis'; // Import local analysis module (we'll create this)
 import ServerWarmup from './utils/ServerWarmup'; // Import server warmup utility
-// Import logo images 
+// Import logo images
 import './App.css';
 // Import logos directly
 import mbamsLogo from '/MBAMS_logo.png';
-import crownIcon from '/ColumbiaCrown.png';
 import smartSquatLogo from '/smartsquat.png';
 
 // Define the backend URL with a fallback
@@ -18,17 +16,6 @@ const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:5000';
 
 // Determine if we're in development mode
 const isDevelopment = import.meta.env.DEV;
-
-// Create an API URL that uses the local proxy in development
-const getApiUrl = (endpoint) => {
-  if (isDevelopment) {
-    // In development, use the Vite proxy
-    return endpoint; // e.g., '/analyze' will be proxied by Vite
-  } else {
-    // In production, use the full URL
-    return `${BACKEND_URL}${endpoint}`;
-  }
-};
 
 // Create a configured instance of axios with better CORS handling
 const api = axios.create({
@@ -104,18 +91,6 @@ const Logo = styled.img`
   object-fit: contain;
 `;
 
-const TextLogo = styled.div`
-  font-size: 18px;
-  font-weight: bold;
-  color: var(--text-primary);
-  margin: 0 20px;
-  text-align: center;
-  padding: 8px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  background-color: var(--bg-secondary);
-`;
-
 const ServerStatusMessage = styled.div`
   text-align: center;
   margin-bottom: 1rem;
@@ -135,22 +110,6 @@ const ServerStatusMessage = styled.div`
   display: ${props => props.$status === 'unknown' ? 'none' : 'block'};
 `;
 
-const ServerAction = styled.button`
-  background-color: var(--accent-color);
-  color: white;
-  border: none;
-  border-radius: 4px;
-  padding: 6px 12px;
-  font-size: 14px;
-  margin-left: 10px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  
-  &:hover {
-    background-color: #005ea8;
-  }
-`;
-
 const ServerStatusContainer = styled.div`
   display: flex;
   justify-content: center;
@@ -161,13 +120,11 @@ const ServerStatusContainer = styled.div`
 const App = () => {
   const [videoBlob, setVideoBlob] = useState(null);
   const [analysisData, setAnalysisData] = useState(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState(null);
   const [videoUrl, setVideoUrl] = useState(null);
   const [showPlayback, setShowPlayback] = useState(false);
   const [loading, setLoading] = useState(false);
   const [serverStatus, setServerStatus] = useState('unknown');
-  const [logoError, setLogoError] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(
     window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
   );
@@ -223,12 +180,6 @@ const App = () => {
     );
   }, [isDarkMode]);
 
-  // Logo error handler
-  const handleLogoError = () => {
-    console.error("Logo image failed to load");
-    setLogoError(true);
-  };
-
   // Start the server warmup service when the app loads
   useEffect(() => {
     // Check if we should force local analysis mode based on URL parameter
@@ -275,26 +226,6 @@ const App = () => {
         return 'Server is currently unavailable. Please try again later.';
       default:
         return 'Checking server status...';
-    }
-  };
-
-  // Function to directly check server status before sending analysis
-  const checkServerDirectly = async () => {
-    console.log("Performing direct server status check before analysis...");
-    try {
-      const analyzeEndpoint = isDevelopment ? '/ping' : `${BACKEND_URL}/ping`;
-      const response = await axios.get(analyzeEndpoint, { 
-        timeout: 5000,
-        validateStatus: function (status) {
-          return status < 500;
-        }
-      });
-      
-      console.log("Direct server check response:", response.data);
-      return response.status === 200 && response.data && response.data.status === "alive";
-    } catch (error) {
-      console.error("Direct server check failed:", error.message);
-      return false;
     }
   };
 
@@ -455,7 +386,7 @@ const App = () => {
     .catch(error => {
       console.log('[App.jsx] Entered .catch block'); // ADDED LOG
       clearTimeout(timeoutId);
-      setIsLoading(false);
+      setLoading(false);
       console.error("[App.jsx] Error in analysis fetch/processing:", error);
       
       // Log stack trace for better debugging
@@ -482,11 +413,11 @@ const App = () => {
         userErrorMessage = "Connection to analysis server failed. This may be due to network security settings.";
       } else if (errorMessage.includes("Failed to fetch") || errorMessage.includes("Network error")) {
         userErrorMessage = "Unable to connect to the analysis server. Please check your internet connection and try again.";
-      } else if (errorMessage.includes("Invalid response format") || errorMessage.includes("parse") || err instanceof SyntaxError) {
+      } else if (errorMessage.includes("Invalid response format") || errorMessage.includes("parse") || error instanceof SyntaxError) {
         userErrorMessage = "The server returned an invalid response. This may be due to the recording quality. Please try again with a clearer recording.";
-      } else if (err.name === 'AbortError') {
+      } else if (error.name === 'AbortError') {
         userErrorMessage = "The analysis request timed out. The video may be too large or the server is under heavy load.";
-      } else if (err instanceof TypeError) {
+      } else if (error instanceof TypeError) {
         userErrorMessage = "A network error occurred. Please check your connection and that the server is running.";
       }
       
@@ -523,18 +454,16 @@ const App = () => {
       <Container>
         <LogosContainer>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '45%' }}>
-            <Logo 
-              src={mbamsLogo} 
-              alt="MBA MS Logo" 
-              onError={handleLogoError}
+            <Logo
+              src={mbamsLogo}
+              alt="MBA MS Logo"
               style={{ marginTop: '25px' }}
             />
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', width: '45%', paddingBottom: '5px' }}>
-            <Logo 
-              src={smartSquatLogo} 
-              alt="SmartSquat Logo" 
-              onError={handleLogoError}
+            <Logo
+              src={smartSquatLogo}
+              alt="SmartSquat Logo"
               style={{ marginBottom: '-32px', maxWidth: '210px', marginTop: '4px' }}
             />
             <Title style={{ position: 'relative', zIndex: '-1' }}>SmartSquat</Title>
