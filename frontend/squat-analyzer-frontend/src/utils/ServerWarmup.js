@@ -167,40 +167,18 @@ const corsRequest = async (endpoint) => {
   } catch (fetchError) {
     console.warn(`[ServerWarmup] Direct CORS request failed: ${fetchError.message}`);
     
-    // If CORS error, try using a CORS proxy
-    try {
-      // Use a CORS proxy (this is a public one, consider setting up your own for production)
-      const corsProxyUrl = 'https://cors-anywhere.herokuapp.com/';
-      const proxyResponse = await fetch(corsProxyUrl + url, {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-          'Origin': window.location.origin
-        }
-      });
-      
-      if (proxyResponse.ok) {
-        return proxyResponse.json();
+    // If the server is hosted on render.com, it might be in a startup state
+    if (BACKEND_URL.includes('render.com')) {
+      // Check if this looks like a cold start issue
+      if (fetchError.message.includes('Failed to fetch') ||
+          fetchError.message.includes('Network Error')) {
+        console.log('[ServerWarmup] Render server appears to be in cold start mode');
+        updateServerStatus('starting');
       }
-      
-      throw new Error(`Proxy response: ${proxyResponse.status} ${proxyResponse.statusText}`);
-    } catch (proxyError) {
-      console.warn(`[ServerWarmup] CORS proxy request failed: ${proxyError.message}`);
-      
-      // If the server is hosted on render.com, it might be in a startup state
-      if (BACKEND_URL.includes('render.com')) {
-        // Check if this looks like a cold start issue
-        if (fetchError.message.includes('Failed to fetch') || 
-            fetchError.message.includes('Network Error')) {
-          console.log('[ServerWarmup] Render server appears to be in cold start mode');
-          updateServerStatus('starting');
-        }
-      }
-      
-      // All methods failed, throw error
-      throw new Error('All CORS request methods failed');
     }
+
+    // All methods failed, throw error
+    throw new Error('CORS request failed: ' + fetchError.message);
   }
 };
 

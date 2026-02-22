@@ -82,9 +82,11 @@ const analyzeVideo = async (blob, blobUrl) => {
     
     console.log(`Extracting ${frameCount} frames from ${duration.toFixed(2)}s video`);
     
-    // Use a simplified template for analysis data since we can't reliably extract frames
+    // DEMO MODE: We cannot perform real pose detection client-side, so we
+    // generate illustrative data.  The UI should indicate this clearly.
     const analysisData = {
       success: true,
+      isDemoMode: true,  // Flag so UI can show a "Demo Mode" badge
       fps: 3,
       frame_count: frameCount,
       landmarks: [], // Add a top-level landmarks array to match backend response
@@ -145,6 +147,7 @@ const analyzeImage = async (imageBlob, imageUrl, needsCleanup = false) => {
     
     const analysisData = {
       success: true,
+      isDemoMode: true,  // Flag so UI can show a "Demo Mode" badge
       fps: 2,
       frame_count: frameCount,
       isImageBased: true, // Add a flag indicating this is image-based analysis
@@ -203,6 +206,7 @@ const createFallbackAnalysisData = (frameCount = 10) => {
   // Create a minimal valid analysis result
   const fallbackData = {
     success: true,
+    isDemoMode: true,  // Flag so UI can show a "Demo Mode" badge
     fps: 3,
     frame_count: frameCount,
     landmarks: [],

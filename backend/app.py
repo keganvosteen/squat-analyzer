@@ -7,6 +7,7 @@
 # - For debugging, log raw request data length if file upload fails (see below).
 #
 from flask import Flask, request, jsonify, make_response
+from flask_compress import Compress
 from flask_cors import CORS, cross_origin
 import cv2
 import numpy as np
@@ -27,6 +28,7 @@ import psutil
 from werkzeug.utils import secure_filename
 import multiprocessing
 from concurrent.futures import ThreadPoolExecutor
+import threading
 import traceback
 import uuid
 import tempfile
@@ -36,6 +38,7 @@ import subprocess
 import json
 
 app = Flask(__name__)
+Compress(app)  # Enable gzip compression for JSON responses (~80% size reduction)
 import logging
 # Only show warnings and above in Flask logs
 app.logger.setLevel(logging.WARNING)
@@ -117,6 +120,9 @@ MODEL_PATH = os.path.join(os.path.dirname(__file__), 'models', f'pose_landmarker
 # Download and get the model path
 model_path = download_model(MODEL_URL, MODEL_PATH)
 
+# Lock to ensure only one thread uses the pose landmarker at a time (not thread-safe)
+pose_landmarker_lock = threading.Lock()
+
 # Initialize a global pose landmarker to reuse across requests and frames (helps memory)
 pose_landmarker_global = PoseLandmarker.create_from_options(
     PoseLandmarkerOptions(
@@ -129,11 +135,27 @@ pose_landmarker_global = PoseLandmarker.create_from_options(
 )
 
 # Global variables for squat state tracking
+# Use a max-size limit to prevent unbounded memory growth.
+MAX_SESSIONS = 200
+
 previous_states = {}
 squat_timings = {}
 squat_counts = {}
 # Global dictionary to store session start times
 session_start_times = {}
+
+def _cleanup_old_sessions():
+    """Remove the oldest sessions when MAX_SESSIONS is exceeded."""
+    if len(session_start_times) <= MAX_SESSIONS:
+        return
+    # Sort by start time, remove oldest until we're under the limit
+    sorted_sessions = sorted(session_start_times.items(), key=lambda kv: kv[1])
+    to_remove = len(session_start_times) - MAX_SESSIONS
+    for session_id, _ in sorted_sessions[:to_remove]:
+        previous_states.pop(session_id, None)
+        squat_timings.pop(session_id, None)
+        squat_counts.pop(session_id, None)
+        session_start_times.pop(session_id, None)
 
 # Allowed video file extensions
 ALLOWED_EXTENSIONS = {'mp4', 'webm', 'avi', 'mkv'}
@@ -250,28 +272,36 @@ def calculate_depth_ratio(hip, knee, ankle):
         app.logger.error(f"Error calculating depth ratio: {str(e)}")
         return 0  # Default fallback value
 
-def calculate_shoulder_midfoot_diff(shoulder, hip, knee, ankle):
-    """Calculate the horizontal difference between shoulder and midfoot position."""
+def calculate_shoulder_midfoot_diff(shoulder, hip, knee, ankle, heel=None, foot_index=None):
+    """Calculate the horizontal difference between shoulder and midfoot position.
+
+    Uses heel and foot_index landmarks for a true midfoot position when available,
+    falls back to ankle if those landmarks are missing.
+    """
     try:
-        # Get coordinates safely, handling all possible data formats
-        shoulder_x = 0
-        midfoot_x = 0
-        
-        # Get shoulder x-coordinate
-        if isinstance(shoulder, dict):
-            shoulder_x = shoulder.get('x', 0)
-        elif hasattr(shoulder, 'x'):
-            shoulder_x = shoulder.x
-        
-        # Get ankle x-coordinate
-        if isinstance(ankle, dict):
-            midfoot_x = ankle.get('x', 0)
-        elif hasattr(ankle, 'x'):
-            midfoot_x = ankle.x
-            
+        def get_x(pt):
+            if pt is None:
+                return None
+            if isinstance(pt, dict):
+                return pt.get('x', 0)
+            elif hasattr(pt, 'x'):
+                return pt.x
+            return 0
+
+        shoulder_x = get_x(shoulder)
+
+        # Calculate true midfoot from heel and toe if available
+        heel_x = get_x(heel)
+        toe_x = get_x(foot_index)
+        if heel_x is not None and toe_x is not None and (heel_x != 0 or toe_x != 0):
+            midfoot_x = (heel_x + toe_x) / 2.0
+        else:
+            # Fallback to ankle
+            midfoot_x = get_x(ankle)
+
         # Return the difference with sign to indicate direction (positive = shoulders in front of midfoot)
         # which is what we want to detect for forward lean
-        return (shoulder_x - midfoot_x) * 100  # Convert to pixels
+        return (shoulder_x - midfoot_x) * 100  # Convert to percentage-scale
     except Exception as e:
         app.logger.error(f"Error calculating shoulder-midfoot difference: {str(e)}")
         return 0  # Default fallback value
@@ -339,13 +369,15 @@ def analyze_frame(frame, session_id=None):
         if session_id is None:
             session_id = "default"
         if session_id not in previous_states:
+            _cleanup_old_sessions()
             previous_states[session_id] = "standing"
             squat_counts[session_id] = 0
             squat_timings[session_id] = []
             session_start_times[session_id] = time.time()
         image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=image_rgb)
-        detection_result = pose_landmarker_global.detect(mp_image)
+        with pose_landmarker_lock:
+            detection_result = pose_landmarker_global.detect(mp_image)
         feedback = {
             "landmarks": None,
             "feedback": [],
@@ -827,6 +859,9 @@ def analyze_video():
         process = psutil.Process(os.getpid())
         mem_mb = process.memory_info().rss / 1024 / 1024
         app.logger.info(f"[MEMORY] Before extraction: {mem_mb:.2f} MB")
+        # Flag: set to True when image-fallback already produced frames_to_process
+        goto_processing = False
+
         # Initialize video capture (explicitly request FFMPEG backend for better codec support)
         # Try multiple video backends if first one fails
         cap = cv2.VideoCapture(temp_path, cv2.CAP_FFMPEG)
@@ -866,9 +901,6 @@ def analyze_video():
                     return jsonify({'error': 'Could not open video file – file may be corrupted or in an unsupported format'}), 400
             else:
                 app.logger.warning(f"Opened with default backend instead of FFMPEG: {temp_path}")
-        
-        # Store flag to skip video processing if we used the image fallback
-        goto_processing = False
         
         # Get video properties
         fps = int(cap.get(cv2.CAP_PROP_FPS))
@@ -1056,8 +1088,13 @@ def analyze_video():
                         extraction_interval = max(1, frame_count // extract_count)
                         # Use a simpler approach with -r to avoid filter syntax issues
                         target_fps = max(1, min(30, int(fps / extraction_interval)))
-                        ffmpeg_cmd = f"ffmpeg -i {temp_path} -r {target_fps} -q:v 1 {tmpdirname}/frame_%04d.jpg"
-                        os.system(ffmpeg_cmd)
+                        ffmpeg_cmd = [
+                            'ffmpeg', '-i', temp_path,
+                            '-r', str(target_fps),
+                            '-q:v', '1',
+                            os.path.join(tmpdirname, 'frame_%04d.jpg')
+                        ]
+                        subprocess.run(ffmpeg_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         
                         # Load the extracted frames
                         ffmpeg_frames = []
@@ -1152,9 +1189,10 @@ def analyze_video():
         current_phase = 'down'    # Always consider in 'down' phase to capture lowest angle
         current_squat_min_knee = 180
         phase_idx = 0
-            
+        baseline_pelvic_angle = None  # neutral pelvic angle from first visible frame
+
         app.logger.info(f"USING SIMPLIFIED SQUAT LOGIC - all frames treated as in a squat")
-        
+
         current_squat_min_knee = 180.0  # track lowest knee angle in ongoing squat
 
         def process_frame(frame_data):
@@ -1172,7 +1210,8 @@ def analyze_video():
             app.logger.warning(f"[MEM_DIAG] BEFORE POSE INFERENCE: RSS={rss_mb:.1f} MB, frame={frame_idx}, time={time.time() - t_start:.2f}s")
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb_contiguous) # Use contiguous array
             # Use the global landmarker (reduces per‑frame memory usage)
-            detection_result = pose_landmarker_global.detect(mp_image)
+            with pose_landmarker_lock:
+                detection_result = pose_landmarker_global.detect(mp_image)
             rss_mb = process.memory_info().rss / 1024 / 1024
             app.logger.warning(f"[MEM_DIAG] AFTER POSE INFERENCE: RSS={rss_mb:.1f} MB, frame={frame_idx}, time={time.time() - t_start:.2f}s")
             if not detection_result.pose_landmarks:
@@ -1243,35 +1282,47 @@ def analyze_video():
             shoulder_midfoot_diff = None
             hip_flexion_angle = None
             pelvic_angle = None
+            # Track the hip/knee/ankle used for depth_ratio
+            depth_hip = depth_knee = depth_ankle = None
+
             # Compute right side metrics if visible
             right_knee_angle = None
             if joints_visible([POSE_LANDMARKS.RIGHT_HIP, POSE_LANDMARKS.RIGHT_KNEE, POSE_LANDMARKS.RIGHT_ANKLE], lm):
-                hip = lm[POSE_LANDMARKS.RIGHT_HIP]; knee = lm[POSE_LANDMARKS.RIGHT_KNEE]; ankle = lm[POSE_LANDMARKS.RIGHT_ANKLE]
-                right_knee_angle = calculate_angle(hip, knee, ankle)
+                r_hip = lm[POSE_LANDMARKS.RIGHT_HIP]; r_knee = lm[POSE_LANDMARKS.RIGHT_KNEE]; r_ankle = lm[POSE_LANDMARKS.RIGHT_ANKLE]
+                right_knee_angle = calculate_angle(r_hip, r_knee, r_ankle)
             # Compute left side metrics if visible
             left_knee_angle = None
             if joints_visible([POSE_LANDMARKS.LEFT_HIP, POSE_LANDMARKS.LEFT_KNEE, POSE_LANDMARKS.LEFT_ANKLE], lm):
-                hip_l = lm[POSE_LANDMARKS.LEFT_HIP]; knee_l = lm[POSE_LANDMARKS.LEFT_KNEE]; ankle_l = lm[POSE_LANDMARKS.LEFT_ANKLE]
-                left_knee_angle = calculate_angle(hip_l, knee_l, ankle_l)
+                l_hip = lm[POSE_LANDMARKS.LEFT_HIP]; l_knee = lm[POSE_LANDMARKS.LEFT_KNEE]; l_ankle = lm[POSE_LANDMARKS.LEFT_ANKLE]
+                left_knee_angle = calculate_angle(l_hip, l_knee, l_ankle)
             # Choose the deeper (smaller) knee angle if both available
             knee_angle_candidates = [a for a in [right_knee_angle, left_knee_angle] if a is not None]
             if knee_angle_candidates:
                 knee_angle = min(knee_angle_candidates)
-            
-            # depth_ratio calculation uses whichever side knee_angle used
-            if knee_angle is not None and hip is not None and ankle is not None and knee is not None:
-                depth_ratio = calculate_depth_ratio(hip, knee, ankle)
+                # Use the landmarks from whichever side was deeper
+                if knee_angle == right_knee_angle and right_knee_angle is not None:
+                    depth_hip, depth_knee, depth_ankle = r_hip, r_knee, r_ankle
+                elif left_knee_angle is not None:
+                    depth_hip, depth_knee, depth_ankle = l_hip, l_knee, l_ankle
+
+            # depth_ratio calculation uses whichever side provided the knee_angle
+            if knee_angle is not None and depth_hip is not None:
+                depth_ratio = calculate_depth_ratio(depth_hip, depth_knee, depth_ankle)
             
             # Shoulder-midfoot diff (take maximum absolute from both sides)
             shoulder_diffs = []
             # right
             if joints_visible([POSE_LANDMARKS.RIGHT_SHOULDER, POSE_LANDMARKS.RIGHT_HIP, POSE_LANDMARKS.RIGHT_KNEE, POSE_LANDMARKS.RIGHT_ANKLE], lm):
                 shoulder = lm[POSE_LANDMARKS.RIGHT_SHOULDER]; hip_r = lm[POSE_LANDMARKS.RIGHT_HIP]; knee_r = lm[POSE_LANDMARKS.RIGHT_KNEE]; ankle_r = lm[POSE_LANDMARKS.RIGHT_ANKLE]
-                shoulder_diffs.append(calculate_shoulder_midfoot_diff(shoulder, hip_r, knee_r, ankle_r))
+                heel_r = lm[POSE_LANDMARKS.RIGHT_HEEL] if len(lm) > POSE_LANDMARKS.RIGHT_HEEL else None
+                foot_r = lm[POSE_LANDMARKS.RIGHT_FOOT_INDEX] if len(lm) > POSE_LANDMARKS.RIGHT_FOOT_INDEX else None
+                shoulder_diffs.append(calculate_shoulder_midfoot_diff(shoulder, hip_r, knee_r, ankle_r, heel=heel_r, foot_index=foot_r))
             # left
             if joints_visible([POSE_LANDMARKS.LEFT_SHOULDER, POSE_LANDMARKS.LEFT_HIP, POSE_LANDMARKS.LEFT_KNEE, POSE_LANDMARKS.LEFT_ANKLE], lm):
                 shoulder_l = lm[POSE_LANDMARKS.LEFT_SHOULDER]; hip_l2 = lm[POSE_LANDMARKS.LEFT_HIP]; knee_l2 = lm[POSE_LANDMARKS.LEFT_KNEE]; ankle_l2 = lm[POSE_LANDMARKS.LEFT_ANKLE]
-                shoulder_diffs.append(calculate_shoulder_midfoot_diff(shoulder_l, hip_l2, knee_l2, ankle_l2))
+                heel_l = lm[POSE_LANDMARKS.LEFT_HEEL] if len(lm) > POSE_LANDMARKS.LEFT_HEEL else None
+                foot_l = lm[POSE_LANDMARKS.LEFT_FOOT_INDEX] if len(lm) > POSE_LANDMARKS.LEFT_FOOT_INDEX else None
+                shoulder_diffs.append(calculate_shoulder_midfoot_diff(shoulder_l, hip_l2, knee_l2, ankle_l2, heel=heel_l, foot_index=foot_l))
             if shoulder_diffs:
                 # Remove any None values to avoid TypeErrors with abs(None)
                 valid_diffs = [d for d in shoulder_diffs if d is not None]
@@ -1306,8 +1357,11 @@ def analyze_video():
                 # Use the mean of available sides to be neutral
                 hip_flexion_angle = sum(hip_flexion_candidates) / len(hip_flexion_candidates)
             
-            # Pelvic angle
-            pelvic_angle = calculate_pelvic_angle(lm) if lm else None
+            # Pelvic angle — store delta from standing baseline
+            raw_pelvic_angle = calculate_pelvic_angle(lm) if lm else None
+            if raw_pelvic_angle is not None and baseline_pelvic_angle is None:
+                baseline_pelvic_angle = raw_pelvic_angle  # first visible frame = neutral
+            pelvic_angle = (raw_pelvic_angle - baseline_pelvic_angle) if (raw_pelvic_angle is not None and baseline_pelvic_angle is not None) else None
 
             # E. Add kneesVisible boolean to frame payload
             return {

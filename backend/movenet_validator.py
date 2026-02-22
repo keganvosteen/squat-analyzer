@@ -36,12 +36,21 @@ except Exception as e:
 _INP  = _ort_sess.get_inputs()[0].name
 _OUT  = _ort_sess.get_outputs()[0].name
 
-# MoveNet index → MediaPipe index (17 body points)
+# MoveNet index → MediaPipe-aligned order (17 body points)
+# MoveNet native order: 0=nose, 1=L_eye, 2=R_eye, 3=L_ear, 4=R_ear,
+#   5=L_shoulder, 6=R_shoulder, 7=L_elbow, 8=R_elbow,
+#   9=L_wrist, 10=R_wrist, 11=L_hip, 12=R_hip,
+#   13=L_knee, 14=R_knee, 15=L_ankle, 16=R_ankle
+# MediaPipe body order (indices 11+): 11=L_shoulder, 12=R_shoulder,
+#   13=L_elbow, 14=R_elbow, 15=L_wrist, 16=R_wrist,
+#   23=L_hip, 24=R_hip, 25=L_knee, 26=R_knee, 27=L_ankle, 28=R_ankle
+# We keep MoveNet's native 0-16 order since cross-validation compares
+# starting at index 5, which aligns correctly without reordering.
 _MP_ORDER = [
-     0, 1, 2, 3, 4,      # nose, eyes, ears
-     5, 7, 6, 8,         # shoulders L,R  – elbows L,R
-     9, 11, 10, 12,      # wrists   L,R  – hips   L,R
-    13, 15, 14, 16       # knees    L,R  – ankles L,R
+     0, 1, 2, 3, 4,      # nose, L_eye, R_eye, L_ear, R_ear
+     5, 6, 7, 8,          # L_shoulder, R_shoulder, L_elbow, R_elbow
+     9, 10, 11, 12,       # L_wrist, R_wrist, L_hip, R_hip
+    13, 14, 15, 16        # L_knee, R_knee, L_ankle, R_ankle
 ]
 
 def infer_pose_bgr(frame_bgr: np.ndarray) -> np.ndarray:

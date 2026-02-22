@@ -455,7 +455,7 @@ const App = () => {
     .catch(error => {
       console.log('[App.jsx] Entered .catch block'); // ADDED LOG
       clearTimeout(timeoutId);
-      setIsLoading(false);
+      setLoading(false);
       console.error("[App.jsx] Error in analysis fetch/processing:", error);
       
       // Log stack trace for better debugging
@@ -474,19 +474,19 @@ const App = () => {
       
       const errorMessage = error.message || "Unknown error occurred";
       console.error(`[App.jsx] Error message: ${errorMessage}`);
-      
+
       // Enhanced error message that's more user-friendly
       let userErrorMessage = errorMessage;
-      
+
       if (errorMessage.includes("CORS")) {
         userErrorMessage = "Connection to analysis server failed. This may be due to network security settings.";
       } else if (errorMessage.includes("Failed to fetch") || errorMessage.includes("Network error")) {
         userErrorMessage = "Unable to connect to the analysis server. Please check your internet connection and try again.";
-      } else if (errorMessage.includes("Invalid response format") || errorMessage.includes("parse") || err instanceof SyntaxError) {
+      } else if (errorMessage.includes("Invalid response format") || errorMessage.includes("parse") || error instanceof SyntaxError) {
         userErrorMessage = "The server returned an invalid response. This may be due to the recording quality. Please try again with a clearer recording.";
-      } else if (err.name === 'AbortError') {
+      } else if (error.name === 'AbortError') {
         userErrorMessage = "The analysis request timed out. The video may be too large or the server is under heavy load.";
-      } else if (err instanceof TypeError) {
+      } else if (error instanceof TypeError) {
         userErrorMessage = "A network error occurred. Please check your connection and that the server is running.";
       }
       
