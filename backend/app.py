@@ -163,114 +163,88 @@ ALLOWED_EXTENSIONS = {'mp4', 'webm', 'avi', 'mkv'}
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def _get_coord(pt, axis, default=0):
+    """Extract a coordinate from a dict or object, returning *default* when missing."""
+    if isinstance(pt, (list, tuple)):
+        idx = {'x': 0, 'y': 1, 'z': 2}.get(axis, 0)
+        return pt[idx] if idx < len(pt) else default
+    if isinstance(pt, dict):
+        return pt.get(axis, default)
+    return getattr(pt, axis, default)
+
+
 def calculate_angle(a, b, c):
-    """Calculate the angle between three points with stability checks."""
+    """Calculate the angle (degrees) at vertex *b* formed by points a-b-c.
+
+    Uses the Z coordinate when all three points supply one, giving a true
+    3-D angle that is not distorted by camera perspective.  Falls back to
+    2-D (X, Y only) when Z is unavailable.
+    """
     try:
-        # Get coordinates with fallbacks for all possible data formats
-        try:
-            # Try dictionary access first with proper conditional expressions
-            a_x = a.get('x', 0) if isinstance(a, dict) else (a.x if hasattr(a, 'x') else 0)
-            a_y = a.get('y', 0) if isinstance(a, dict) else (a.y if hasattr(a, 'y') else 0)
-            
-            b_x = b.get('x', 0) if isinstance(b, dict) else (b.x if hasattr(b, 'x') else 0)
-            b_y = b.get('y', 0) if isinstance(b, dict) else (b.y if hasattr(b, 'y') else 0)
-            
-            c_x = c.get('x', 0) if isinstance(c, dict) else (c.x if hasattr(c, 'x') else 0)
-            c_y = c.get('y', 0) if isinstance(c, dict) else (c.y if hasattr(c, 'y') else 0)
-        except Exception:
-            # More explicit approach if the above fails
-            if isinstance(a, dict):
-                a_x, a_y = a.get('x', 0), a.get('y', 0)
-            elif hasattr(a, 'x') and hasattr(a, 'y'):
-                a_x, a_y = a.x, a.y
-            else:
-                a_x, a_y = 0, 0
-                
-            if isinstance(b, dict):
-                b_x, b_y = b.get('x', 0), b.get('y', 0)
-            elif hasattr(b, 'x') and hasattr(b, 'y'):
-                b_x, b_y = b.x, b.y
-            else:
-                b_x, b_y = 0, 0
-                
-            if isinstance(c, dict):
-                c_x, c_y = c.get('x', 0), c.get('y', 0)
-            elif hasattr(c, 'x') and hasattr(c, 'y'):
-                c_x, c_y = c.x, c.y
-            else:
-                c_x, c_y = 0, 0
-            
-        # Calculate vectors
-        ba_x, ba_y = a_x - b_x, a_y - b_y
-        bc_x, bc_y = c_x - b_x, c_y - b_y
-        
-        # Calculate dot product
-        dot_product = (ba_x * bc_x + ba_y * bc_y)
-        
-        # Calculate magnitudes
-        magnitude_ba = math.sqrt(ba_x**2 + ba_y**2)
-        magnitude_bc = math.sqrt(bc_x**2 + bc_y**2)
-        
-        # Handle division by zero
-        if magnitude_ba < 1e-6 or magnitude_bc < 1e-6:
+        a_x, a_y = _get_coord(a, 'x'), _get_coord(a, 'y')
+        b_x, b_y = _get_coord(b, 'x'), _get_coord(b, 'y')
+        c_x, c_y = _get_coord(c, 'x'), _get_coord(c, 'y')
+
+        # Use Z axis when all three points have it (non-zero)
+        a_z = _get_coord(a, 'z', None)
+        b_z = _get_coord(b, 'z', None)
+        c_z = _get_coord(c, 'z', None)
+        use_3d = (a_z is not None and b_z is not None and c_z is not None
+                  and not (a_z == 0 and b_z == 0 and c_z == 0))
+
+        if use_3d:
+            ba = (a_x - b_x, a_y - b_y, a_z - b_z)
+            bc = (c_x - b_x, c_y - b_y, c_z - b_z)
+            dot = ba[0]*bc[0] + ba[1]*bc[1] + ba[2]*bc[2]
+            mag_ba = math.sqrt(ba[0]**2 + ba[1]**2 + ba[2]**2)
+            mag_bc = math.sqrt(bc[0]**2 + bc[1]**2 + bc[2]**2)
+        else:
+            ba = (a_x - b_x, a_y - b_y)
+            bc = (c_x - b_x, c_y - b_y)
+            dot = ba[0]*bc[0] + ba[1]*bc[1]
+            mag_ba = math.sqrt(ba[0]**2 + ba[1]**2)
+            mag_bc = math.sqrt(bc[0]**2 + bc[1]**2)
+
+        if mag_ba < 1e-6 or mag_bc < 1e-6:
             return 0
-            
-        # Calculate cosine of angle
-        cosine_angle = dot_product / (magnitude_ba * magnitude_bc)
-        
-        # Clamp to valid range to handle floating point errors
-        cosine_angle = max(-1, min(1, cosine_angle))
-        
-        # Calculate angle in degrees
-        angle_rad = math.acos(cosine_angle)
-        angle_deg = math.degrees(angle_rad)
-        
-        return angle_deg
+
+        cosine_angle = max(-1, min(1, dot / (mag_ba * mag_bc)))
+        return math.degrees(math.acos(cosine_angle))
     except Exception as e:
         app.logger.error(f"Error calculating angle: {str(e)}")
-        return 0  # Default fallback value
+        return 0
 
 def calculate_depth_ratio(hip, knee, ankle):
-    """Calculate the depth ratio based on hip, knee, and ankle positions."""
+    """Calculate how deep the hip drops relative to the hip-to-ankle span.
+
+    Returns 0-100 where:
+      0  = hip at same level as ankle (standing)
+      50 = hip halfway between standing height and ankle
+      100 = hip at ankle level (extremely deep squat)
+
+    Uses (hip_y - standing_hip_y) normalised by the full hip-to-ankle
+    distance.  Since we don't track standing posture, we approximate:
+    ratio = (hip_y - knee_y) / (ankle_y - knee_y) for the portion below
+    the knee.  Clamped to [0, 100].
+    """
     try:
-        # Get coordinates safely, handling all possible data formats
-        hip_y = 0
-        knee_y = 0
-        ankle_y = 0
-        
-        # Get hip y-coordinate
-        if isinstance(hip, dict):
-            hip_y = hip.get('y', 0)
-        elif hasattr(hip, 'y'):
-            hip_y = hip.y
-        
-        # Get knee y-coordinate
-        if isinstance(knee, dict):
-            knee_y = knee.get('y', 0)
-        elif hasattr(knee, 'y'):
-            knee_y = knee.y
-            
-        # Get ankle y-coordinate
-        if isinstance(ankle, dict):
-            ankle_y = ankle.get('y', 0)
-        elif hasattr(ankle, 'y'):
-            ankle_y = ankle.y
-            
-        # Calculate distances
-        hip_to_knee = abs(hip_y - knee_y)
-        knee_to_ankle = abs(knee_y - ankle_y)
+        hip_y = _get_coord(hip, 'y')
+        knee_y = _get_coord(knee, 'y')
+        ankle_y = _get_coord(ankle, 'y')
+
         hip_to_ankle = abs(hip_y - ankle_y)
-        
         if hip_to_ankle < 1e-6:
             return 0
-            
-        # Calculate ratio
-        depth_ratio = knee_y / hip_to_ankle
-        
-        return depth_ratio * 100  # Scale for readability
+
+        # How far hip has descended toward ankle (0 = at original hip height,
+        # 1 = at ankle level).  In image coords Y increases downward, so a
+        # deeper squat means hip_y is closer to ankle_y.
+        # Normalise hip position between its own start (top) and ankle (bottom).
+        ratio = (hip_y - min(hip_y, knee_y, ankle_y)) / hip_to_ankle
+        return max(0.0, min(100.0, ratio * 100.0))
     except Exception as e:
         app.logger.error(f"Error calculating depth ratio: {str(e)}")
-        return 0  # Default fallback value
+        return 0
 
 def calculate_shoulder_midfoot_diff(shoulder, hip, knee, ankle, heel=None, foot_index=None):
     """Calculate the horizontal difference between shoulder and midfoot position.
@@ -427,9 +401,13 @@ def validate_video_metadata(cap, video_file):
     width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     
-    # Detect if video is rotated (mobile portrait mode)
-    is_portrait_video = height > width
-    app.logger.info(f"Video dimensions: {width}x{height}, orientation: {'portrait' if is_portrait_video else 'landscape'}")
+    # Detect if video is rotated (mobile portrait mode).
+    # Also check OpenCV's orientation flag — some backends auto-rotate based on
+    # metadata, in which case we should NOT rotate again.
+    orientation_flag = cap.get(cv2.CAP_PROP_ORIENTATION_AUTO)
+    auto_rotated = orientation_flag == 1
+    is_portrait_video = (height > width) and not auto_rotated
+    app.logger.info(f"Video dimensions: {width}x{height}, orientation: {'portrait' if is_portrait_video else 'landscape'}, auto_rotated={auto_rotated}")
 
     # --- Improved Metadata Validation ---
     duration_msec = cap.get(cv2.CAP_PROP_POS_MSEC) # Get duration in milliseconds
@@ -667,6 +645,30 @@ def calc_pelvic_tilt_score(delta_angle):
         return 0.0
     return (15 - delta_angle) / 10.0 * 100.0
 
+def calculate_knee_valgus(lm):
+    """Detect knee valgus (knees caving inward) by comparing knee X spread to ankle X spread.
+
+    Returns a ratio: knee_spread / ankle_spread.
+    - ~1.0 = knees tracking over ankles (ideal)
+    - < 0.8 = knees caving inward (valgus)
+    - > 1.2 = knees bowing outward (varus, less common)
+    Returns None if landmarks are unavailable.
+    """
+    try:
+        lk = lm[POSE_LANDMARKS.LEFT_KNEE]
+        rk = lm[POSE_LANDMARKS.RIGHT_KNEE]
+        la = lm[POSE_LANDMARKS.LEFT_ANKLE]
+        ra = lm[POSE_LANDMARKS.RIGHT_ANKLE]
+    except (IndexError, KeyError, TypeError):
+        return None
+
+    knee_spread = abs(lk['x'] - rk['x'])
+    ankle_spread = abs(la['x'] - ra['x'])
+    if ankle_spread < 1e-6:
+        return None
+    return knee_spread / ankle_spread
+
+
 def calculate_pelvic_angle(lm):
     """Approximate pelvic/trunk angle (°) in the sagittal plane using hip & shoulder centres.
     0° means perfectly vertical trunk, positive values = leaning forward.
@@ -902,70 +904,18 @@ def analyze_video():
             else:
                 app.logger.warning(f"Opened with default backend instead of FFMPEG: {temp_path}")
         
-        # Get video properties
-        fps = int(cap.get(cv2.CAP_PROP_FPS))
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        # Get video properties using the extracted helper (avoid duplicating validation logic)
+        fps, frame_count, width, height, is_portrait_video, duration_sec = validate_video_metadata(cap, file)
         
-        # Detect if video is rotated (mobile portrait mode)
-        is_portrait_video = height > width
-        app.logger.info(f"Video dimensions: {width}x{height}, orientation: {'portrait' if is_portrait_video else 'landscape'}")
+        # Adaptive frame sampling: use every 3rd frame for videos >120 frames
+        # (saves ~60% processing time).  Short videos are processed densely.
+        if frame_count > 120:
+            frame_skip = 3
+        else:
+            frame_skip = 1
+        app.logger.info(f"Frame skip = {frame_skip} (adaptive: frame_count={frame_count})")
 
-        # --- Improved Metadata Validation ---
-        duration_msec = cap.get(cv2.CAP_PROP_POS_MSEC) # Get duration in milliseconds
-        if duration_msec <= 0:
-           cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 1) # Seek to end if needed
-           duration_msec = cap.get(cv2.CAP_PROP_POS_MSEC)
-           cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 0) # Reset to beginning
-        
-        duration_sec = duration_msec / 1000.0 if duration_msec > 0 else 0.0
-        app.logger.info(f"Raw metadata: FPS={fps}, FrameCount={frame_count}, Duration={duration_sec:.2f}s")
-
-        # Validate FPS
-        if fps <= 0 or fps > 120 or fps == 1000: # 1000 is an invalid value often seen
-            app.logger.warning(f"Invalid FPS: {fps}. Attempting recalculation or using default.")
-            if duration_sec > 0 and frame_count > 0 and frame_count < 100000:
-                calculated_fps = frame_count / duration_sec
-                if calculated_fps > 0 and calculated_fps <= 120:
-                    fps = round(calculated_fps)
-                    app.logger.warning(f"Recalculated FPS based on duration/frameCount: {fps}")
-                else:
-                   fps = 30 # Default FPS
-                   app.logger.warning(f"Recalculation failed, defaulting FPS to {fps}")
-            else:
-                fps = 30 # Default FPS
-                app.logger.warning(f"Cannot recalculate, defaulting FPS to {fps}")
-        
-        # Validate Frame Count - recalculate if invalid or inconsistent with duration
-        expected_frame_count = int(duration_sec * fps) if duration_sec > 0 and fps > 0 else 0
-        # Check for large negative numbers or zero/small counts if duration is reasonable
-        is_frame_count_invalid = frame_count < 0 or (duration_sec > 0.5 and frame_count <= 1)
-        # Check for significant mismatch with duration
-        is_frame_count_mismatch = expected_frame_count > 0 and abs(frame_count - expected_frame_count) > (expected_frame_count * 0.5)
-        if is_frame_count_invalid or is_frame_count_mismatch:
-            app.logger.warning(f"Invalid/mismatched frame count: {frame_count}. Expected based on duration: ~{expected_frame_count}")
-            if expected_frame_count > 0:
-                frame_count = expected_frame_count
-                app.logger.warning(f"Using frame count calculated from duration: {frame_count}")
-            else:
-                 # If duration is also zero, estimate based on file size (rough)
-                 file_size_mb = file.content_length / (1024 * 1024)
-                 estimated_duration = max(1, file_size_mb * 8) # Assume ~8s per MB, min 1s
-                 frame_count = int(estimated_duration * fps)
-                 app.logger.warning(f"Estimating frame count based on file size: {frame_count}")
-
-        # Ensure frame_count is reasonable after all calculations
-        frame_count = max(10, min(frame_count, 1500)) # Allow slightly more frames, up to 1500
-        # --- End Improved Metadata Validation ---
-
-        app.logger.info(f"Validated video properties: FPS={fps}, frame_count={frame_count}, duration={duration_sec:.2f}s")
-        
-        # Force dense frame processing for smoother overlay – process every frame
-        frame_skip = 1  # Always analyse every frame
-        app.logger.info(f"Frame skip forced to {frame_skip} for dense analysis")
-
-        # Pre-calculate target frame indices (all frames)
+        # Pre-calculate target frame indices
         target_frames = list(range(0, frame_count, frame_skip))
         
         # Skip if we already have frames from image fallback
@@ -1180,23 +1130,22 @@ def analyze_video():
         
         # Define function to process a single frame
         # ---- Squat phase tracking variables ----
-        # We want to show certain feedback (e.g., "Squat deeper") only during the descent.
-        # Track the knee angle progression across frames to infer movement direction.
-        in_squat = False  # Always consider as not in a squat for simpler logic
-        squat_phases = [{"start": 0, "end": max(0, len(frames_to_process) - 1)}]  # Treat the whole video as one squat
+        # Multi-rep detection: track knee angle to detect descent/ascent transitions.
+        # A "rep" starts when knee angle drops below SQUAT_ENTRY_ANGLE and ends when
+        # it rises back above SQUAT_EXIT_ANGLE.
+        SQUAT_ENTRY_ANGLE = 150  # consider "in a squat" when knees flex past 150°
+        SQUAT_EXIT_ANGLE = 160   # consider squat finished when knees extend past 160°
         prev_knee_angle = 180
         prev_hip_y = 0
-        current_phase = 'down'    # Always consider in 'down' phase to capture lowest angle
-        current_squat_min_knee = 180
+        current_phase = 'standing'
+        current_squat_min_knee = 180.0
         phase_idx = 0
         baseline_pelvic_angle = None  # neutral pelvic angle from first visible frame
 
-        app.logger.info(f"USING SIMPLIFIED SQUAT LOGIC - all frames treated as in a squat")
-
-        current_squat_min_knee = 180.0  # track lowest knee angle in ongoing squat
+        app.logger.info(f"Using multi-rep squat detection (entry<{SQUAT_ENTRY_ANGLE}°, exit>{SQUAT_EXIT_ANGLE}°)")
 
         def process_frame(frame_data):
-            nonlocal prev_knee_angle, prev_hip_y, current_phase, current_squat_min_knee
+            nonlocal prev_knee_angle, prev_hip_y, current_phase, current_squat_min_knee, baseline_pelvic_angle
             frame_idx, frame = frame_data
             
             # Convert BGR to RGB
@@ -1363,6 +1312,20 @@ def analyze_video():
                 baseline_pelvic_angle = raw_pelvic_angle  # first visible frame = neutral
             pelvic_angle = (raw_pelvic_angle - baseline_pelvic_angle) if (raw_pelvic_angle is not None and baseline_pelvic_angle is not None) else None
 
+            # Knee valgus detection
+            knee_valgus_ratio = calculate_knee_valgus(lm) if lm else None
+
+            # Multi-rep phase detection: transition based on knee angle
+            if knee_angle is not None:
+                if current_phase == 'standing' and knee_angle < SQUAT_ENTRY_ANGLE:
+                    current_phase = 'down'
+                    current_squat_min_knee = knee_angle
+                elif current_phase == 'down':
+                    current_squat_min_knee = min(current_squat_min_knee, knee_angle)
+                    if knee_angle > SQUAT_EXIT_ANGLE:
+                        current_phase = 'standing'
+                prev_knee_angle = knee_angle
+
             # E. Add kneesVisible boolean to frame payload
             return {
                 'frame': frame_idx,
@@ -1373,7 +1336,8 @@ def analyze_video():
                     'depthRatio': depth_ratio,
                     'shoulderMidfootDiff': shoulder_midfoot_diff,
                     'hipFlexionAngle': hip_flexion_angle,
-                    'pelvicAngle': pelvic_angle
+                    'pelvicAngle': pelvic_angle,
+                    'kneeValgusRatio': knee_valgus_ratio
                 },
                 'arrows': [],
                 'kneesVisible': joints_visible([POSE_LANDMARKS.LEFT_KNEE, POSE_LANDMARKS.RIGHT_KNEE], lm),
@@ -1387,7 +1351,7 @@ def analyze_video():
         # Note: phase tracking is handled inside process_frame using nonlocal variables
         
         # Sequentially process frames while periodically freeing memory
-        batch_size = 4  # how many frames before an explicit GC & memory log
+        batch_size = 20  # how many frames before an explicit GC & memory log (was 4, reduced overhead)
         results = []
         for i, frame_data in enumerate(frames_to_process):
             result = process_frame(frame_data)
@@ -1465,12 +1429,36 @@ def analyze_video():
         # Complete any open squat phases
         if in_squat and len(squat_phases) > 0:
             squat_phases[-1]['end'] = len(results) - 1
-                
+
+        # Fallback: if no squat phases detected, treat the whole video as one phase
+        # (preserves backward compatibility for short clips or unusual angles)
+        if not squat_phases and len(results) > 0:
+            squat_phases = [{
+                'start': 0,
+                'end': len(results) - 1,
+                'frames': list(range(len(results))),
+                'best_knee_angle': 180.0,
+                'worst_shoulder_diff': 0.0,
+                'best_hip_score': 0.0,
+                'best_pelvic_score': 100.0,
+            }]
+            app.logger.info("No squat phases detected via knee angle — treating entire video as one phase")
+
+        app.logger.info(f"Detected {len(squat_phases)} squat rep(s)")
+
         # Track global best depth
         global_min_knee_angle = 180  # Track best depth across all squats
         
-        # Process each frame to calculate progressive scores
-        # For each squat phase, we'll track the best scores seen so far
+        # Process each frame to calculate progressive scores.
+        #
+        # SCORING PHILOSOPHY — Asymmetric sticky scores:
+        #   - Depth & hip flexion use "high-water mark": score can only go UP.
+        #     Rationale: we want to credit the deepest point reached.
+        #   - Shoulder alignment & pelvic tilt use "low-water mark": score can
+        #     only go DOWN.  Rationale: the worst deviation is the injury risk.
+        #   - This means the overall score does NOT represent any single frame.
+        #     It's the best depth + worst alignment + best hip + worst tilt.
+        #     A future improvement could offer per-rep or per-frame scoring.
         last_scores = {'knee_depth':0.0,'shoulder_align':100.0,'hip_flexion':0.0,'pelvic_tilt':100.0,'overall':0.0}
         for phase_idx, phase in enumerate(squat_phases):
             # Initialize tracking variables for this phase
@@ -1717,6 +1705,28 @@ def analyze_video():
         # Calculate final overall score using the best scores
         overall_score = round(best_knee_depth * 0.4 + best_shoulder_align * 0.3 + best_hip_flexion * 0.2 + best_pelvic_tilt * 0.1, 1)
 
+        # --- Confidence indicator ---
+        # Average visibility of key body landmarks across all frames.
+        # low (<0.4), medium (0.4-0.7), high (>0.7)
+        key_landmark_indices = [
+            POSE_LANDMARKS.LEFT_SHOULDER, POSE_LANDMARKS.RIGHT_SHOULDER,
+            POSE_LANDMARKS.LEFT_HIP, POSE_LANDMARKS.RIGHT_HIP,
+            POSE_LANDMARKS.LEFT_KNEE, POSE_LANDMARKS.RIGHT_KNEE,
+            POSE_LANDMARKS.LEFT_ANKLE, POSE_LANDMARKS.RIGHT_ANKLE,
+        ]
+        vis_values = []
+        for r in results:
+            for lm_item in r.get('landmarks', []):
+                if isinstance(lm_item, dict) and lm_item.get('visibility') is not None:
+                    vis_values.append(lm_item['visibility'])
+        avg_visibility = sum(vis_values) / len(vis_values) if vis_values else 0
+        if avg_visibility >= 0.7:
+            confidence = 'high'
+        elif avg_visibility >= 0.4:
+            confidence = 'medium'
+        else:
+            confidence = 'low'
+
         # --- Assemble Final Result ---
         analysis_result = {
             # Use original FPS if available, else the backend default (30)
@@ -1726,6 +1736,9 @@ def analyze_video():
             'totalFramesProcessed': len(results),
             'originalDuration': original_duration, # Add original duration info
             'originalFrameCount': original_frame_count, # Add original frame count info
+            'confidence': confidence,
+            'avgLandmarkVisibility': round(avg_visibility, 3),
+            'squatRepsDetected': len(squat_phases),
             'scores': {
                 'kneeDepthScore': best_knee_depth,
                 'shoulderAlignmentScore': best_shoulder_align,

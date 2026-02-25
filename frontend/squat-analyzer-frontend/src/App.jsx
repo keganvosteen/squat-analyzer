@@ -508,7 +508,11 @@ const App = () => {
     if (videoUrl) {
       URL.revokeObjectURL(videoUrl);
     }
-    
+
+    // Reset backend session state so previous scores don't leak into a new recording
+    const resetUrl = isDevelopment ? '/reset-session' : `${BACKEND_URL}/reset-session`;
+    fetch(resetUrl, { method: 'POST' }).catch(() => {});
+
     // Reset state
     setVideoUrl(null);
     setVideoBlob(null);

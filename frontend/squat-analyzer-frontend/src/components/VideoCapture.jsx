@@ -6,11 +6,11 @@ import { v4 as uuidv4 } from 'uuid';
 import styled from 'styled-components';
 import CameraSelector from './CameraSelector';
 
-// Import TensorFlow.js and pose detection
-import * as tf from '@tensorflow/tfjs';
-import * as poseDetection from '@tensorflow-models/pose-detection';
-import '@tensorflow/tfjs-backend-webgl';
-import '@tensorflow/tfjs-backend-cpu';
+// TensorFlow.js and pose detection are lazy-loaded to avoid bundling ~3-5MB
+// in the initial page load.  They are imported dynamically when the camera
+// starts (see initializeTensorFlow).
+let tf = null;
+let poseDetection = null;
 
 // Threshold constants and colour helper
 import { SPINE_THRESH, DEPTH_THRESH } from '../thresholds.js';
@@ -51,11 +51,24 @@ const getBlobMimeType = (mimeType) => {
 
 // Initialize TensorFlow backend explicitly with improved mobile handling
 const initializeTensorFlow = async () => {
+  // Lazy-load TF.js and backends on first use
+  if (!tf) {
+    console.log("Lazy-loading TensorFlow.js...");
+    [tf, poseDetection] = await Promise.all([
+      import('@tensorflow/tfjs'),
+      import('@tensorflow-models/pose-detection'),
+    ]);
+    // Side-effect imports for backends
+    await import('@tensorflow/tfjs-backend-webgl');
+    await import('@tensorflow/tfjs-backend-cpu');
+    console.log("TensorFlow.js loaded successfully");
+  }
+
   // Set a timeout promise to detect hanging initialization
   const timeoutPromise = new Promise((_, reject) => {
     setTimeout(() => reject(new Error('TensorFlow initialization timeout')), 10000);
   });
-  
+
   // Try WebGL first, fallback to CPU if needed
   try {
     console.log("Starting TensorFlow initialization...");
